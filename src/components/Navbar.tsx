@@ -1,9 +1,9 @@
 import { Moon, Search, Sun } from "lucide-react";
 import { FC } from "react";
-import { Input } from "./ui/input";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
-import { Button, buttonVariants } from "./ui/button";
 import { useTheme } from "./providers/theme-provider";
+import { Button } from "./ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { Input } from "./ui/input";
 
 const Navbar: FC = () => {
     const { setTheme } = useTheme()
