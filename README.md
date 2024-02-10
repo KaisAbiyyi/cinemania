@@ -1,6 +1,6 @@
-# React + TypeScript + Vite
+# Cinemania
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+`Cinemania` is the ultimate movie companion, offering personalized recommendations, a vast movie database, real-time updates, and a vibrant community. Discover, explore, and connect with fellow cinephiles—all in one immersive platform. Your cinematic adventure starts here.
 
 Currently, two official plugins are available:
 
