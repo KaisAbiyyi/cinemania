@@ -8,15 +8,15 @@ import { useTheme } from "./providers/theme-provider";
 const Navbar: FC = () => {
     const { setTheme } = useTheme()
     return (
-        <div className="flex justify-between p-4">
-            <div className="relative h-fit w-fit flex items-center">
+        <div className="flex justify-between p-4 bg-primary">
+            <div className="relative flex items-center h-fit w-fit">
                 <Input type="search" placeholder="Search..." className="w-96" />
                 <Search className="absolute right-4 opacity-60" />
             </div>
             <div className="flex gap-4">
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="icon">
+                        <Button variant="outline" size="icon" className="relative">
                             <Sun className="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
                             <Moon className="absolute h-[1.2rem] w-[1.2rem] rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
                             <span className="sr-only">Toggle theme</span>

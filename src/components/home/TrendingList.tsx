@@ -23,18 +23,18 @@ const TrendingList: FC = () => {
 
     if (TrendingPending) {
         return (
-            <div className="flex gap-4">
-                <Skeleton className="h-72 w-56" />
-                <Skeleton className="h-72 w-56" />
-                <Skeleton className="h-72 w-56" />
+            <div className="flex gap-4 p-4">
+                <Skeleton className="w-56 h-72" />
+                <Skeleton className="w-56 h-72" />
+                <Skeleton className="w-56 h-72" />
             </div>
         )
     }
     return (
-        <div className="flex flex-col rounded-lg gap-8">
-            <div className="flex gap-8 items-center">
+        <div className="flex flex-col gap-8 p-4 rounded-lg">
+            <div className="flex items-center gap-8">
                 <CardTitle>Trending</CardTitle>
-                <div className="flex rounded-lg overflow-hidden">
+                <div className="flex overflow-hidden rounded-lg">
                     <Button
                         variant={timeWindow === "day" ? "default" : "secondary"}
                         className="rounded-none"
@@ -59,11 +59,11 @@ const TrendingList: FC = () => {
                         type="button">This Week</Button>
                 </div>
             </div>
-            <div className="flex gap-8 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full  scrollbar-w-3 scrollbar-track-transparent">
+            <div className="flex gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                 {Trending.results.map((item: any) => (
-                    <Card key={item.id} className="flex gap-4 relative border-none bg-transparent flex-col">
-                        <div className="bg-orange-500 text-primary-foreground text-xs font-bold p-2 rounded-full absolute top-2 right-2">{(item.vote_average as number).toFixed(1)}</div>
-                        <CardHeader className="p-0 w-56">
+                    <Card key={item.id} className="relative flex flex-col gap-4 bg-transparent border-none">
+                        <div className="absolute p-2 text-xs font-bold bg-orange-500 rounded-full text-primary-foreground top-2 right-2">{(item.vote_average as number).toFixed(1)}</div>
+                        <CardHeader className="w-56 p-0">
                             <Link to={`${item.media_type}/${item.id}-${((item.name || item.original_title) as string).toLowerCase().replace(/ /g, "-")}`}>
                                 <img src={`${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}`} className="rounded-lg" alt={item.name} />
                             </Link>

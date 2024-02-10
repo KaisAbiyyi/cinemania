@@ -16,11 +16,12 @@ const Layout = ({ children }: LayoutProps) => {
             <ThemeProvider defaultTheme="system" storageKey="cinemania-ui-theme">
                 <body>
                     <QueryClientProvider client={queryClient}>
-                        <div className="flex min-h-screen">
+                        <div className="flex h-screen overflow-y-scroll scrollbar-thin scrollbar-track-transparent scrollbar-thumb-primary">
+                            <div className="w-1/6" />
                             <Sidebar />
-                            <div className="flex flex-col w-5/6">
+                            <div className="flex flex-col flex-grow w-5/6 ">
                                 <Navbar />
-                                <div className="p-4 flex-grow">
+                                <div className="flex-grow ">
                                     {children}
                                 </div>
                             </div>

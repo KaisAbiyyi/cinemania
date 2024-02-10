@@ -7,7 +7,7 @@ import { CardDescription } from "./ui/card";
 const Sidebar: FC = () => {
     const route = useLocation()
     return (
-        <div className="flex flex-col border-r-2 border-secondary gap-6 w-1/6">
+        <div className="fixed top-0 bottom-0 flex flex-col w-1/6 gap-6 border-r-2 border-secondary">
             <Link to={"/"} className={buttonVariants({ variant: "ghost", size: "lg", className: "rounded-none" })}>cinemania</Link>
             <div className="flex flex-col gap-8 p-4">
                 <div className="flex flex-col gap-4">
