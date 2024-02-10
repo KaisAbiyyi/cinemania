@@ -6,10 +6,10 @@ import { Button } from "../ui/button";
 
 const HeroSegment: FC = () => {
     return (
-        <div className="flex flex-col gap-8 p-16 text-primary-foreground bg-primary">
+        <div className="flex flex-col gap-8 p-4 md:p-16 text-primary-foreground bg-primary">
             <div className="flex flex-col gap-4">
                 <CardTitle className="text-5xl text-bold">Welcome</CardTitle>
-                <CardTitle className="text-2xl">We have millions of movies, tv shows an people to discover. Explore the cinema world now.</CardTitle>
+                <CardTitle className="text-xl md:text-2xl">We have millions of movies, tv shows an people to discover. Explore the cinema world now.</CardTitle>
             </div>
             <div className="flex">
                 <Input type="search" className="rounded-r-none" placeholder="Search for a movie, tv show, person" />
