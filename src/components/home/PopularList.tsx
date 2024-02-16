@@ -30,13 +30,13 @@ const PopularList: FC = () => {
     }
     return (
         <div className="flex flex-col gap-8 p-4 rounded-lg">
-            <CardTitle>Popular</CardTitle>
+            <CardTitle>Popular Movies</CardTitle>
             <div className="flex items-start gap-8 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                 {Popular.results.map((item: any) => (
                     <Card key={item.id} className="relative flex flex-col gap-4 bg-transparent border-none">
                         <div className="absolute p-2 text-xs font-bold bg-orange-500 rounded-full text-primary-foreground top-2 right-2">{(item.vote_average as number).toFixed(1)}</div>
                         <CardHeader className="w-56 p-0">
-                            <Link to={`${item.media_type}/${item.id}-${((item.name || item.original_title) as string).toLowerCase().replace(/ /g, "-")}`}>
+                            <Link to={`movie/${item.id}-${((item.name || item.original_title) as string).toLowerCase().replace(/ /g, "-")}`}>
                                 <img src={`${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}`} className="rounded-lg" alt={item.name} />
                             </Link>
                         </CardHeader>

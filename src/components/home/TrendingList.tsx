@@ -31,7 +31,7 @@ const TrendingList: FC = () => {
         )
     }
     return (
-        <div className="flex flex-col gap-8 p-4 rounded-lg">
+        <div className="flex flex-col gap-8 p-4 rounded-lg ">
             <div className="flex items-center gap-8">
                 <CardTitle>Trending</CardTitle>
                 <div className="flex overflow-hidden rounded-lg">
