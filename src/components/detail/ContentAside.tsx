@@ -28,7 +28,7 @@ const ContentAside: FC<ContentAsideProps> = ({ detailType, Detail }) => {
             </CardHeader>
             <CardHeader className="p-0">
                 <CardTitle className="text-base">Original Language</CardTitle>
-                <CardDescription>{Detail.spoken_languages.find((item:any)=>item.iso_639_1 === Detail.original_language).english_name}</CardDescription>
+                <CardDescription>{Detail.spoken_languages.find((item: any) => item.iso_639_1 === Detail.original_language).english_name}</CardDescription>
             </CardHeader>
             {detailType === "movie" ?
                 <>
@@ -69,14 +69,14 @@ const ContentAside: FC<ContentAsideProps> = ({ detailType, Detail }) => {
                 <CardTitle className="text-base">Keywords</CardTitle>
                 <div className="flex flex-wrap gap-2">
                     {!KeywordsPending ?
-                        detailType ==="movie" ? 
-                        Keywords?.keywords?.map((item: any) => (
-                            <Link to={`/keyword/${item.id}-${(item.name).toLowerCase().replace(/ /g, "-")}/${detailType}`} className="px-3 py-1 text-sm font-semibold duration-200 ease-out rounded-sm hover:bg-primary/90 bg-primary text-primary-foreground">{item.name}</Link>
-                        ))
-                        :
-                        Keywords?.results?.map((item: any) => (
-                            <Link to={`/keyword/${item.id}-${(item.name).toLowerCase().replace(/ /g, "-")}/${detailType}`} className="px-3 py-1 text-sm font-semibold duration-200 ease-out rounded-sm hover:bg-primary/90 bg-primary text-primary-foreground">{item.name}</Link>
-                        ))
+                        detailType === "movie" ?
+                            Keywords?.keywords?.map((item: any) => (
+                                <Link key={item.id} to={`/keyword/${item.id}-${(item.name).toLowerCase().replace(/ /g, "-")}/${detailType}`} className="px-3 py-1 text-sm font-semibold duration-200 ease-out rounded-sm hover:bg-primary/90 bg-primary text-primary-foreground">{item.name}</Link>
+                            ))
+                            :
+                            Keywords?.results?.map((item: any) => (
+                                <Link key={item.id} to={`/keyword/${item.id}-${(item.name).toLowerCase().replace(/ /g, "-")}/${detailType}`} className="px-3 py-1 text-sm font-semibold duration-200 ease-out rounded-sm hover:bg-primary/90 bg-primary text-primary-foreground">{item.name}</Link>
+                            ))
                         :
                         <Skeleton className="w-4 h-2" />
                     }

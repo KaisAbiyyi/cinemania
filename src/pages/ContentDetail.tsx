@@ -1,6 +1,8 @@
 import ContentAside from "@/components/detail/ContentAside";
 import DetailHeroSegment from "@/components/detail/Hero";
+import ReviewOverview from "@/components/detail/ReviewOverview";
 import HeroSkeleton from "@/components/detail/Skeletons/HeroSkeleton";
+import ReviewSkeleton from "@/components/detail/Skeletons/ReviewSkeleton";
 import TopBilledCast from "@/components/detail/TopBilledCast";
 import { useQuery } from "@tanstack/react-query";
 import axios from "axios";
@@ -23,6 +25,13 @@ const ContentDetail = () => {
             return data
         }
     })
+    const { data: Reviews, isPending: ReviewPending } = useQuery({
+        queryKey: [`reviewOverview${id}`],
+        queryFn: async () => {
+            const { data } = await axios.get(`https://api.themoviedb.org/3/${detailType}/${id}/reviews?language=en-US&page=1`, { headers: { Authorization: `Bearer ${token}` } })
+            return data
+        }
+    })
 
     if (DetailPending) {
         return (
@@ -40,8 +49,13 @@ const ContentDetail = () => {
             <div className="flex flex-col">
                 <DetailHeroSegment detailType={detailType} Detail={Detail} />
                 <div className="flex mx-16 -mt-20">
-                    <div className="z-20 flex flex-col w-4/5 gap-8 p-8 bg-background rounded-3xl">
+                    <div className="z-20 flex flex-col w-4/5 gap-16">
                         <TopBilledCast detailType={detailType} id={Detail?.id} />
+                        {ReviewPending ?
+                            <ReviewSkeleton />
+                            :
+                            <ReviewOverview Reviews={Reviews} />
+                        }
                     </div>
                     <ContentAside detailType={detailType} Detail={Detail} />
                 </div>

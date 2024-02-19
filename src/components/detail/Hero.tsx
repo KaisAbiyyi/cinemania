@@ -48,7 +48,7 @@ const DetailHeroSegment: FC<DetailHeroSegmentProps> = ({ Detail, detailType }) =
                             <span className="font-normal">({getYear(Detail.release_date ?? Detail.first_air_date)})</span>
                         </h1>
                         <div className="flex items-center gap-2">
-                            <span className="px-2 py-1 text-xs border rounded-sm border-primary-foreground">{certification}</span>
+                            <span className="px-2 py-1 text-xs border rounded-sm border-primary-foreground text-primary-foreground">{certification}</span>
                             {detailType === "movie" &&
                                 <>
                                     <time className="text-sm font-semibold text-primary-foreground">{format(new Date(Detail.release_date), "MMM d, yyyy")}</time>
