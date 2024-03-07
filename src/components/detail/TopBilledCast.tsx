@@ -40,7 +40,7 @@ const TopBilledCast: FC<TopBilledCastProps> = ({ detailType, id }) => {
                 <CardTitle className="text-lg">Top Billed Cast</CardTitle>
                 <Link to={`${pathname}/cast`} className="p-2 px-4 text-base font-semibold duration-200 ease-out rounded-full hover:text-primary-foreground hover:bg-primary">View full cast and crew</Link>
             </CardHeader>
-            <CardContent className="flex gap-8 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
+            <CardContent className="relative flex gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                 {Credit?.cast.slice(0, 10).map((item: any) => (
                     <Link
                         to={`/person/${item.id}-${(item.name as string).toLowerCase().replace(/ /g, "-")}`}

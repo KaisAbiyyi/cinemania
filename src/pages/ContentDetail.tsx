@@ -1,7 +1,9 @@
 import ContentAside from "@/components/detail/ContentAside";
 import DetailHeroSegment from "@/components/detail/Hero";
+import MediaContent from "@/components/detail/MediaContent";
 import ReviewOverview from "@/components/detail/ReviewOverview";
 import HeroSkeleton from "@/components/detail/Skeletons/HeroSkeleton";
+import MediaSkeleton from "@/components/detail/Skeletons/MediaSkeleton";
 import ReviewSkeleton from "@/components/detail/Skeletons/ReviewSkeleton";
 import TopBilledCast from "@/components/detail/TopBilledCast";
 import { useQuery } from "@tanstack/react-query";
@@ -33,6 +35,24 @@ const ContentDetail = () => {
         }
     })
 
+    const { data: Images, isPending: ImagesPending } = useQuery({
+        queryKey: [`images${id}`],
+        queryFn: async () => {
+            const { data } = await axios.get(`https://api.themoviedb.org/3/movie/${id}/images`, { headers: { Authorization: `Bearer ${token}` } })
+            return data
+        }
+    })
+
+    // const { data: Videos, isPending: VideosPending } = useQuery({
+    //     queryKey: [`videos${id}`],
+    //     queryFn: async () => {
+    //         const { data } = await axios.get(`https://api.themoviedb.org/3/movie/${id}/videos?language=en-US`, { headers: { Authorization: `Bearer ${token}` } })
+    //         return data
+    //     }
+    // })
+
+    // console.log(Videos)
+
     if (DetailPending) {
         return (
             <div className="flex flex-col">
@@ -44,17 +64,22 @@ const ContentDetail = () => {
     return (
         <>
             <Helmet>
-                <title>{Detail.name || Detail.original_title} ({(getYear(Detail.release_date ?? Detail.first_air_date)).toString()}) | Cinemania</title>
+                <title>{Detail.name || Detail.original_title || Detail.title} ({(getYear(Detail.release_date ?? Detail.first_air_date)).toString()}) | Cinemania</title>
             </Helmet>
             <div className="flex flex-col">
-                <DetailHeroSegment detailType={detailType} Detail={Detail} />
-                <div className="flex mx-16 -mt-20">
+                <DetailHeroSegment detailType={detailType} detail={Detail} />
+                <div className="flex pb-8 mx-16 -mt-20">
                     <div className="z-20 flex flex-col w-4/5 gap-16">
                         <TopBilledCast detailType={detailType} id={Detail?.id} />
                         {ReviewPending ?
                             <ReviewSkeleton />
                             :
-                            <ReviewOverview Reviews={Reviews} />
+                            <ReviewOverview reviews={Reviews} title={Detail.title || Detail.original_title || Detail.name} />
+                        }
+                        {ImagesPending ?
+                            <MediaSkeleton />
+                            :
+                            <MediaContent posters={Images.posters} backdrops={Images.backdrops} />
                         }
                     </div>
                     <ContentAside detailType={detailType} Detail={Detail} />
