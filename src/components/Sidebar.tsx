@@ -15,33 +15,39 @@ const Sidebar: FC = () => {
             </Link>
             <div className="flex flex-col gap-8 p-2 md:p-4">
                 <div className="flex flex-col gap-4">
-                    <Separator className="block md:hidden" orientation="horizontal"/>
+                    <Separator className="block md:hidden" orientation="horizontal" />
                     <CardDescription className="hidden md:block">Browser</CardDescription>
                     <div className="flex flex-col gap-2">
-                        <Link to="/" className={route.pathname === "/" ? buttonVariants({ className: "!justify-center md:!justify-start !p-1 md:!p-2 flex gap-2" }) : buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !p-1 md:!p-2 flex gap-2" })}>
-                            <Compass size={16} />
+                        <Link to="/" className={route.pathname === "/" ?
+                            buttonVariants({ className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" }) :
+                            buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" })}>
+                            <Compass className="size-6 md:size-4" />
                             <span className="hidden duration-200 ease-out md:block">Discover</span>
                         </Link>
-                        <Link to="/trending" className={route.pathname === "/trending" ? buttonVariants({ className: "!justify-center md:!justify-start !p-1 md:!p-2 flex gap-2" }) : buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !p-1 md:!p-2 flex gap-2" })}>
-                            <TrendingUp size={16} />
+                        <Link to="/trending" className={route.pathname === "/trending" ?
+                            buttonVariants({ className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" }) :
+                            buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" })}>
+                            <TrendingUp className="size-6 md:size-4" />
                             <span className="hidden duration-200 ease-out md:block">Trending</span>
                         </Link>
-                        <Link to="/genres" className={route.pathname === "/genres" ? buttonVariants({ className: "!justify-center md:!justify-start !p-1 md:!p-2 flex gap-2" }) : buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !p-1 md:!p-2 flex gap-2" })}>
-                            <Clapperboard size={16} />
+                        <Link to="/genres" className={route.pathname === "/genres" ?
+                            buttonVariants({ className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" }) :
+                            buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" })}>
+                            <Clapperboard className="size-6 md:size-4" />
                             <span className="hidden duration-200 ease-out md:block">Genres</span>
                         </Link>
                     </div>
                 </div>
                 <div className="flex flex-col gap-4">
-                    <Separator className="block md:hidden" orientation="horizontal"/>
+                    <Separator className="block md:hidden" orientation="horizontal" />
                     <CardDescription className="hidden md:block">My Movies</CardDescription>
                     <div className="flex flex-col gap-2">
                         <Link to="/watchlist" className={route.pathname === "/watchlist" ? buttonVariants({ className: "!justify-center md:!justify-start !p-1 md:!p-2 flex gap-2" }) : buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !p-1 md:!p-2 flex gap-2" })}>
-                            <List size={16} />
+                            <List className="size-6 md:size-4" />
                             <span className="hidden duration-200 ease-out md:block">Watchlist</span>
                         </Link>
                         <Link to="/favorites" className={route.pathname === "/favorites" ? buttonVariants({ className: "!justify-center md:!justify-start !p-1 md:!p-2 flex gap-2" }) : buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !p-1 md:!p-2 flex gap-2" })}>
-                            <Heart size={16} />
+                            <Heart className="size-6 md:size-4" />
                             <span className="hidden duration-200 ease-out md:block">Favorites</span>
                         </Link>
                     </div>

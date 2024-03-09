@@ -35,7 +35,7 @@ const PopularList: FC = () => {
                 {Popular.results.map((item: any) => (
                     <Card key={item.id} className="relative flex flex-col gap-4 bg-transparent border-none">
                         <div className="absolute p-2 text-xs font-bold bg-orange-500 rounded-full text-primary-foreground top-2 right-2">{(item.vote_average as number).toFixed(1)}</div>
-                        <CardHeader className="w-56 p-0">
+                        <CardHeader className="p-0 w-36 lg:w-56">
                             <Link to={`movie/${item.id}-${((item.name || item.original_title) as string).toLowerCase().replace(/ /g, "-")}`}>
                                 <img src={`${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}`} className="rounded-lg" alt={item.name} />
                             </Link>

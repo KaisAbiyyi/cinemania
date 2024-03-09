@@ -55,9 +55,9 @@ const ReviewOverview: FC<ReviewOverviewProps> = ({ reviews, title }) => {
                         </Avatar>
                         <div className="flex flex-col gap-2">
                             <CardTitle className="text-base">a Review by {(LatestReview.author_details.name as string).length > 0 ? LatestReview.author_details.name : LatestReview.author_details.username}</CardTitle>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-col gap-2 md:items-center md:flex-row">
                                 {LatestReview.author_details.rating &&
-                                    <div className="flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded-full fill-primary-foreground bg-primary text-primary-foreground">
+                                    <div className="flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded-full w-fit fill-primary-foreground bg-primary text-primary-foreground">
                                         <Star fill="fill-inherit" size={12} />
                                         <span>{(LatestReview.author_details.rating as number).toFixed(1)}</span>
                                     </div>

@@ -51,6 +51,8 @@ const ContentDetail = () => {
     //     }
     // })
 
+    
+
     // console.log(Videos)
 
     if (DetailPending) {
@@ -68,8 +70,8 @@ const ContentDetail = () => {
             </Helmet>
             <div className="flex flex-col">
                 <DetailHeroSegment detailType={detailType} detail={Detail} />
-                <div className="flex pb-8 mx-16 -mt-20">
-                    <div className="z-20 flex flex-col w-4/5 gap-16">
+                <div className="flex flex-col pb-8 mx-2 lg:mx-16 lg:flex-row xl:-mt-20">
+                    <div className="z-20 flex flex-col w-full gap-16 lg:w-4/5">
                         <TopBilledCast detailType={detailType} id={Detail?.id} />
                         {ReviewPending ?
                             <ReviewSkeleton />

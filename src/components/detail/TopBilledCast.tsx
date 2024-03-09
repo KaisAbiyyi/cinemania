@@ -40,33 +40,36 @@ const TopBilledCast: FC<TopBilledCastProps> = ({ detailType, id }) => {
                 <CardTitle className="text-lg">Top Billed Cast</CardTitle>
                 <Link to={`${pathname}/cast`} className="p-2 px-4 text-base font-semibold duration-200 ease-out rounded-full hover:text-primary-foreground hover:bg-primary">View full cast and crew</Link>
             </CardHeader>
-            <CardContent className="relative flex gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
-                {Credit?.cast.slice(0, 10).map((item: any) => (
-                    <Link
-                        to={`/person/${item.id}-${(item.name as string).toLowerCase().replace(/ /g, "-")}`}
-                        className="relative overflow-hidden rounded-t-lg group h-60 min-w-44"
-                        key={item.id}>
-                        {item.profile_path ?
-                            <img src={`${import.meta.env.VITE_TMDB_POSTER_URL}/w500/${item.profile_path}`} className="object-cover w-full h-full" />
-                            :
-                            <div className="flex w-full h-full text-background bg-primary items-center-justify-center">
-                                <User className="w-full h-full" />
+            <CardContent className="relative flex flex-col p-0">
+                <div className="absolute top-0 bottom-0 right-0 z-10 w-1/2 pointer-events-none bg-gradient-to-l from-background via-transparent to-transparent"></div>
+                <div className="flex w-full gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
+                    {Credit?.cast.slice(0, 10).map((item: any) => (
+                        <Link
+                            to={`/person/${item.id}-${(item.name as string).toLowerCase().replace(/ /g, "-")}`}
+                            className="relative h-48 overflow-hidden rounded-t-lg group lg:h-60 min-w-32 lg:min-w-44"
+                            key={item.id}>
+                            {item.profile_path ?
+                                <img src={`${import.meta.env.VITE_TMDB_POSTER_URL}/w500/${item.profile_path}`} className="object-cover w-full h-full" />
+                                :
+                                <div className="flex w-full h-full text-background bg-primary items-center-justify-center">
+                                    <User className="w-full h-full" />
+                                </div>
+                            }
+                            <div className="absolute inset-0 flex flex-col items-center justify-end min-w-full min-h-full duration-200 ease-out bg-gradient-to-b from-transparent via-background/20 to-background hover:from-transparent group-hover:opacity-75">
                             </div>
-                        }
-                        <div className="absolute inset-0 flex flex-col items-center justify-end min-w-full min-h-full duration-200 ease-out bg-gradient-to-b from-transparent via-background/70 to-background hover:from-transparent group-hover:opacity-75">
-                        </div>
-                        <div className="absolute inset-0 flex flex-col items-center justify-end min-w-full min-h-full">
-                            <CardTitle className="text-base text-center">{item.name}</CardTitle>
-                            <CardDescription className="text-sm text-center">{item.character}</CardDescription>
-                        </div>
-                    </Link>
-                ))}
-                {Credit.cast.length > 10 &&
-                    <Link to={`${pathname}/cast`} className="flex items-center justify-center p-4 duration-200 ease-out rounded-lg hover:bg-primary/90 bg-primary text-primary-foregound">
-                        <span className="m-0 text-lg font-bold">More</span>
-                        <ChevronRight />
-                    </Link>
-                }
+                            <div className="absolute inset-0 flex flex-col items-center justify-end min-w-full min-h-full">
+                                <CardTitle className="text-base text-center">{item.name}</CardTitle>
+                                <CardDescription className="text-sm text-center">{item.character}</CardDescription>
+                            </div>
+                        </Link>
+                    ))}
+                    {Credit.cast.length > 10 &&
+                        <Link to={`${pathname}/cast`} className="z-20 flex items-center justify-center p-4 duration-200 ease-out rounded-lg hover:bg-primary/90 bg-primary text-primary-foregound">
+                            <span className="m-0 text-lg font-bold">More</span>
+                            <ChevronRight />
+                        </Link>
+                    }
+                </div>
             </CardContent>
         </Card>
     );

@@ -16,9 +16,9 @@ const MediaContent: FC<MediaContentProps> = ({ posters, backdrops }) => {
 
     return (
         <Tabs defaultValue="backdrops" className="px-8 h-96">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col gap-2">
                 <CardTitle className="text-lg">Media</CardTitle>
-                <TabsList>
+                <TabsList className="w-fit">
                     {/* <TabsTrigger value="videos">Videos</TabsTrigger> */}
                     <TabsTrigger value="backdrops" className="flex gap-2">
                         <span>Backdrops</span>
@@ -37,10 +37,12 @@ const MediaContent: FC<MediaContentProps> = ({ posters, backdrops }) => {
                     {backdrops.slice(0, 5).map((item: any) => (
                         <img src={`${imagePath}/w500/${item.file_path}`} className="object-cover aspect-video h-72" alt="" />
                     ))}
-                    <Link to={`${pathname}/images/backdrops`} className="z-10 flex items-center justify-center p-4 ml-4 duration-200 ease-out rounded-lg hover:bg-primary/90 bg-primary text-primary-foregound">
-                        <span className="m-0 text-lg font-bold">More</span>
-                        <ChevronRight />
-                    </Link>
+                    {backdrops.length > 10 &&
+                        <Link to={`${pathname}/images/backdrops`} className="z-10 flex items-center justify-center p-4 ml-4 duration-200 ease-out rounded-lg hover:bg-primary/90 bg-primary text-primary-foregound">
+                            <span className="m-0 text-lg font-bold">More</span>
+                            <ChevronRight />
+                        </Link>
+                    }
                 </div>
             </TabsContent>
             <TabsContent className="relative flex flex-col" value="posters">
@@ -49,13 +51,16 @@ const MediaContent: FC<MediaContentProps> = ({ posters, backdrops }) => {
                     {posters.slice(0, 10).map((item: any) => (
                         <img src={`${imagePath}/w500/${item.file_path}`} className="object-cover h-72" alt="" />
                     ))}
-                    <Link to={`${pathname}/images/posters`} className="z-10 flex items-center justify-center p-4 ml-4 duration-200 ease-out rounded-lg hover:bg-primary/90 bg-primary text-primary-foregound">
-                        <span className="m-0 text-lg font-bold">More</span>
-                        <ChevronRight />
-                    </Link>
+                    {posters.length > 10
+                        &&
+                        <Link to={`${pathname}/images/posters`} className="z-10 flex items-center justify-center p-4 ml-4 duration-200 ease-out rounded-lg hover:bg-primary/90 bg-primary text-primary-foregound">
+                            <span className="m-0 text-lg font-bold">More</span>
+                            <ChevronRight />
+                        </Link>
+                    }
                 </div>
             </TabsContent>
-        </Tabs>
+        </Tabs >
     );
 }
 

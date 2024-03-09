@@ -21,7 +21,7 @@ const ContentAside: FC<ContentAsideProps> = ({ detailType, Detail }) => {
     })
     const imagePath = import.meta.env.VITE_TMDB_POSTER_URL
     return (
-        <Card className="z-20 flex flex-col w-1/5 gap-6 p-8 border-none rounded-3xl bg-background h-fit">
+        <Card className="z-20 flex flex-col w-full gap-6 p-8 border-none lg:w-1/5 rounded-3xl bg-background h-fit">
             <CardHeader className="p-0">
                 <CardTitle className="text-base">Status</CardTitle>
                 <CardDescription>{Detail.status}</CardDescription>
