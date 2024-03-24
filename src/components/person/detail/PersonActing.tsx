@@ -12,9 +12,7 @@ interface PersonActingProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 const PersonActing: FC<PersonActingProps> = ({ data, className }) => {
-    console.log(data)
     const KnownForMovies = data.cast.sort((a: any, b: any) => b.vote_average - a.vote_average).filter((item: any) => !item.character.includes("Self")).slice(0, 10)
-    console.log(KnownForMovies)
     const Movie = data.cast.sort((a: any, b: any) => {
         const dateA = new Date(a.release_date || a.first_air_date)
         const dateB = new Date(b.release_date || b.first_air_date)
