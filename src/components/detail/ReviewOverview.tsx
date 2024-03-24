@@ -31,6 +31,7 @@ const ReviewOverview: FC<ReviewOverviewProps> = ({ reviews, title }) => {
     const maxWords: number = 75;
     let content: string[] = [];
     let wordCount = 0;
+    //@ts-ignore
     let remainingContent = '';
     if (paragraphs.length > 0) {
         for (let i = 0; i < paragraphs.length; i++) {
