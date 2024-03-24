@@ -13,6 +13,18 @@ interface ReviewOverviewProps {
 const ReviewOverview: FC<ReviewOverviewProps> = ({ reviews, title }) => {
     const imageUrl = import.meta.env.VITE_TMDB_POSTER_URL
     const { pathname } = useLocation()
+    if (reviews.results.length === 0) {
+        return (
+            <Card className="flex flex-col gap-8 p-8 border-none bg-background">
+                <CardHeader className="flex flex-row items-center justify-between p-0">
+                    <div className="flex items-center gap-4">
+                        <CardTitle className="text-lg">Reviews</CardTitle>
+                    </div>
+                </CardHeader>
+                <CardContent className="p-4 border shadow-sm bg-secondary/70 rounded-xl">We don't have any reviews for Sri Asih. Would you like to write one?</CardContent>
+            </Card>
+        )
+    }
 
     const LatestReview = reviews.results.length > 0 ? reviews.results.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0] : []
     const paragraphs: string[] = LatestReview ? LatestReview.content.split('\r\n') : [];
@@ -47,7 +59,7 @@ const ReviewOverview: FC<ReviewOverviewProps> = ({ reviews, title }) => {
                 <Link to={`${pathname}/reviews`} className="p-2 px-4 text-base font-semibold duration-200 ease-out rounded-full hover:text-primary-foreground hover:bg-primary">Read All Reviews</Link>
             </CardHeader>
             {reviews.results.length > 0 ?
-                <CardContent className="border shadow-sm bg-secondary/70 rounded-xl ">
+                <CardContent className="border shadow-sm bg-secondary/70 rounded-xl">
                     <CardHeader className="flex flex-row items-center gap-4 px-0">
                         <Avatar className="p-0 m-0">
                             <AvatarImage src={`${imageUrl}/w500/${LatestReview.author_details.avatar_path}`} />

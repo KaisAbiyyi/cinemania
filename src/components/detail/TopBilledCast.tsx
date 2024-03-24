@@ -33,6 +33,7 @@ const TopBilledCast: FC<TopBilledCastProps> = ({ detailType, id }) => {
             </div>
         </div>
     )
+    // console.log(Credit)
 
     return (
         <Card className="flex flex-col gap-8 p-8 border-none bg-background rounded-3xl">

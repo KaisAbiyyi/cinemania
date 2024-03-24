@@ -17,7 +17,7 @@ const PopularList: FC = () => {
         }
     })
 
-    console.log(Popular)
+    // console.log(Popular)
 
     if (PopularPending) {
         return (
@@ -36,12 +36,12 @@ const PopularList: FC = () => {
                     <Card key={item.id} className="relative flex flex-col gap-4 bg-transparent border-none">
                         <div className="absolute p-2 text-xs font-bold bg-orange-500 rounded-full text-primary-foreground top-2 right-2">{(item.vote_average as number).toFixed(1)}</div>
                         <CardHeader className="p-0 w-36 lg:w-56">
-                            <Link to={`movie/${item.id}-${((item.name || item.original_title) as string).toLowerCase().replace(/ /g, "-")}`}>
+                            <Link to={`movie/${item.id}-${((item.title || item.original_title || item.name) as string).toLowerCase().replace(/ /g, "-").replace(":", "")}`}>
                                 <img src={`${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}`} className="rounded-lg" alt={item.name} />
                             </Link>
                         </CardHeader>
                         <CardContent>
-                            <CardTitle className="text-lg">{item.name ?? item.original_title}</CardTitle>
+                            <CardTitle className="text-lg">{item.title || item.original_title || item.name}</CardTitle>
                             <CardDescription>{format(new Date(item.release_date || item.first_air_date), "MMM dd, yyyy")}</CardDescription>
                         </CardContent>
                     </Card>

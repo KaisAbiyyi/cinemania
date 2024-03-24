@@ -21,7 +21,7 @@ const ContentDetail = () => {
     const token = import.meta.env.VITE_TMDB_API_RAT
 
     const { data: Detail, isPending: DetailPending } = useQuery({
-        queryKey: [`getDetail${detailType}${splittedId}`],
+        queryKey: [`get${detailType}Detail${splittedId}`],
         queryFn: async () => {
             const { data } = await axios.get(`https://api.themoviedb.org/3/${detailType}/${splittedId}`, { headers: { Authorization: `Bearer ${token}` } })
             return data
@@ -38,7 +38,7 @@ const ContentDetail = () => {
     const { data: Images, isPending: ImagesPending } = useQuery({
         queryKey: [`images${id}`],
         queryFn: async () => {
-            const { data } = await axios.get(`https://api.themoviedb.org/3/movie/${id}/images`, { headers: { Authorization: `Bearer ${token}` } })
+            const { data } = await axios.get(`https://api.themoviedb.org/3/${detailType}/${id}/images`, { headers: { Authorization: `Bearer ${token}` } })
             return data
         }
     })
@@ -69,8 +69,8 @@ const ContentDetail = () => {
                 <title>{Detail.name || Detail.original_title || Detail.title} ({(getYear(Detail.release_date ?? Detail.first_air_date)).toString()}) | Cinemania</title>
             </Helmet>
             <div className="flex flex-col">
-                <DetailHeroSegment detailType={detailType} detail={Detail} />
-                <div className="flex flex-col pb-8 mx-2 lg:mx-16 lg:flex-row xl:-mt-20">
+                <DetailHeroSegment productionCountry={Detail.production_countries[0].iso_3166_1} detailType={detailType} detail={Detail} />
+                <div className="flex flex-col pb-8 mx-2 lg:mx-16 lg:flex-row xl:-mt-36">
                     <div className="z-20 flex flex-col w-full gap-16 lg:w-4/5">
                         <TopBilledCast detailType={detailType} id={Detail?.id} />
                         {ReviewPending ?

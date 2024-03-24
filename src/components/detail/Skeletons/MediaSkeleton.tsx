@@ -6,7 +6,7 @@ const MediaSkeleton: FC = () => {
     return (<Card className="flex flex-col gap-8 p-8 mb-8 border-none bg-background">
         <CardHeader className="flex flex-row items-center justify-between p-0">
             <div className="flex items-center gap-4">
-                <CardTitle className="text-lg">Reviews</CardTitle>
+                <CardTitle className="text-lg">Media</CardTitle>
                 <CardDescription></CardDescription>
             </div>
         </CardHeader>
