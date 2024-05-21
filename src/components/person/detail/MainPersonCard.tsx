@@ -14,7 +14,7 @@ const MainPersonCard: FC<MainPersonCardProps> = ({ data, className, ...props }) 
     return (
         <Card className={cn("bg-secondary/50 relative rounded-sm h-fit lg:rounded-lg flex flex-row lg:flex-col", className)}{...props}>
             <img src={`${imagePath}/original/${data.profile_path}`} alt={data.name} className="absolute inset-0 z-0 object-cover w-full h-full opacity-25 lg:relative lg:opacity-100 lg:h-96" />
-            <div className="z-10 flex w-full gap-4 bg-gradient-to-b from-transparent via-secondary/70 to-secondary lg:flex-col">
+            <div className="z-10 flex w-full gap-4 bg-gradient-to-b from-transparent via-secondary/50 to-secondary/70 lg:flex-col">
                 <CardHeader className="flex flex-col w-1/2 gap-4 p-4 lg:w-full">
                     <div className="flex flex-col gap-2">
                         <CardTitle className="text-base">Known For</CardTitle>
@@ -33,7 +33,7 @@ const MainPersonCard: FC<MainPersonCardProps> = ({ data, className, ...props }) 
                         <CardDescription>{data.place_of_birth}</CardDescription>
                     </div>
                 </CardHeader>
-                <CardHeader className="flex flex-col w-1/2 gap-4 p-4 lg:w-full">
+                <CardHeader className="flex flex-col w-1/2 gap-4 p-4 border-secondary-foreground/10 xl:border-t xl:w-full">
                     <div className="flex flex-col gap-2">
                         <CardTitle className="text-base">Also Known As</CardTitle>
                         <div className="flex flex-col gap-2">

@@ -21,9 +21,11 @@ const DetailHeroSegment: FC<DetailHeroSegmentProps> = ({ detail, detailType, pro
         }
     })
 
-
+    
     let certification: string = ""
     if (!ReleaseDatesPending) {
+        console.log(productionCountry)
+        console.log(ReleaseDates.results)
         if (detailType === "movie") {
             certification = !!ReleaseDates.results.find((item: any) => item.iso_3166_1 === productionCountry) ? ReleaseDates.results.find((item: any) => item.iso_3166_1 === productionCountry).release_dates.find((item: any) => item.certification !== '').certification : ReleaseDates.results[0].release_dates[0].certification
         } else {

@@ -1,7 +1,7 @@
 import { createRoot } from 'react-dom/client'
 import './globals.css'
 import { StrictMode } from 'react'
-import { Route, BrowserRouter as Router, Routes } from 'react-router-dom'
+import { Route, BrowserRouter, Routes } from 'react-router-dom'
 import Layout from './layout'
 
 // Page Import
@@ -16,7 +16,7 @@ if (container) {
   const root = createRoot(container)
   root.render(
     <StrictMode>
-      <Router>
+      <BrowserRouter>
         <Routes>
           {/* Available Public Route */}
           <Route path="/" element={<Layout><HomePage /></Layout>} />
@@ -27,7 +27,7 @@ if (container) {
           {/* Non Routeable */}
           <Route path='*' element={<Layout><NotFound404 /></Layout>} />
         </Routes>
-      </Router>
+      </BrowserRouter>
     </StrictMode>
   )
 } else {

@@ -34,10 +34,10 @@ const PersonActing: FC<PersonActingProps> = ({ data, className }) => {
     const imagePath = import.meta.env.VITE_TMDB_POSTER_URL
 
     return (
-        <Card className={cn("border-0", className)}>
+        <Card className={cn("border-0 bg-transparent", className)}>
             <CardContent className="flex flex-col gap-4 p-0">
                 <CardTitle className="text-lg">Known For</CardTitle>
-                <div className="flex items-start gap-8 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
+                <div className="flex items-start gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                     {KnownForMovies.map((item: any) => (
                         <Card key={item.id} className="relative flex flex-col gap-4 bg-transparent border-none">
                             <CardHeader className="p-0 w-36">
