@@ -43,6 +43,7 @@ const ContentDetail = () => {
         }
     })
 
+
     // const { data: Videos, isPending: VideosPending } = useQuery({
     //     queryKey: [`videos${id}`],
     //     queryFn: async () => {
@@ -51,7 +52,7 @@ const ContentDetail = () => {
     //     }
     // })
 
-    
+
 
     // console.log(Videos)
 
@@ -62,6 +63,7 @@ const ContentDetail = () => {
             </div>
         )
     }
+    console.log(Detail)
 
     return (
         <>
@@ -69,7 +71,7 @@ const ContentDetail = () => {
                 <title>{Detail.name || Detail.original_title || Detail.title} ({(getYear(Detail.release_date ?? Detail.first_air_date)).toString()}) | Cinemania</title>
             </Helmet>
             <div className="flex flex-col">
-                <DetailHeroSegment productionCountry={Detail.production_countries[0].iso_3166_1} detailType={detailType} detail={Detail} />
+                <DetailHeroSegment originCountry={ Detail.origin_country[0]} detailType={detailType} detail={Detail} />
                 <div className="flex flex-col pb-8 mx-2 lg:mx-16 lg:flex-row xl:-mt-36">
                     <div className="z-20 flex flex-col w-full gap-16 lg:w-4/5">
                         <TopBilledCast detailType={detailType} id={Detail?.id} />

@@ -8,10 +8,10 @@ import { Link } from "react-router-dom";
 interface DetailHeroSegmentProps {
     detail: any,
     detailType: string,
-    productionCountry: string
+    originCountry: string
 }
 
-const DetailHeroSegment: FC<DetailHeroSegmentProps> = ({ detail, detailType, productionCountry }) => {
+const DetailHeroSegment: FC<DetailHeroSegmentProps> = ({ detail, detailType, originCountry }) => {
     const token = import.meta.env.VITE_TMDB_API_RAT
     const { data: ReleaseDates, isPending: ReleaseDatesPending } = useQuery({
         queryKey: [`ReleaseDates${detail.id}`],
@@ -24,12 +24,12 @@ const DetailHeroSegment: FC<DetailHeroSegmentProps> = ({ detail, detailType, pro
     
     let certification: string = ""
     if (!ReleaseDatesPending) {
-        console.log(productionCountry)
+        console.log(originCountry)
         console.log(ReleaseDates.results)
         if (detailType === "movie") {
-            certification = !!ReleaseDates.results.find((item: any) => item.iso_3166_1 === productionCountry) ? ReleaseDates.results.find((item: any) => item.iso_3166_1 === productionCountry).release_dates.find((item: any) => item.certification !== '').certification : ReleaseDates.results[0].release_dates[0].certification
+            certification = !!ReleaseDates.results.find((item: any) => item.iso_3166_1 === originCountry) ? ReleaseDates.results.find((item: any) => item.iso_3166_1 === originCountry).release_dates.find((item: any) => item.certification !== '').certification : ReleaseDates.results[0].release_dates[0].certification
         } else {
-            certification = !!ReleaseDates.results.find((item: any) => item.iso_3166_1 === productionCountry) ? ReleaseDates.results.find((item: any) => item.iso_3166_1 === productionCountry).rating : ReleaseDates.results[0].rating
+            certification = !!ReleaseDates.results.find((item: any) => item.iso_3166_1 === originCountry) ? ReleaseDates.results.find((item: any) => item.iso_3166_1 === originCountry).rating : ReleaseDates.results[0].rating
         }
     } else {
         certification = ""
