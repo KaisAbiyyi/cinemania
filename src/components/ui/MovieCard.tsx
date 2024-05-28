@@ -34,30 +34,30 @@ const MovieCard: FC<MovieCardProps> = ({ item, mediaType, MovieGenre, TVGenre })
     const formattedDate = formatDate(releaseDate);
 
     return (
-        <Card key={item.id} className="relative flex flex-col gap-4 bg-transparent border-none">
-            <div className="absolute p-2 text-xs font-bold bg-orange-500 rounded-full text-primary-foreground top-2 right-2">
-                {(item.vote_average as number).toFixed(1)}
-            </div>
-            <CardHeader className="p-0 w-36 lg:w-64">
-                <Link to={`${item.media_type ?? mediaType}/${item.id}-${((item.title || item.original_title || item.name) as string).toLowerCase().replace(/ /g, "-").replace(":", "")}`}>
-                    <img src={`${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}`} className="rounded-lg" alt={item.name} />
-                </Link>
-            </CardHeader>
-            <CardContent className="absolute bottom-0 w-full py-6 bg-gradient-to-b from-transparent via-background/60 to-background">
-                <CardTitle className="text-lg">{item.title || item.original_title || item.name}</CardTitle>
-                <CardDescription>{formattedDate}</CardDescription>
-                <div className="flex flex-wrap gap-2 mt-2">
-                    {genre.map((item: any) => (
-                        <Link
-                            to={`/genre/${item.id}-${(item.name as string).toLowerCase().replace(/ /g, "-")}/${mediaType}`}
-                            className="px-2 py-1 text-xs font-bold duration-200 ease-out rounded-full bg-secondary/80 hover:bg-primary"
-                            key={item.id}>
-                            {item.name}
-                        </Link>
-                    ))}
+        <Link to={`${item.media_type ?? mediaType}/${item.id}-${((item.title || item.original_title || item.name) as string).toLowerCase().replace(/ /g, "-").replace(":", "")}`}>
+            <Card key={item.id} className="relative flex flex-col gap-4 overflow-hidden bg-transparent border-none">
+                <div className="absolute top-0 right-0 p-2 text-xs font-extrabold text-black bg-orange-600 rounded-bl-lg">
+                    {(item.vote_average as number).toFixed(1)}
                 </div>
-            </CardContent>
-        </Card>
+                <CardHeader className="w-56 p-0 lg:w-64">
+                    <img src={`${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}`} className="rounded-lg" alt={item.name} />
+                </CardHeader>
+                <CardContent className="absolute bottom-0 w-full py-6 bg-gradient-to-b from-transparent via-background/60 to-background">
+                    <CardTitle className="text-lg">{item.title || item.original_title || item.name}</CardTitle>
+                    <CardDescription>{formattedDate}</CardDescription>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                        {genre.map((item: any) => (
+                            <Link
+                                to={`/genre/${item.id}-${(item.name as string).toLowerCase().replace(/ /g, "-")}/${mediaType}`}
+                                className="px-2 py-1 text-xs font-bold duration-200 ease-out rounded-full bg-secondary/80 hover:bg-primary"
+                                key={item.id}>
+                                {item.name}
+                            </Link>
+                        ))}
+                    </div>
+                </CardContent>
+            </Card>
+        </Link>
     );
 }
 
