@@ -29,7 +29,6 @@ const MovieCard: FC<MovieCardProps> = ({ item, mediaType, MovieGenre, TVGenre })
             genre = TVGenre.filter((genre: any) => item.genre_ids.includes(genre.id))
         }
     }
-    console.log(genre)
     const releaseDate = item.release_date || item.first_air_date;
     const formattedDate = formatDate(releaseDate);
 
@@ -39,10 +38,10 @@ const MovieCard: FC<MovieCardProps> = ({ item, mediaType, MovieGenre, TVGenre })
                 <div className="absolute top-0 right-0 p-2 text-xs font-extrabold text-black bg-orange-600 rounded-bl-lg">
                     {(item.vote_average as number).toFixed(1)}
                 </div>
-                <CardHeader className="w-56 p-0 lg:w-64">
-                    <img src={`${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}`} className="rounded-lg" alt={item.name} />
+                <CardHeader className="w-56 p-0 h-80 lg:w-64 lg:h-96">
+                    <img src={`${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}`} className="object-cover rounded-lg" alt={item.name} />
                 </CardHeader>
-                <CardContent className="absolute bottom-0 w-full py-6 bg-gradient-to-b from-transparent via-background/60 to-background">
+                <CardContent className="absolute bottom-0 w-full py-6 bg-gradient-to-b from-transparent via-background to-background">
                     <CardTitle className="text-lg">{item.title || item.original_title || item.name}</CardTitle>
                     <CardDescription>{formattedDate}</CardDescription>
                     <div className="flex flex-wrap gap-2 mt-2">

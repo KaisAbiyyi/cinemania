@@ -9,6 +9,8 @@ import HomePage from './pages/Home'
 import NotFound404 from './pages/NotFound404'
 import ContentDetail from './pages/ContentDetail'
 import PersonDetail from './pages/PersonDetail'
+import SearchPage from './pages/SearchPage'
+import TrendingPage from './pages/TrendingPage'
 
 const container = document.getElementById("root")
 
@@ -20,9 +22,11 @@ if (container) {
         <Routes>
           {/* Available Public Route */}
           <Route path="/" element={<Layout><HomePage /></Layout>} />
+          <Route path='/trending' element={<Layout><TrendingPage /></Layout>} />
           <Route path='/tv/:id' element={<Layout><ContentDetail /></Layout>} />
           <Route path='/movie/:id' element={<Layout><ContentDetail /></Layout>} />
-          <Route path='/person/:id' element={<Layout><PersonDetail /></Layout>}></Route>
+          <Route path='/person/:id' element={<Layout><PersonDetail /></Layout>} />
+          <Route path='/search' element={<Layout><SearchPage /></Layout>} />
 
           {/* Non Routeable */}
           <Route path='*' element={<Layout><NotFound404 /></Layout>} />

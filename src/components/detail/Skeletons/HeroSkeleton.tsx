@@ -4,7 +4,7 @@ import { FC } from "react";
 
 const HeroSkeleton: FC = () => {
     return (
-        <div className="flex items-center w-full h-screen gap-8 p-16 bg-gradient-to-b from-primary via-primary/80 to-transparent">
+        <div className="flex items-center w-full h-[700px] gap-8 p-16 bg-gradient-to-b from-primary via-primary/80 to-transparent">
             <Skeleton className="w-80 h-[500px]" />
             <div className="flex flex-col flex-grow gap-4">
                 <Skeleton className="h-16 w-96" />

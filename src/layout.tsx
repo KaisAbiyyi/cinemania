@@ -12,7 +12,7 @@ const Layout = ({ children }: LayoutProps) => {
 
     return (
         <html lang="en">
-            <body className="dark">
+            <body className="dark scroll-smooth">
                 <QueryClientProvider client={queryClient}>
                     <div className="flex h-screen overflow-y-scroll scrollbar-thin scrollbar-track-transparent scrollbar-thumb-primary">
                         <div className="w-1/6" />

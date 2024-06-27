@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import axios from "axios";
 import { FC, useState } from "react";
+import MovieCard from "../ui/MovieCard";
 import { Button } from "../ui/button";
 import { CardTitle } from "../ui/card";
-import { Skeleton } from "../ui/skeleton";
-import MovieCard from "../ui/MovieCard";
+import TrendingListSkeleton from "./Skeletons/TrendingListSkeleton";
 
 interface TrendingListProps {
     MovieGenre: any
@@ -27,11 +27,7 @@ const TrendingList: FC<TrendingListProps> = ({ MovieGenre, TVGenre }) => {
 
     if (TrendingPending) {
         return (
-            <div className="flex gap-4 p-4">
-                <Skeleton className="w-56 h-72" />
-                <Skeleton className="w-56 h-72" />
-                <Skeleton className="w-56 h-72" />
-            </div>
+            <TrendingListSkeleton />
         );
     }
 
@@ -39,12 +35,12 @@ const TrendingList: FC<TrendingListProps> = ({ MovieGenre, TVGenre }) => {
         <div className="flex flex-col gap-8 p-4 rounded-lg">
             <div className="flex items-center gap-8">
                 <CardTitle>Trending</CardTitle>
-                <div className="flex overflow-hidden rounded-lg">
+                <div className="flex overflow-hidden rounded-full bg-secondary">
                     {["day", "week"].map((window) => (
                         <Button
                             key={window}
                             variant={timeWindow === window ? "default" : "ghost"}
-                            className="rounded-none"
+                            className="rounded-full"
                             onClick={() => {
                                 setTimeWindow(window);
                                 setTimeout(() => {
@@ -61,7 +57,7 @@ const TrendingList: FC<TrendingListProps> = ({ MovieGenre, TVGenre }) => {
             </div>
             <div className="flex gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                 {Trending?.results.map((item: any) => (
-                    <MovieCard key={item.id} item={item} mediaType={item.media_type} MovieGenre={MovieGenre} TVGenre={TVGenre}/>
+                    <MovieCard key={item.id} item={item} mediaType={item.media_type} MovieGenre={MovieGenre} TVGenre={TVGenre} />
                 ))}
             </div>
         </div>

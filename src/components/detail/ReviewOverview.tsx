@@ -26,6 +26,8 @@ const ReviewOverview: FC<ReviewOverviewProps> = ({ reviews, title }) => {
         )
     }
 
+    console.log(reviews)
+
     const LatestReview = reviews.results.length > 0 ? reviews.results.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0] : []
     const paragraphs: string[] = LatestReview ? LatestReview.content.split('\r\n') : [];
     const maxWords: number = 75;
@@ -91,7 +93,7 @@ const ReviewOverview: FC<ReviewOverviewProps> = ({ reviews, title }) => {
                                 {index === array.length - 1 && wordCount >= maxWords && (
                                     <span>
                                         {'...'} {/* Add a space before the "Read more" link */}
-                                        <Link to={``} className="underline text-primary hover:text-primary/50">Read more</Link>
+                                        <Link to={`/review/${reviews.results[0].id}`} className="underline text-primary hover:text-primary/50">Read more</Link>
                                     </span>
                                 )}
                             </div>
