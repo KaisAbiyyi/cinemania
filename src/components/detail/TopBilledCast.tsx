@@ -1,10 +1,10 @@
-import { FC, useMemo, useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { useQuery } from "@tanstack/react-query";
 import axios from "axios";
-import { Skeleton } from "../ui/skeleton";
-import { Link, useLocation } from "react-router-dom";
 import { ChevronRight, User } from "lucide-react";
+import { FC, useMemo, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import TopBilledCastSkeleton from "./Skeletons/TopBilledCastSkeleton";
 
 interface TopBilledCastProps {
     detailType: string;
@@ -34,20 +34,13 @@ const TopBilledCast: FC<TopBilledCastProps> = ({ detailType, id }) => {
     };
 
     if (CreditPending) return (
-        <div className="z-20 flex flex-col gap-8 p-4 mx-16 -mt-16 rounded-lg bg-background">
-            <CardTitle className="text-lg">Top Billed Cast</CardTitle>
-            <div className="flex gap-4">
-                <Skeleton className="w-52 h-96" />
-                <Skeleton className="w-52 h-96" />
-                <Skeleton className="w-52 h-96" />
-            </div>
-        </div>
+        <TopBilledCastSkeleton pathName={pathname}/>
     );
 
     return (
         <Card className="flex flex-col gap-8 p-8 border-none bg-background rounded-3xl">
             <CardHeader className="flex flex-row items-center justify-between p-0">
-                <CardTitle className="text-lg">Top Billed Cast</CardTitle>
+                <CardTitle className="text-2xl uppercase">Cast</CardTitle>
                 <Link to={`${pathname}/cast`} className="p-2 px-4 text-base font-semibold duration-200 ease-out rounded-full hover:text-primary-foreground hover:bg-primary">
                     View full cast and crew
                 </Link>

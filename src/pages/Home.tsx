@@ -1,6 +1,6 @@
-import HeroSegment from '@/components/home/Hero';
+import TrendingSliderSkeleton from '@/components/Trending/Skeletons/TrendingSliderSkeleton';
+import TrendingSlider from '@/components/Trending/TrendingSlider';
 import PopularList from '@/components/home/PopularList';
-import TrendingList from '@/components/home/TrendingList';
 import { useQuery } from '@tanstack/react-query';
 import axios from 'axios';
 import { Helmet } from 'react-helmet';
@@ -15,6 +15,16 @@ const HomePage = () => {
             return data
         }
     })
+
+    const { data: Trending, isPending: TrendingPending } = useQuery({
+        queryKey: ["getTrendingHomepage"],
+        queryFn: async () => {
+            const { data } = await axios.get(`https://api.themoviedb.org/3/trending/all/day`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            return data;
+        }
+    });
     const { data: TVGenre, isPending: TVGenrePending } = useQuery({
         queryKey: ['geTVGenre'],
         queryFn: async () => {
@@ -28,11 +38,14 @@ const HomePage = () => {
             <title>Cinemania</title>
         </Helmet>
         <div className="flex flex-col w-full gap-16">
-            <HeroSegment />
+            {/* <HeroSegment /> */}
             {!MovieGenrePending && !TVGenrePending &&
                 <>
-                    <TrendingList MovieGenre={MovieGenre.genres} TVGenre={TVGenre.genres} />
-                    <PopularList  MovieGenre={MovieGenre.genres} TVGenre={TVGenre.genres}/>
+                    {TrendingPending ? <TrendingSliderSkeleton /> :
+                        <TrendingSlider data={Trending} />
+                    }
+                    {/* <TrendingList MovieGenre={MovieGenre.genres} TVGenre={TVGenre.genres} /> */}
+                    <PopularList MovieGenre={MovieGenre.genres} TVGenre={TVGenre.genres} />
                 </>
             }
         </div>
