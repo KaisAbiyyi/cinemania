@@ -56,8 +56,8 @@ const SlideInfo: FC<SlideInfoProps> = ({ id, detailType }) => {
     }
 
     return (
-        <div className="flex flex-col justify-center gap-6">
-            <h1 className="flex gap-2 text-2xl font-bold lg:text-5xl text-primary lg:text-primary-foreground">
+        <div className="flex flex-col justify-end gap-6">
+            <h1 className="flex gap-2 text-2xl font-bold lg:text-5xl text-primary-foreground">
                 {Info.title ?? Info.original_title ?? Info.name}
             </h1>
             <div className="flex flex-col gap-4 lg:items-center lg:flex-row">

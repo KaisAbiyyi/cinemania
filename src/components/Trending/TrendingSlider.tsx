@@ -1,11 +1,11 @@
 import Autoplay from "embla-carousel-autoplay";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { FC, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { Button, buttonVariants } from "../ui/button";
 import { Carousel, CarouselApi, CarouselContent, CarouselItem } from "../ui/carousel";
 import CarouselImage from "./TrendingCarouselImage";
 import SlideInfo from "./TrendingSlideInfo";
-import { Link } from "react-router-dom";
-import { buttonVariants } from "../ui/button";
-import { ChevronRight } from "lucide-react";
 
 interface TrendingSliderProps {
     data: any;
@@ -38,6 +38,7 @@ const TrendingSlider: FC<TrendingSliderProps> = ({ data }) => {
             const currentIndex = api.selectedScrollSnap();
             const lastIndex = sliderData.length - 1;
 
+
             if (index === 0 && currentIndex === lastIndex) {
                 api.scrollNext();
             } else if (index === lastIndex && currentIndex === 0) {
@@ -60,15 +61,22 @@ const TrendingSlider: FC<TrendingSliderProps> = ({ data }) => {
                 onLoad={handleImageLoad}
                 onLoadStart={() => setLoading(true)}
             />
-            <div className="absolute inset-0 flex flex-col justify-between w-full h-full gap-24 p-16 lg:flex-row bg-gradient-to-t from-background to-primary/30">
+            <div className="absolute inset-0 flex flex-col justify-end w-full h-full gap-4 p-4 lg:p-16 lg:gap-24 lg:justify-between lg:flex-row bg-gradient-to-t from-background via-background/70 to-transparent/50">
+                <div className="flex justify-between lg:hidden">
+                    <Button size="icon" variant="ghost" className="hover:bg-secondary/50" onClick={() => { console.log("Prev button clicked"); api && api.scrollPrev(); }}><ChevronLeft /></Button>
+                    <Button size="icon" variant="ghost" className="hover:bg-secondary/50" onClick={() => { console.log("Next button clicked"); api && api.scrollNext(); }}><ChevronRight /></Button>
+                </div>
                 <SlideInfo id={sliderData[activeIndex].id} detailType={sliderData[activeIndex].media_type} />
                 <div className="flex flex-col items-end justify-between gap-8">
-                    <Link to={'/trending'} className={buttonVariants({ variant: "secondary", className: "!rounded-full" })}>More <ChevronRight size={16} /></Link>
-                    <Carousel className="!w-full" setApi={setApi} opts={{ loop: true }} plugins={[Autoplay({ delay: 10000, stopOnInteraction: true })]}>
-                        <CarouselContent>
+                    <Link to={'/trending'} className={buttonVariants({ variant: "ghost", className: "!rounded-full !font-bold order-last lg:order-first" })}>MORE <ChevronRight size={16} /></Link>
+                    <Carousel className="!w-full h-0 lg:h-fit p-0" setApi={setApi} opts={{ loop: true }} plugins={[Autoplay({ delay: 10000, stopOnInteraction: true })]}>
+                        <CarouselContent className="h-0 p-0 lg:p-2 lg:h-fit">
                             {sliderData.map((item: any, index: number) => (
-                                <CarouselItem key={item.id} className={`basis-1/3 !w-20 ${activeIndex !== index ? "opacity-50 cursor-pointer" : "opacity-100"}`} onClick={() => handleItemClick(index)}>
-                                    <CarouselImage src={`${imgUrl}/w500/${item.poster_path}`} />
+                                <CarouselItem
+                                    key={item.id}
+                                    className={`basis-1/3 lg:block h-0 lg:h-fit cursor-pointer lg:!w-20 ${activeIndex !== index ? "opacity-50" : "opacity-100"}`}
+                                    onClick={() => handleItemClick(index)}>
+                                    <CarouselImage className={`${activeIndex === index ? "outline transition-none outline-offset-2 outline-2 outline-primary" : ''}`} src={`${imgUrl}/w500/${item.poster_path}`} />
                                 </CarouselItem>
                             ))}
                         </CarouselContent>
