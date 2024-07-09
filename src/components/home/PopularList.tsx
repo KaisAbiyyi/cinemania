@@ -44,7 +44,7 @@ const PopularList: FC<PopularListProps> = ({ MovieGenre, TVGenre }) => {
             <CardTitle>Popular Movies</CardTitle>
             <div className="flex items-start gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                 {Popular.results.map((item: any) => (
-                    <MovieCard item={item} key={item.id} mediaType="movie" MovieGenre={MovieGenre} TVGenre={TVGenre} />
+                    <MovieCard item={item} key={item.id} mediaType="movie"  MovieGenre={MovieGenre} TVGenre={TVGenre} />
                 ))}
             </div>
         </div>
