@@ -11,22 +11,18 @@ const Layout = ({ children }: LayoutProps) => {
     const queryClient = new QueryClient()
 
     return (
-        <html lang="en">
-            <body className="dark scroll-smooth">
-                <QueryClientProvider client={queryClient}>
-                    <div className="flex h-screen overflow-y-scroll scrollbar-thin scrollbar-track-transparent scrollbar-thumb-primary">
-                        <div className="w-1/6" />
-                        <Sidebar />
-                        <div className="flex flex-col flex-grow w-5/6 ">
-                            <Navbar />
-                            <div className="flex-grow ">
-                                {children}
-                            </div>
-                        </div>
+        <QueryClientProvider client={queryClient}>
+            <div className="flex h-screen overflow-y-scroll dark scroll-smooth scrollbar-thin scrollbar-track-transparent scrollbar-thumb-primary">
+                <div className="w-1/6" />
+                <Sidebar />
+                <div className="flex flex-col flex-grow w-5/6 ">
+                    <Navbar />
+                    <div className="flex-grow ">
+                        {children}
                     </div>
-                </QueryClientProvider>
-            </body>
-        </html>
+                </div>
+            </div>
+        </QueryClientProvider>
     )
 }
 

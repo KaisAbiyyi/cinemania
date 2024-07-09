@@ -1,4 +1,4 @@
-import { Clapperboard, Compass, Heart, List, TrendingUp } from "lucide-react";
+import { Clapperboard, Compass, Heart, List, TrendingUp, Tv, User } from "lucide-react";
 import { FC } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { buttonVariants } from "./ui/button";
@@ -8,7 +8,7 @@ import { Separator } from "./ui/separator";
 const Sidebar: FC = () => {
     const route = useLocation()
     return (
-        <div className="fixed top-0 bottom-0 flex flex-col w-1/6 gap-6 border-r-2 border-primary/25">
+        <div className="fixed top-0 bottom-0 z-50 flex flex-col w-1/6 gap-6 border-r-2 border-primary/25">
             <Link to={"/"} className={buttonVariants({ variant: "ghost", size: "lg", className: "rounded-none" })}>
                 <span className="hidden duration-200 ease-out md:block">cinemania</span>
                 <span className="block duration-200 ease-out md:hidden">ci</span>
@@ -30,11 +30,23 @@ const Sidebar: FC = () => {
                             <TrendingUp className="size-6 md:size-4" />
                             <span className="hidden duration-200 ease-out md:block">Trending</span>
                         </Link>
-                        <Link to="/genres" className={route.pathname === "/genres" ?
+                        <Link to="/movie" className={route.pathname.startsWith("/movie")?
                             buttonVariants({ className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" }) :
                             buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" })}>
                             <Clapperboard className="size-6 md:size-4" />
-                            <span className="hidden duration-200 ease-out md:block">Genres</span>
+                            <span className="hidden duration-200 ease-out md:block">Movies</span>
+                        </Link>
+                        <Link to="/tv" className={route.pathname.startsWith("/tv") ?
+                            buttonVariants({ className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" }) :
+                            buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" })}>
+                            <Tv className="size-6 md:size-4" />
+                            <span className="hidden duration-200 ease-out md:block">TV Shows</span>
+                        </Link>
+                        <Link to="/people" className={route.pathname.startsWith("/people") ?
+                            buttonVariants({ className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" }) :
+                            buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" })}>
+                            <User className="size-6 md:size-4" />
+                            <span className="hidden duration-200 ease-out md:block">People</span>
                         </Link>
                     </div>
                 </div>

@@ -57,9 +57,12 @@ const SlideInfo: FC<SlideInfoProps> = ({ id, detailType }) => {
 
     return (
         <div className="flex flex-col justify-end gap-6">
-            <h1 className="flex gap-2 text-2xl font-bold lg:text-5xl text-primary-foreground">
-                {Info.title ?? Info.original_title ?? Info.name}
-            </h1>
+            <div className="flex flex-col gap-2 text-lg font-thin">
+                <h3>TRENDING MOVIES</h3>
+                <h1 className="flex gap-2 text-2xl font-bold lg:text-5xl text-primary-foreground">
+                    {Info.title ?? Info.original_title ?? Info.name}
+                </h1>
+            </div>
             <div className="flex flex-col gap-4 lg:items-center lg:flex-row">
                 <div className="flex items-center gap-2 lg:order-last">
                     {Info.genres.map((item: any) => (

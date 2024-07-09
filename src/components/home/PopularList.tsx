@@ -28,7 +28,6 @@ const PopularList: FC<PopularListProps> = ({ MovieGenre, TVGenre }) => {
             <div className="flex flex-col gap-8 p-4">
                 <div className="flex items-center gap-8">
                     <CardTitle>Popular Movies</CardTitle>
-
                 </div>
                 <div className="flex gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                     <Skeleton className="w-64 h-96" />
@@ -41,7 +40,7 @@ const PopularList: FC<PopularListProps> = ({ MovieGenre, TVGenre }) => {
         )
     }
     return (
-        <div className="flex flex-col gap-8 p-4 rounded-lg">
+        <div className="flex flex-col gap-8 p-8 rounded-lg">
             <CardTitle>Popular Movies</CardTitle>
             <div className="flex items-start gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                 {Popular.results.map((item: any) => (

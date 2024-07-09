@@ -26,6 +26,7 @@ const TrendingSlider: FC<TrendingSliderProps> = ({ data }) => {
 
         api.on("select", () => {
             setActiveIndex(api.selectedScrollSnap());
+            setLoading(true)
         });
     }, [api]);
 
@@ -61,7 +62,7 @@ const TrendingSlider: FC<TrendingSliderProps> = ({ data }) => {
                 onLoad={handleImageLoad}
                 onLoadStart={() => setLoading(true)}
             />
-            <div className="absolute inset-0 flex flex-col justify-end w-full h-full gap-4 p-4 lg:p-16 lg:gap-24 lg:justify-between lg:flex-row bg-gradient-to-t from-background via-background/70 to-transparent/50">
+            <div className="absolute inset-0 flex flex-col justify-end w-full h-full gap-4 p-4 lg:p-8 lg:gap-24 lg:justify-between lg:flex-row bg-gradient-to-t from-background via-background/70 to-transparent/50">
                 <div className="flex justify-between lg:hidden">
                     <Button size="icon" variant="ghost" className="hover:bg-secondary/50" onClick={() => { console.log("Prev button clicked"); api && api.scrollPrev(); }}><ChevronLeft /></Button>
                     <Button size="icon" variant="ghost" className="hover:bg-secondary/50" onClick={() => { console.log("Next button clicked"); api && api.scrollNext(); }}><ChevronRight /></Button>
