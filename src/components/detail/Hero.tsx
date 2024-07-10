@@ -34,12 +34,15 @@ const DetailHeroSegment: FC<DetailHeroSegmentProps> = ({ detail, detailType, ori
     if (!ReleaseDatesPending) {
         if (detailType === "movie") {
             const countryData = ReleaseDates.results.find((item: any) => item.iso_3166_1 === originCountry);
-            certification = countryData
-                ? countryData.release_dates.find((item: any) => item.certification !== '').certification
-                : ReleaseDates.results[0].release_dates[0].certification;
+            const findCertificate = countryData.release_dates.find((item: any) => item.certification !== "")
+            if (findCertificate) {
+                certification = findCertificate.certification
+            } else {
+                certification = "NR"
+            }
         } else {
             const countryData = ReleaseDates.results.find((item: any) => item.iso_3166_1 === originCountry);
-            certification = countryData ? countryData.rating : ReleaseDates.results[0].rating;
+            certification = countryData ? (countryData.rating ?? "NR") : "NR";
         }
     }
 

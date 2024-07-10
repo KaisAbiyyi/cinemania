@@ -30,19 +30,19 @@ const Sidebar: FC = () => {
                             <TrendingUp className="size-6 md:size-4" />
                             <span className="hidden duration-200 ease-out md:block">Trending</span>
                         </Link>
-                        <Link to="/movie" className={route.pathname.startsWith("/movie")?
+                        <Link to="/movie" className={route.pathname === "/movie" ?
                             buttonVariants({ className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" }) :
                             buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" })}>
                             <Clapperboard className="size-6 md:size-4" />
                             <span className="hidden duration-200 ease-out md:block">Movies</span>
                         </Link>
-                        <Link to="/tv" className={route.pathname.startsWith("/tv") ?
+                        <Link to="/tv" className={route.pathname === "/tv" ?
                             buttonVariants({ className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" }) :
                             buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" })}>
                             <Tv className="size-6 md:size-4" />
                             <span className="hidden duration-200 ease-out md:block">TV Shows</span>
                         </Link>
-                        <Link to="/people" className={route.pathname.startsWith("/people") ?
+                        <Link to="/people" className={route.pathname === "/people" ?
                             buttonVariants({ className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" }) :
                             buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" })}>
                             <User className="size-6 md:size-4" />

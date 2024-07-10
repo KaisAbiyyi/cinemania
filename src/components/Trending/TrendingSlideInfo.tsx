@@ -29,7 +29,7 @@ const SlideInfo: FC<SlideInfoProps> = ({ id, detailType }) => {
 
     if (InfoPending) {
         return (
-            <div className="flex flex-col justify-center gap-6">
+            <div className="flex flex-col justify-end gap-6">
                 <Skeleton className="h-16 w-96" />
                 <div className="flex flex-col gap-2 lg:items-center lg:flex-row">
                     <div className="flex items-center gap-2">

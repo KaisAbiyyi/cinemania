@@ -12,16 +12,29 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import axios from "axios";
 import { FC, useCallback, useRef, useState } from "react";
 
-const TrendingPage: FC = () => {
+const MoviePage: FC = () => {
     const token = import.meta.env.VITE_TMDB_API_RAT;
-    const [type, setType] = useState<string>("all");
-    const [timeWindow, setTimeWindow] = useState<string>("day");
+    const [sortBy, setSortBy] = useState<string>("popularity.desc");
 
     const fetchTrending = async ({ pageParam = 1 }) => {
-        const { data } = await axios.get(`https://api.themoviedb.org/3/trending/${type}/${timeWindow}`, {
-            headers: { Authorization: `Bearer ${token}` },
-            params: { page: pageParam }
-        });
+        const params: Record<string, any> = {
+            page: pageParam,
+            include_video: false,
+            include_adult: false,
+            sort_by: sortBy,
+        };
+
+        if (sortBy === "primary_release_date.desc") {
+            params['release_date.lte'] = new Date().toISOString();
+        }
+
+        const { data } = await axios.get(
+            "https://api.themoviedb.org/3/discover/movie?language=en-US",
+            {
+                headers: { Authorization: `Bearer ${token}` },
+                params,
+            }
+        );
         return data;
     };
 
@@ -32,7 +45,7 @@ const TrendingPage: FC = () => {
         isFetchingNextPage,
         isLoading: TrendingPending,
     } = useInfiniteQuery({
-        queryKey: ['getTrending', timeWindow, type],
+        queryKey: ['getTrending', sortBy],
         queryFn: fetchTrending,
         initialPageParam: 1,
         getNextPageParam: (lastPage, allPages) => {
@@ -49,24 +62,11 @@ const TrendingPage: FC = () => {
         }
     });
 
-    const { data: TVGenre, isLoading: TVGenrePending } = useQuery({
-        queryKey: ['getTVGenre'],
-        queryFn: async () => {
-            const { data } = await axios.get("https://api.themoviedb.org/3/genre/tv/list", { headers: { Authorization: `Bearer ${token}` } });
-            return data;
-        }
-    });
-
     const observerElem = useRef<HTMLDivElement | null>(null);
 
-    const typeHandler = (e: string) => {
-        setType(e);
+    const sortByHandler = (e: string) => {
+        setSortBy(e);
     };
-
-    const timeWindowHandler = (e: string) => {
-        setTimeWindow(e);
-    };
-
     const observer = useRef<IntersectionObserver>();
     const lastTrendingElementRef = useCallback((node: HTMLDivElement) => {
         if (TrendingPending || isFetchingNextPage) return;
@@ -81,30 +81,26 @@ const TrendingPage: FC = () => {
 
     return (
         <div className="flex flex-col gap-8 px-8 pb-8">
-            <CardTitle>{timeWindow === "day" ? "Daily " : "Weekly "}Trending</CardTitle>
+            <CardTitle>Movies</CardTitle>
             <div className="flex gap-4">
-                <Select onValueChange={typeHandler}>
+                <Select onValueChange={sortByHandler}>
                     <SelectTrigger className="w-[180px]" title="Filter">
-                        <SelectValue placeholder={type.charAt(0).toUpperCase() + type.slice(1)} />
+                        <SelectValue placeholder="Sort by" />
                     </SelectTrigger>
                     <SelectContent>
-                        <SelectItem value="all">All</SelectItem>
-                        <SelectItem value="movie">Movies</SelectItem>
-                        <SelectItem value="tv">TV</SelectItem>
-                    </SelectContent>
-                </Select>
-                <Select onValueChange={timeWindowHandler}>
-                    <SelectTrigger className="w-[180px]" title="Time Range">
-                        <SelectValue placeholder={timeWindow.charAt(0).toUpperCase() + timeWindow.slice(1)} />
-                    </SelectTrigger>
-                    <SelectContent>
-                        <SelectItem value="day">Day</SelectItem>
-                        <SelectItem value="week">Week</SelectItem>
+                        <SelectItem value="popularity.desc">Popularity DESC</SelectItem>
+                        <SelectItem value="popularity.asc">Popularity ASC</SelectItem>
+                        <SelectItem value="vote_average.desc">Rating DESC</SelectItem>
+                        <SelectItem value="vote_average.asc">Rating ASC</SelectItem>
+                        <SelectItem value="primary_release_date.desc">Release Date DESC</SelectItem>
+                        <SelectItem value="primary_release_date.asc">Release Date ASC</SelectItem>
+                        <SelectItem value="title.asc">Title (A-Z)</SelectItem>
+                        <SelectItem value="title.desc">Title (Z-A)</SelectItem>
                     </SelectContent>
                 </Select>
             </div>
             <div className="grid grid-cols-5 gap-4">
-                {(TrendingPending || MovieGenrePending || TVGenrePending) ? <TrendingPageSkeleton /> :
+                {(TrendingPending || MovieGenrePending) ? <MoviePageSkeleton /> :
                     Trending?.pages.map((page) =>
                         page.results.map((item: any, index: number) => {
                             if (page.results.length === index + 1) {
@@ -113,8 +109,7 @@ const TrendingPage: FC = () => {
                                         <MovieCard
                                             MovieGenre={MovieGenre.genres}
                                             isGrid
-                                            mediaType={item.media_type}
-                                            TVGenre={TVGenre.genres}
+                                            mediaType={"movie"}
                                             item={item}
                                             key={item.id}
                                         />
@@ -125,8 +120,7 @@ const TrendingPage: FC = () => {
                                     <MovieCard
                                         MovieGenre={MovieGenre.genres}
                                         isGrid
-                                        mediaType={item.media_type}
-                                        TVGenre={TVGenre.genres}
+                                        mediaType={"movie"}
                                         item={item}
                                         key={item.id}
                                     />
@@ -134,14 +128,14 @@ const TrendingPage: FC = () => {
                             }
                         })
                     )}
-                {isFetchingNextPage && <TrendingPageSkeleton />}
+                {isFetchingNextPage && <MoviePageSkeleton />}
             </div>
             <div ref={observerElem} />
         </div>
     );
 }
 
-const TrendingPageSkeleton = () => {
+const MoviePageSkeleton = () => {
     return (
         <>
             <Skeleton className="w-full h-96" />
@@ -153,4 +147,4 @@ const TrendingPageSkeleton = () => {
     )
 }
 
-export default TrendingPage;
+export default MoviePage;
