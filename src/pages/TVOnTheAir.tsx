@@ -10,11 +10,11 @@ import { FC, useCallback, useRef, useState } from "react";
 import { Helmet } from "react-helmet";
 import { Link } from "react-router-dom";
 
-const MoviePage: FC = () => {
+const TvOnTheAir: FC = () => {
     const token = import.meta.env.VITE_TMDB_API_RAT;
     const [sortBy, setSortBy] = useState<string>("popularity.desc");
-    const [FromReleaseDate, setFromReleaseDate] = useState<Date>();
-    const [ToReleaseDate, setToReleaseDate] = useState<Date>();
+    const [FromReleaseDate, setFromReleaseDate] = useState<Date>(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
+    const [ToReleaseDate, setToReleaseDate] = useState<Date>(new Date());
     const [selectedGenres, setSelectedGenres] = useState<Array<string>>([]);
     const [userScore, setUserScore] = useState<Array<number>>([0, 10]);
     const [minimumUserVotes, setMinimumUserVotes] = useState<Array<number>>([0]);
@@ -26,20 +26,15 @@ const MoviePage: FC = () => {
             include_video: false,
             include_adult: false,
             sort_by: sortBy,
-            "release_date.gte": FromReleaseDate?.toISOString(),
-            "release_date.lte": ToReleaseDate?.toISOString(),
+            "air_date.gte": FromReleaseDate?.toISOString(),
+            "air_date.lte": ToReleaseDate?.toISOString(),
             "vote_average.gte": userScore[0],
             "vote_average.lte": userScore[1],
             "vote_count.gte": minimumUserVotes[0],
             with_genres: selectedGenres.join(","),
         };
-
-        if (sortBy === "primary_release_date.desc") {
-            params['release_date.lte'] = new Date().toISOString();
-        }
-
         const { data } = await axios.get(
-            "https://api.themoviedb.org/3/discover/movie",
+            "https://api.themoviedb.org/3/discover/tv?language=en-US",
             {
                 headers: { Authorization: `Bearer ${token}` },
                 params,
@@ -56,7 +51,7 @@ const MoviePage: FC = () => {
         isLoading: TrendingPending,
         error: TrendingError,
     } = useInfiniteQuery({
-        queryKey: ['getMovies', sortBy, FromReleaseDate, ToReleaseDate, selectedGenres, userScore, minimumUserVotes, runtime],
+        queryKey: ['getTvOnTheAir'],
         queryFn: fetchTrending,
         initialPageParam: 1,
         getNextPageParam: (lastPage, allPages) => {
@@ -64,10 +59,10 @@ const MoviePage: FC = () => {
             return lastPage.page < lastPage.total_pages ? nextPage : undefined;
         }, // Disable automatic refetching
     });
-    const { data: MovieGenre, isLoading: MovieGenrePending, error: MovieGenreError } = useQuery({
-        queryKey: ['getMovieGenre'],
+    const { data: TVGenre, isLoading: TVGenrePending, error: TVGenreError } = useQuery({
+        queryKey: ['getTVGenre'],
         queryFn: async () => {
-            const { data } = await axios.get("https://api.themoviedb.org/3/genre/movie/list", { headers: { Authorization: `Bearer ${token}` } });
+            const { data } = await axios.get("https://api.themoviedb.org/3/genre/tv/list", { headers: { Authorization: `Bearer ${token}` } });
             return data;
         }
     });
@@ -88,27 +83,25 @@ const MoviePage: FC = () => {
     return (
         <>
             <Helmet>
-                <title>Movies | Cinemania</title>
+                <title>Currently Airing TV Shows | Cinemania</title>
             </Helmet>
             <div className="flex flex-col gap-8 px-8 pb-8">
-                <CardTitle>Movies</CardTitle>
+                <CardTitle>Currently Airing TV Shows</CardTitle>
                 <div className="flex flex-col gap-4">
                     <div className="flex gap-4">
-                        <Link to="/movie/now-playing" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
-                            <span className="mr-3">Now Playing</span>
+                        <Link to="/tv/airing-today" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
+                            <span className="mr-3">Airing Today</span>
                             <ChevronRight size={18} />
                         </Link>
-                        <Link to="/movie/now-playing" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
-                            <span className="mr-3">Upcoming</span>
-                            <ChevronRight size={18} />
+                        <Link to="/tv/on-the-air" className={buttonVariants({ variant: "default", className: "!justify-between" })}>
+                            <span className="mr-3">On TV</span>
                         </Link>
-                        <Link to="/movie/now-playing" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
+                        <Link to="/tv/top-rated" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
                             <span className="mr-3">Top Rated</span>
                             <ChevronRight size={18} />
                         </Link>
                     </div>
                     <Filter
-                        isMovie
                         sortBy={sortBy}
                         setSortBy={setSortBy}
                         FromReleaseDate={FromReleaseDate}
@@ -117,8 +110,8 @@ const MoviePage: FC = () => {
                         setToReleaseDate={setToReleaseDate}
                         selectedGenres={selectedGenres}
                         setSelectedGenres={setSelectedGenres}
-                        Genre={MovieGenre}
-                        GenrePending={MovieGenrePending}
+                        Genre={TVGenre}
+                        GenrePending={TVGenrePending}
                         userScore={userScore}
                         setUserScore={setUserScore}
                         minimumUserVotes={minimumUserVotes}
@@ -128,16 +121,16 @@ const MoviePage: FC = () => {
                     />
                 </div>
                 <div className="grid grid-cols-5 gap-4">
-                    {(TrendingPending || MovieGenrePending) ? <MoviePageSkeleton /> :
+                    {(TrendingPending || TVGenrePending) ? <TvOnTheAirSkeleton /> :
                         Trending?.pages.map((page) =>
                             page.results.map((item: any, index: number) => {
                                 if (page.results.length === index + 1) {
                                     return (
                                         <div ref={lastTrendingElementRef} key={item.id}>
                                             <MovieCard
-                                                MovieGenre={MovieGenre.genres}
+                                                TVGenre={TVGenre.genres}
                                                 isGrid
-                                                mediaType={"movie"}
+                                                mediaType={"tv"}
                                                 item={item}
                                                 key={item.id}
                                             />
@@ -146,9 +139,9 @@ const MoviePage: FC = () => {
                                 } else {
                                     return (
                                         <MovieCard
-                                            MovieGenre={MovieGenre.genres}
+                                            TVGenre={TVGenre.genres}
                                             isGrid
-                                            mediaType={"movie"}
+                                            mediaType={"tv"}
                                             item={item}
                                             key={item.id}
                                         />
@@ -156,17 +149,17 @@ const MoviePage: FC = () => {
                                 }
                             })
                         )}
-                    {isFetchingNextPage && <MoviePageSkeleton />}
+                    {isFetchingNextPage && <TvOnTheAirSkeleton />}
                 </div>
                 <div ref={observerElem} />
                 {TrendingError && <div>Error loading trending movies. Please try again later.</div>}
-                {MovieGenreError && <div>Error loading movie genres. Please try again later.</div>}
+                {TVGenreError && <div>Error loading movie genres. Please try again later.</div>}
             </div>
         </>
     );
 }
 
-const MoviePageSkeleton = () => {
+const TvOnTheAirSkeleton = () => {
     return (
         <>
             <Skeleton className="w-full h-96" />
@@ -178,4 +171,4 @@ const MoviePageSkeleton = () => {
     )
 }
 
-export default MoviePage;
+export default TvOnTheAir;

@@ -1,10 +1,14 @@
+import { buttonVariants } from "@/components/ui/button";
+import { CardTitle } from "@/components/ui/card";
 import Filter from "@/components/ui/Filter";
 import MovieCard from "@/components/ui/MovieCard";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import axios from "axios";
+import { ChevronRight } from "lucide-react";
 import { FC, useCallback, useRef, useState } from "react";
 import { Helmet } from "react-helmet";
+import { Link } from "react-router-dom";
 
 const TVPage: FC = () => {
     const token = import.meta.env.VITE_TMDB_API_RAT;
@@ -52,7 +56,7 @@ const TVPage: FC = () => {
         isLoading: TrendingPending,
         error: TrendingError,
     } = useInfiniteQuery({
-        queryKey: ['getTrending', sortBy, FromReleaseDate, ToReleaseDate, selectedGenres, userScore, minimumUserVotes, runtime],
+        queryKey: ['getTVShows', sortBy, FromReleaseDate, ToReleaseDate, selectedGenres, userScore, minimumUserVotes, runtime],
         queryFn: fetchTrending,
         initialPageParam: 1,
         getNextPageParam: (lastPage, allPages) => {
@@ -60,8 +64,8 @@ const TVPage: FC = () => {
             return lastPage.page < lastPage.total_pages ? nextPage : undefined;
         }, // Disable automatic refetching
     });
-    const { data: MovieGenre, isLoading: MovieGenrePending, error: MovieGenreError } = useQuery({
-        queryKey: ['getMovieGenre'],
+    const { data: TVGenre, isLoading: TVGenrePending, error: TVGenreError } = useQuery({
+        queryKey: ['getTVGenre'],
         queryFn: async () => {
             const { data } = await axios.get("https://api.themoviedb.org/3/genre/tv/list", { headers: { Authorization: `Bearer ${token}` } });
             return data;
@@ -84,38 +88,55 @@ const TVPage: FC = () => {
     return (
         <>
             <Helmet>
-                <title>Movies | Cinemania</title>
+                <title>TV Shows | Cinemania</title>
             </Helmet>
             <div className="flex flex-col gap-8 px-8 pb-8">
-                <Filter
-                    sortBy={sortBy}
-                    setSortBy={setSortBy}
-                    FromReleaseDate={FromReleaseDate}
-                    setFromReleaseDate={setFromReleaseDate}
-                    ToReleaseDate={ToReleaseDate}
-                    setToReleaseDate={setToReleaseDate}
-                    selectedGenres={selectedGenres}
-                    setSelectedGenres={setSelectedGenres}
-                    Genre={MovieGenre}
-                    GenrePending={MovieGenrePending}
-                    userScore={userScore}
-                    setUserScore={setUserScore}
-                    minimumUserVotes={minimumUserVotes}
-                    setMinimumUserVotes={setMinimumUserVotes}
-                    runtime={runtime}
-                    setRuntime={setRuntime}
-                />
+                <CardTitle>TV Shows</CardTitle>
+                <div className="flex flex-col gap-4">
+                    <div className="flex gap-4">
+                        <Link to="/tv/airing-today" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
+                            <span className="mr-3">Airing Today</span>
+                            <ChevronRight size={18} />
+                        </Link>
+                        <Link to="/tv/on-tv" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
+                            <span className="mr-3">On TV</span>
+                            <ChevronRight size={18} />
+                        </Link>
+                        <Link to="/tv/top-rated" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
+                            <span className="mr-3">Top Rated</span>
+                            <ChevronRight size={18} />
+                        </Link>
+                    </div>
+                    <Filter
+                        sortBy={sortBy}
+                        setSortBy={setSortBy}
+                        FromReleaseDate={FromReleaseDate}
+                        setFromReleaseDate={setFromReleaseDate}
+                        ToReleaseDate={ToReleaseDate}
+                        setToReleaseDate={setToReleaseDate}
+                        selectedGenres={selectedGenres}
+                        setSelectedGenres={setSelectedGenres}
+                        Genre={TVGenre}
+                        GenrePending={TVGenrePending}
+                        userScore={userScore}
+                        setUserScore={setUserScore}
+                        minimumUserVotes={minimumUserVotes}
+                        setMinimumUserVotes={setMinimumUserVotes}
+                        runtime={runtime}
+                        setRuntime={setRuntime}
+                    />
+                </div>
                 <div className="grid grid-cols-5 gap-4">
-                    {(TrendingPending || MovieGenrePending) ? <TVPageSkeleton /> :
+                    {(TrendingPending || TVGenrePending) ? <TVPageSkeleton /> :
                         Trending?.pages.map((page) =>
                             page.results.map((item: any, index: number) => {
                                 if (page.results.length === index + 1) {
                                     return (
                                         <div ref={lastTrendingElementRef} key={item.id}>
                                             <MovieCard
-                                                MovieGenre={MovieGenre.genres}
+                                                TVGenre={TVGenre.genres}
                                                 isGrid
-                                                mediaType={"movie"}
+                                                mediaType={"tv"}
                                                 item={item}
                                                 key={item.id}
                                             />
@@ -124,9 +145,9 @@ const TVPage: FC = () => {
                                 } else {
                                     return (
                                         <MovieCard
-                                            MovieGenre={MovieGenre.genres}
+                                            TVGenre={TVGenre.genres}
                                             isGrid
-                                            mediaType={"movie"}
+                                            mediaType={"tv"}
                                             item={item}
                                             key={item.id}
                                         />
@@ -138,7 +159,7 @@ const TVPage: FC = () => {
                 </div>
                 <div ref={observerElem} />
                 {TrendingError && <div>Error loading trending movies. Please try again later.</div>}
-                {MovieGenreError && <div>Error loading movie genres. Please try again later.</div>}
+                {TVGenreError && <div>Error loading movie genres. Please try again later.</div>}
             </div>
         </>
     );

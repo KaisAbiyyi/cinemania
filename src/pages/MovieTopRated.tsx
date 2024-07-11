@@ -10,15 +10,16 @@ import { FC, useCallback, useRef, useState } from "react";
 import { Helmet } from "react-helmet";
 import { Link } from "react-router-dom";
 
-const MoviePage: FC = () => {
+const MovieTopRated: FC = () => {
     const token = import.meta.env.VITE_TMDB_API_RAT;
-    const [sortBy, setSortBy] = useState<string>("popularity.desc");
+    const [sortBy, setSortBy] = useState<string>("vote_average.desc");
     const [FromReleaseDate, setFromReleaseDate] = useState<Date>();
     const [ToReleaseDate, setToReleaseDate] = useState<Date>();
     const [selectedGenres, setSelectedGenres] = useState<Array<string>>([]);
     const [userScore, setUserScore] = useState<Array<number>>([0, 10]);
-    const [minimumUserVotes, setMinimumUserVotes] = useState<Array<number>>([0]);
+    const [minimumUserVotes, setMinimumUserVotes] = useState<Array<number>>([200]);
     const [runtime, setRuntime] = useState<Array<number>>([0, 360]);
+
 
     const fetchTrending = async ({ pageParam = 1 }) => {
         const params: Record<string, any> = {
@@ -33,13 +34,8 @@ const MoviePage: FC = () => {
             "vote_count.gte": minimumUserVotes[0],
             with_genres: selectedGenres.join(","),
         };
-
-        if (sortBy === "primary_release_date.desc") {
-            params['release_date.lte'] = new Date().toISOString();
-        }
-
         const { data } = await axios.get(
-            "https://api.themoviedb.org/3/discover/movie",
+            "https://api.themoviedb.org/3/discover/movie?&language=en-US&without_genres=99,10755",
             {
                 headers: { Authorization: `Bearer ${token}` },
                 params,
@@ -56,7 +52,7 @@ const MoviePage: FC = () => {
         isLoading: TrendingPending,
         error: TrendingError,
     } = useInfiniteQuery({
-        queryKey: ['getMovies', sortBy, FromReleaseDate, ToReleaseDate, selectedGenres, userScore, minimumUserVotes, runtime],
+        queryKey: ['getTopRatedMovies', sortBy, FromReleaseDate, ToReleaseDate, selectedGenres, userScore, minimumUserVotes, runtime],
         queryFn: fetchTrending,
         initialPageParam: 1,
         getNextPageParam: (lastPage, allPages) => {
@@ -88,23 +84,22 @@ const MoviePage: FC = () => {
     return (
         <>
             <Helmet>
-                <title>Movies | Cinemania</title>
+                <title>Top Rated Movies | Cinemania</title>
             </Helmet>
             <div className="flex flex-col gap-8 px-8 pb-8">
-                <CardTitle>Movies</CardTitle>
+                <CardTitle>Top Rated Movies</CardTitle>
                 <div className="flex flex-col gap-4">
                     <div className="flex gap-4">
                         <Link to="/movie/now-playing" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
                             <span className="mr-3">Now Playing</span>
                             <ChevronRight size={18} />
                         </Link>
-                        <Link to="/movie/now-playing" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
+                        <Link to="/movie/upcoming" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
                             <span className="mr-3">Upcoming</span>
                             <ChevronRight size={18} />
                         </Link>
-                        <Link to="/movie/now-playing" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
+                        <Link to="/movie/top-rated" className={buttonVariants({ variant: "default", className: "!justify-between" })}>
                             <span className="mr-3">Top Rated</span>
-                            <ChevronRight size={18} />
                         </Link>
                     </div>
                     <Filter
@@ -128,7 +123,7 @@ const MoviePage: FC = () => {
                     />
                 </div>
                 <div className="grid grid-cols-5 gap-4">
-                    {(TrendingPending || MovieGenrePending) ? <MoviePageSkeleton /> :
+                    {(TrendingPending || MovieGenrePending) ? <MovieTopRatedSkeleton /> :
                         Trending?.pages.map((page) =>
                             page.results.map((item: any, index: number) => {
                                 if (page.results.length === index + 1) {
@@ -156,7 +151,7 @@ const MoviePage: FC = () => {
                                 }
                             })
                         )}
-                    {isFetchingNextPage && <MoviePageSkeleton />}
+                    {isFetchingNextPage && <MovieTopRatedSkeleton />}
                 </div>
                 <div ref={observerElem} />
                 {TrendingError && <div>Error loading trending movies. Please try again later.</div>}
@@ -166,7 +161,7 @@ const MoviePage: FC = () => {
     );
 }
 
-const MoviePageSkeleton = () => {
+const MovieTopRatedSkeleton = () => {
     return (
         <>
             <Skeleton className="w-full h-96" />
@@ -178,4 +173,4 @@ const MoviePageSkeleton = () => {
     )
 }
 
-export default MoviePage;
+export default MovieTopRated;
