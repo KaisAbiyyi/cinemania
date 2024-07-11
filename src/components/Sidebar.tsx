@@ -1,4 +1,4 @@
-import { Clapperboard, Compass, Heart, List, TrendingUp, Tv, User } from "lucide-react";
+import { Clapperboard, Compass, Heart, List, TrendingUp, Tv } from "lucide-react";
 import { FC } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { buttonVariants } from "./ui/button";
@@ -41,12 +41,6 @@ const Sidebar: FC = () => {
                             buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" })}>
                             <Tv className="size-6 md:size-4" />
                             <span className="hidden duration-200 ease-out md:block">TV Shows</span>
-                        </Link>
-                        <Link to="/people" className={route.pathname === "/people" ?
-                            buttonVariants({ className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" }) :
-                            buttonVariants({ variant: "ghost", className: "!justify-center md:!justify-start !h-fit !p-1 md:!p-2 flex gap-2" })}>
-                            <User className="size-6 md:size-4" />
-                            <span className="hidden duration-200 ease-out md:block">People</span>
                         </Link>
                     </div>
                 </div>

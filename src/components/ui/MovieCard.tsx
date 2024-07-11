@@ -10,6 +10,7 @@ interface MovieCardProps {
     MovieGenre?: any
     isGrid?: boolean
 }
+
 const formatDate = (dateString?: string): string => {
     if (!dateString) return 'Unknown Date';
     try {
@@ -21,17 +22,16 @@ const formatDate = (dateString?: string): string => {
 };
 
 const MovieCard: FC<MovieCardProps> = ({ item, mediaType, MovieGenre, TVGenre, isGrid }) => {
-    // console.log(TVGenre)
-    let genre
+    let genre;
     if (!!MovieGenre || !!TVGenre) {
         if (!!item.genre_ids) {
             if (mediaType === "movie") {
-                genre = MovieGenre.filter((genre: any) => item.genre_ids.includes(genre.id)) ?? []
+                genre = MovieGenre.filter((genre: any) => item.genre_ids.includes(genre.id)) ?? [];
             } else {
-                genre = TVGenre.filter((genre: any) => item.genre_ids.includes(genre.id)) ?? []
+                genre = TVGenre.filter((genre: any) => item.genre_ids.includes(genre.id)) ?? [];
             }
         } else {
-            genre = []
+            genre = [];
         }
     }
     const releaseDate = item.release_date || item.first_air_date;
@@ -44,9 +44,14 @@ const MovieCard: FC<MovieCardProps> = ({ item, mediaType, MovieGenre, TVGenre, i
                     {item.vote_average ? (item.vote_average as number).toFixed(1) : "NR"}
                 </div>
                 <CardHeader className={isGrid ? "w-full p-0 h-80 lg:h-96" : "w-56 p-0 h-80 lg:w-64 lg:h-96"}>
-                    <img src={item.poster_path ? `${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}` : "/images/blankimage.png"} className={` ${!item.poster_path && "opacity-25"} object-cover h-full rounded-lg`} alt={item.name} />
+                    <img
+                        src={item.poster_path ? `${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}` : "/images/blankimage.png"}
+                        className={`${!item.poster_path && "opacity-25"} object-cover h-full rounded-lg`}
+                        alt={item.title || item.name}
+                        onError={(e) => { e.currentTarget.src = "/images/blankimage.png"; e.currentTarget.classList.add("opacity-25"); }}
+                    />
                 </CardHeader>
-                <CardContent className={`absolute bottom-0 w-full py-6 bg-gradient-to-b from-transparent via-bfackground/80 to-background`}>
+                <CardContent className={`absolute bottom-0 w-full py-6 bg-gradient-to-b from-transparent via-background/80 to-background`}>
                     <CardTitle className="text-lg">{item.title || item.original_title || item.name}</CardTitle>
                     <CardDescription>{formattedDate}</CardDescription>
                     <div className="flex flex-wrap gap-2 mt-2">

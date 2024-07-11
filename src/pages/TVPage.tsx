@@ -6,7 +6,7 @@ import axios from "axios";
 import { FC, useCallback, useRef, useState } from "react";
 import { Helmet } from "react-helmet";
 
-const MoviePage: FC = () => {
+const TVPage: FC = () => {
     const token = import.meta.env.VITE_TMDB_API_RAT;
     const [sortBy, setSortBy] = useState<string>("popularity.desc");
     const [FromReleaseDate, setFromReleaseDate] = useState<Date>();
@@ -22,8 +22,8 @@ const MoviePage: FC = () => {
             include_video: false,
             include_adult: false,
             sort_by: sortBy,
-            "release_date.gte": FromReleaseDate?.toISOString(),
-            "release_date.lte": ToReleaseDate?.toISOString(),
+            "air_date.gte": FromReleaseDate?.toISOString(),
+            "air_date.lte": ToReleaseDate?.toISOString(),
             "vote_average.gte": userScore[0],
             "vote_average.lte": userScore[1],
             "vote_count.gte": minimumUserVotes[0],
@@ -35,7 +35,7 @@ const MoviePage: FC = () => {
         }
 
         const { data } = await axios.get(
-            "https://api.themoviedb.org/3/discover/movie",
+            "https://api.themoviedb.org/3/discover/tv",
             {
                 headers: { Authorization: `Bearer ${token}` },
                 params,
@@ -63,7 +63,7 @@ const MoviePage: FC = () => {
     const { data: MovieGenre, isLoading: MovieGenrePending, error: MovieGenreError } = useQuery({
         queryKey: ['getMovieGenre'],
         queryFn: async () => {
-            const { data } = await axios.get("https://api.themoviedb.org/3/genre/movie/list", { headers: { Authorization: `Bearer ${token}` } });
+            const { data } = await axios.get("https://api.themoviedb.org/3/genre/tv/list", { headers: { Authorization: `Bearer ${token}` } });
             return data;
         }
     });
@@ -88,7 +88,6 @@ const MoviePage: FC = () => {
             </Helmet>
             <div className="flex flex-col gap-8 px-8 pb-8">
                 <Filter
-                isMovie
                     sortBy={sortBy}
                     setSortBy={setSortBy}
                     FromReleaseDate={FromReleaseDate}
@@ -107,7 +106,7 @@ const MoviePage: FC = () => {
                     setRuntime={setRuntime}
                 />
                 <div className="grid grid-cols-5 gap-4">
-                    {(TrendingPending || MovieGenrePending) ? <MoviePageSkeleton /> :
+                    {(TrendingPending || MovieGenrePending) ? <TVPageSkeleton /> :
                         Trending?.pages.map((page) =>
                             page.results.map((item: any, index: number) => {
                                 if (page.results.length === index + 1) {
@@ -135,7 +134,7 @@ const MoviePage: FC = () => {
                                 }
                             })
                         )}
-                    {isFetchingNextPage && <MoviePageSkeleton />}
+                    {isFetchingNextPage && <TVPageSkeleton />}
                 </div>
                 <div ref={observerElem} />
                 {TrendingError && <div>Error loading trending movies. Please try again later.</div>}
@@ -145,7 +144,7 @@ const MoviePage: FC = () => {
     );
 }
 
-const MoviePageSkeleton = () => {
+const TVPageSkeleton = () => {
     return (
         <>
             <Skeleton className="w-full h-96" />
@@ -157,4 +156,4 @@ const MoviePageSkeleton = () => {
     )
 }
 
-export default MoviePage;
+export default TVPage;

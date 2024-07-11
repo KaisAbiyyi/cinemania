@@ -12,6 +12,7 @@ import PersonDetail from './pages/PersonDetail'
 import SearchPage from './pages/SearchPage'
 import TrendingPage from './pages/TrendingPage'
 import MoviePage from './pages/MoviePage'
+import TVPage from './pages/TVPage'
 
 const container = document.getElementById("root")
 
@@ -24,6 +25,7 @@ if (container) {
           {/* Available Public Route */}
           <Route path="/" element={<Layout><HomePage /></Layout>} />
           <Route path='/trending' element={<Layout><TrendingPage /></Layout>} />
+          <Route path="/tv" element={<Layout><TVPage /></Layout>}/>
           <Route path='/tv/:id' element={<Layout><ContentDetail /></Layout>} />
           <Route path="/movie" element={<Layout><MoviePage /></Layout>} />
           <Route path='/movie/:id' element={<Layout><ContentDetail /></Layout>} />
