@@ -6,6 +6,7 @@ import { FC, HTMLAttributes } from "react";
 import { useParams } from "react-router-dom";
 import PersonActing from "./PersonActing";
 import PersonActingSkeleton from "./Skeletons/PersonActingSkeleton";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 
 interface PersonBioProps extends HTMLAttributes<HTMLDivElement> {
     data: any
@@ -17,7 +18,6 @@ const PersonBio: FC<PersonBioProps> = ({ data, className }) => {
     const splittedId = ((id as string).split("-"))[0]
     const token = import.meta.env.VITE_TMDB_API_RAT
 
-    console.log(data)
     const biography: string[] = data.biography.split("\n").filter((line: string) => line.length > 0);
 
     const { data: PersonCredits, isPending: PersonCreditsPending } = useQuery({
@@ -27,22 +27,31 @@ const PersonBio: FC<PersonBioProps> = ({ data, className }) => {
             return data
         }
     })
-
     return (
         <div className={cn("flex flex-col gap-8", className)}>
             <h1 className="flex gap-2 text-2xl font-bold lg:text-4xl text-background-foreground">
                 {data.name}
             </h1>
             <div className="flex flex-col gap-4">
-                <CardTitle className="text-lg">Biography</CardTitle>
-                <CardContent className="flex flex-col gap-2 p-0">
-                    {biography.map((item: string, index: number) => (
-                        <p key={index}>{item}</p>
-                    ))}
-                </CardContent>
+                <Accordion type="single" collapsible>
+                    <AccordionItem value="item-1">
+                        <AccordionTrigger className="hover:no-underline">
+                            <CardTitle className="text-lg">Biography</CardTitle>
+
+                        </AccordionTrigger>
+                        <AccordionContent>
+                            <CardContent className="flex flex-col gap-2 p-0 text-base">
+                                {biography.map((item: string, index: number) => (
+                                    <p key={index}>{item}</p>
+                                ))}
+                            </CardContent>
+                        </AccordionContent>
+                    </AccordionItem>
+                </Accordion>
+
                 {
                     PersonCreditsPending ?
-                        <PersonActingSkeleton/> :
+                        <PersonActingSkeleton /> :
                         <PersonActing data={PersonCredits} className="flex flex-col gap-8 p-0" />
                 }
             </div>

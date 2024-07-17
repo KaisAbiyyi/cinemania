@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import axios from "axios";
-import { ChevronRight, User } from "lucide-react";
+import { User } from "lucide-react";
 import { FC, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import TopBilledCastSkeleton from "./Skeletons/TopBilledCastSkeleton";
+import { buttonVariants } from "../ui/button";
 
 interface TopBilledCastProps {
     detailType: string;
@@ -18,7 +19,7 @@ const TopBilledCast: FC<TopBilledCastProps> = ({ detailType, id }) => {
     const { data: Credit, isPending: CreditPending } = useQuery({
         queryKey: [`Credit${id}`],
         queryFn: async () => {
-            const { data } = await axios.get(`https://api.themoviedb.org/3/${detailType}/${id}/credits`, {
+            const { data } = await axios.get(`https://api.themoviedb.org/3/${detailType}/${id}/${detailType === "movie" ? "credits" : "aggregate_credits"}`, {
                 headers: { Authorization: `Bearer ${token}` }
             });
             return data;
@@ -34,19 +35,18 @@ const TopBilledCast: FC<TopBilledCastProps> = ({ detailType, id }) => {
     };
 
     if (CreditPending) return (
-        <TopBilledCastSkeleton pathName={pathname}/>
+        <TopBilledCastSkeleton pathName={pathname} />
     );
 
     return (
-        <Card className="flex flex-col gap-8 p-8 border-none bg-background rounded-3xl">
+        <Card className="flex flex-col gap-8 p-0 border-none bg-background rounded-3xl">
             <CardHeader className="flex flex-row items-center justify-between p-0">
-                <CardTitle className="text-2xl uppercase">Cast</CardTitle>
-                <Link to={`${pathname}/cast`} className="p-2 px-4 text-base font-semibold duration-200 ease-out rounded-full hover:text-primary-foreground hover:bg-primary">
+                <CardTitle>Cast</CardTitle>
+                <Link to={`${pathname}/cast`} className={buttonVariants({ variant: "ghost" })}>
                     View full cast and crew
                 </Link>
             </CardHeader>
             <CardContent className="relative flex flex-col p-0">
-                <div className="absolute top-0 bottom-0 right-0 z-10 w-1/2 pointer-events-none bg-gradient-to-l from-background via-transparent to-transparent"></div>
                 <div className="flex w-full gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                     {castList.map((item: any) => (
                         <Link
@@ -67,16 +67,15 @@ const TopBilledCast: FC<TopBilledCastProps> = ({ detailType, id }) => {
                             <div className="absolute inset-0 flex flex-col items-center justify-end min-w-full min-h-full duration-200 ease-out bg-gradient-to-b from-transparent via-background/20 to-background hover:from-transparent group-hover:opacity-75"></div>
                             <div className="absolute inset-0 flex flex-col items-center justify-end min-w-full min-h-full">
                                 <CardTitle className="text-base text-center">{item.name}</CardTitle>
-                                <CardDescription className="text-sm text-center">{item.character}</CardDescription>
+                                <CardDescription className="text-xs text-center">{item.character}</CardDescription>
+                                {detailType === "tv" &&
+                                    <div className="flex flex-wrap justify-center gap-1">
+                                        {item.roles.map((roles: any) => (<CardDescription className="text-xs text-center">{roles.character}</CardDescription>))}
+                                    </div>
+                                }
                             </div>
                         </Link>
                     ))}
-                    {Credit.cast.length > 10 &&
-                        <Link to={`${pathname}/cast`} className="z-20 flex items-center justify-center p-4 duration-200 ease-out rounded-lg hover:bg-primary/90 bg-primary text-primary-foreground">
-                            <span className="m-0 text-lg font-bold">More</span>
-                            <ChevronRight />
-                        </Link>
-                    }
                 </div>
             </CardContent>
         </Card>

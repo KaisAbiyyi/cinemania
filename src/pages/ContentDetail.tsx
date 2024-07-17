@@ -75,8 +75,8 @@ const ContentDetail = () => {
             </Helmet>
             <div className="flex flex-col">
                 <DetailHeroSegment originCountry={Detail?.origin_country?.[0]} detailType={detailType} detail={Detail} />
-                <div className="flex flex-col pb-8 mx-2 lg:mx-16 lg:flex-row">
-                    <div className="z-20 flex flex-col w-full gap-16 lg:w-4/5">
+                <div className="flex flex-col pb-8 mx-2 lg:mx-8 lg:flex-row">
+                    <div className="flex flex-col w-full gap-8 lg:w-4/5">
                         <TopBilledCast detailType={detailType} id={Detail?.id} />
                         {ReviewPending ? <ReviewSkeleton /> : ReviewError ? <div>Error loading reviews.</div> : <ReviewOverview reviews={Reviews} title={Detail?.title || Detail?.original_title || Detail?.name} />}
                         {ImagesPending ? <MediaSkeleton /> : ImagesError ? <div>Error loading images.</div> : <MediaContent posters={Images?.posters} backdrops={Images?.backdrops} />}

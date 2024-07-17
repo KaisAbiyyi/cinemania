@@ -34,8 +34,7 @@ const PersonDetail = () => {
             <Helmet>
                 <title>{Person.name} | Cinemania</title>
             </Helmet>
-            <div className="relative flex flex-col gap-8 p-2 lg:gap-16 lg:flex-row lg:p-16">
-                <div className="absolute inset-0 z-0 w-full h-screen bg-gradient-to-b from-primary to-transparent"></div>
+            <div className="relative flex flex-col gap-8 p-2 lg:gap-8 lg:flex-row lg:p-8">
                 <MainPersonCard data={Person} className="!z-10 w-full overflow-hidden lg:w-2/4 xl:w-1/4" />
                 <PersonBio data={Person} className="z-10 w-full lg:w-2/4 xl:w-3/5" />
             </div>

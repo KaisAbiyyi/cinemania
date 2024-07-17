@@ -33,6 +33,8 @@ const MovieTopRated: FC = () => {
             "vote_average.lte": userScore[1],
             "vote_count.gte": minimumUserVotes[0],
             with_genres: selectedGenres.join(","),
+            "with_runtime.gte": runtime[0],
+            "with_runtime.lte": runtime[1]
         };
         const { data } = await axios.get(
             "https://api.themoviedb.org/3/discover/movie?&language=en-US&without_genres=99,10755",
@@ -89,7 +91,7 @@ const MovieTopRated: FC = () => {
             <div className="flex flex-col gap-8 px-8 pb-8">
                 <CardTitle>Top Rated Movies</CardTitle>
                 <div className="flex flex-col gap-4">
-                    <div className="flex gap-4">
+                    <div className="flex flex-wrap gap-2">
                         <Link to="/movie/now-playing" className={buttonVariants({ variant: "outline", className: "!justify-between" })}>
                             <span className="mr-3">Now Playing</span>
                             <ChevronRight size={18} />
@@ -122,7 +124,7 @@ const MovieTopRated: FC = () => {
                         setRuntime={setRuntime}
                     />
                 </div>
-                <div className="grid grid-cols-5 gap-4">
+                <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
                     {(TrendingPending || MovieGenrePending) ? <MovieTopRatedSkeleton /> :
                         Trending?.pages.map((page) =>
                             page.results.map((item: any, index: number) => {

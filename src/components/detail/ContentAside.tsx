@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import axios from "axios";
 import { Skeleton } from "../ui/skeleton";
 import { Link } from "react-router-dom";
+import { buttonVariants } from "../ui/button";
 
 interface ContentAsideProps {
     Detail: any;
@@ -94,13 +95,13 @@ const ContentAside: FC<ContentAsideProps> = ({ detailType, Detail }) => {
                         <Skeleton className="w-4 h-2" />
                     ) : detailType === "movie" ? (
                         Keywords?.keywords?.map((item: any) => (
-                            <Link key={item.id} to={`/keyword/${item.id}-${item.name.toLowerCase().replace(/ /g, "-")}/${detailType}`} className="px-3 py-1 text-sm font-semibold duration-200 ease-out rounded-sm hover:bg-primary/90 bg-primary text-primary-foreground">
+                            <Link key={item.id} to={`/keyword/${item.id}-${item.name.toLowerCase().replace(/ /g, "-")}/${detailType}`} className={buttonVariants({variant:"secondary", size:"sm"})}>
                                 {item.name}
                             </Link>
                         ))
                     ) : (
                         Keywords?.results?.map((item: any) => (
-                            <Link key={item.id} to={`/keyword/${item.id}-${item.name.toLowerCase().replace(/ /g, "-")}/${detailType}`} className="px-3 py-1 text-sm font-semibold duration-200 ease-out rounded-sm hover:bg-primary/90 bg-primary text-primary-foreground">
+                            <Link key={item.id} to={`/keyword/${item.id}-${item.name.toLowerCase().replace(/ /g, "-")}/${detailType}`} className={buttonVariants({variant:"secondary",size:"sm"})}>
                                 {item.name}
                             </Link>
                         ))

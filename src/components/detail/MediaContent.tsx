@@ -16,7 +16,7 @@ const MediaContent: FC<MediaContentProps> = ({ posters, backdrops }) => {
     console.log(posters)
 
     return (
-        <Tabs defaultValue="backdrops" className="px-8 h-96">
+        <Tabs defaultValue="backdrops" className="px-0 h-96">
             <div className="flex flex-col gap-2">
                 <CardTitle className="text-lg">Media</CardTitle>
                 <TabsList className="w-fit">
@@ -31,7 +31,6 @@ const MediaContent: FC<MediaContentProps> = ({ posters, backdrops }) => {
                 </TabsList>
             </div>
             <TabsContent className="relative flex flex-col" value="backdrops">
-                <div className="absolute top-0 bottom-0 right-0 z-0 w-1/2 pointer-events-none bg-gradient-to-l from-background via-transparent to-transparent"></div>
                 <div className="flex w-full overflow-x-scroll rounded-sm scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                     {backdrops.slice(0, 5).map((item: any) => (
                         <img src={`${imagePath}/w500/${item.file_path}`} key={item.id} className="object-cover aspect-video h-72" alt="" />
@@ -45,7 +44,6 @@ const MediaContent: FC<MediaContentProps> = ({ posters, backdrops }) => {
                 </div>
             </TabsContent>
             <TabsContent className="relative flex flex-col" value="posters">
-                <div className="absolute top-0 bottom-0 right-0 z-0 w-1/2 pointer-events-none bg-gradient-to-l from-background via-transparent to-transparent"></div>
                 <div className="flex w-full overflow-x-scroll rounded-sm scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                     {posters.slice(0, 10).map((item: any) => (
                         <img src={`${imagePath}/w500/${item.file_path}`} key={item.id} className="object-cover h-72" alt="" />

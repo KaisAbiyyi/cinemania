@@ -51,9 +51,9 @@ const MovieCard: FC<MovieCardProps> = ({ item, mediaType, MovieGenre, TVGenre, i
                         onError={(e) => { e.currentTarget.src = "/images/blankimage.png"; e.currentTarget.classList.add("opacity-25"); }}
                     />
                 </CardHeader>
-                <CardContent className={`absolute bottom-0 w-full py-6 bg-gradient-to-b from-transparent via-background/80 to-background`}>
-                    <CardTitle className="text-lg">{item.title || item.original_title || item.name}</CardTitle>
-                    <CardDescription>{formattedDate}</CardDescription>
+                <CardContent className={`absolute bottom-0 w-full py-6 px-2 lg:px-4 bg-gradient-to-b from-transparent via-background/80 to-background`}>
+                    <CardTitle className="text-base md:text-lg">{item.title || item.original_title || item.name}</CardTitle>
+                    <CardDescription className="text-xs md:text-sm">{formattedDate}</CardDescription>
                     <div className="flex flex-wrap gap-2 mt-2">
                         {genre && genre.map((genre: any) => (
                             <Link

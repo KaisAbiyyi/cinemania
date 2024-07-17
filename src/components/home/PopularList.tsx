@@ -4,6 +4,8 @@ import { FC } from "react";
 import MovieCard from "../ui/MovieCard";
 import { CardTitle } from "../ui/card";
 import { Skeleton } from "../ui/skeleton";
+import { Link } from "react-router-dom";
+import { buttonVariants } from "../ui/button";
 
 interface PopularListProps {
     MovieGenre: any
@@ -41,10 +43,13 @@ const PopularList: FC<PopularListProps> = ({ MovieGenre, TVGenre }) => {
     }
     return (
         <div className="flex flex-col gap-8 p-8 rounded-lg">
-            <CardTitle>Popular Movies</CardTitle>
+            <div className="flex justify-between">
+                <CardTitle>Popular Movies</CardTitle>
+                <Link to={"/movie"} className={buttonVariants({ variant: "ghost" })}>More</Link>
+            </div>
             <div className="flex items-start gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
-                {Popular.results.map((item: any) => (
-                    <MovieCard item={item} key={item.id} mediaType="movie"  MovieGenre={MovieGenre} TVGenre={TVGenre} />
+                {Popular.results.slice(0, 10).map((item: any) => (
+                    <MovieCard item={item} key={item.id} mediaType="movie" MovieGenre={MovieGenre} TVGenre={TVGenre} />
                 ))}
             </div>
         </div>

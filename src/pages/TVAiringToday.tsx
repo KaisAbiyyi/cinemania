@@ -32,6 +32,8 @@ const TVAiringToday: FC = () => {
             "vote_average.lte": userScore[1],
             "vote_count.gte": minimumUserVotes[0],
             with_genres: selectedGenres.join(","),
+            "with_runtime.gte": runtime[0],
+            "with_runtime.lte": runtime[1]
         };
         const { data } = await axios.get(
             "https://api.themoviedb.org/3/discover/tv?language=en-US",
@@ -51,7 +53,7 @@ const TVAiringToday: FC = () => {
         isLoading: TrendingPending,
         error: TrendingError,
     } = useInfiniteQuery({
-        queryKey: ['getTVAiringToday'],
+        queryKey: ['getTVAiringToday', sortBy, FromReleaseDate, ToReleaseDate, userScore, minimumUserVotes, selectedGenres, runtime],
         queryFn: fetchTrending,
         initialPageParam: 1,
         getNextPageParam: (lastPage, allPages) => {
@@ -88,7 +90,7 @@ const TVAiringToday: FC = () => {
             <div className="flex flex-col gap-8 px-8 pb-8">
                 <CardTitle>TV Shows Airing Today</CardTitle>
                 <div className="flex flex-col gap-4">
-                    <div className="flex gap-4">
+                    <div className="flex flex-wrap gap-2">
                         <Link to="/tv/airing-today" className={buttonVariants({ variant: "default", className: "!justify-between" })}>
                             <span className="mr-3">Airing Today</span>
                         </Link>
@@ -120,7 +122,7 @@ const TVAiringToday: FC = () => {
                         setRuntime={setRuntime}
                     />
                 </div>
-                <div className="grid grid-cols-5 gap-4">
+                <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
                     {(TrendingPending || TVGenrePending) ? <TVAiringTodaySkeleton /> :
                         Trending?.pages.map((page) =>
                             page.results.map((item: any, index: number) => {

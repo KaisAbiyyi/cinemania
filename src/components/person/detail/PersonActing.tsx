@@ -12,7 +12,19 @@ interface PersonActingProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 const PersonActing: FC<PersonActingProps> = ({ data, className }) => {
-    const KnownForMovies = data.cast.sort((a: any, b: any) => b.vote_average - a.vote_average).filter((item: any) => !item.character.includes("Self")).slice(0, 10)
+    const KnownForMovies = data.cast.sort((a: any, b: any) => b.popularity - a.popularity).filter((item: any, index: number, self: any) => {
+        if (item.media_type === "tv" && item.genre_ids.includes(10767)) {
+            return false
+        }
+        if (item.character === "" || item.character === "Self") {
+            return false
+        }
+        if (item.vote_count < 200) {
+            return false
+        }
+        return index === self.findIndex((i: any) => i.id === item.id)
+    })
+    console.log(KnownForMovies)
     const Movie = data.cast.sort((a: any, b: any) => {
         const dateA = new Date(a.release_date || a.first_air_date)
         const dateB = new Date(b.release_date || b.first_air_date)
@@ -39,9 +51,9 @@ const PersonActing: FC<PersonActingProps> = ({ data, className }) => {
                 <CardTitle className="text-lg">Known For</CardTitle>
                 <div className="flex items-start gap-4 overflow-x-scroll scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                     {KnownForMovies.map((item: any) => (
-                        <Card key={item.id} className="relative flex flex-col gap-4 bg-transparent border-none">
+                        <Card key={item.credit_id} className="relative flex flex-col gap-4 bg-transparent border-none">
                             <CardHeader className="p-0 w-36">
-                                <Link to={`/movie/${item.id}-${((item.title || item.original_title || item.name) as string).toLowerCase().replace(/ /g, "-").replace(":", "")}`}>
+                                <Link to={`/${item.media_type}/${item.id}-${((item.title || item.original_title || item.name) as string).toLowerCase().replace(/ /g, "-").replace(":", "")}`}>
                                     <img src={`${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}`} className="rounded-sm" alt={item.name} />
                                 </Link>
                             </CardHeader>
@@ -80,7 +92,7 @@ const PersonActing: FC<PersonActingProps> = ({ data, className }) => {
                 </div>
                 <CardContent className="flex flex-col gap-4 p-0">
                     {Movie.map((item: any) => (
-                        <HoverCard key={item.id}>
+                        <HoverCard key={item.credit_id}>
                             <HoverCardTrigger asChild>
                                 <Link to={`/movie/${item.id}-${((item.title || item.original_title || item.name) as string).toLowerCase().replace(/ /g, "-").replace(":", "")}`}>
                                     <Card className="flex flex-row items-center gap-4 p-4 bg-secondary/50">
@@ -96,7 +108,7 @@ const PersonActing: FC<PersonActingProps> = ({ data, className }) => {
                             </HoverCardTrigger>
                             <HoverCardContent align="start" className="relative p-0 overflow-hidden w-96">
                                 <img src={`${imagePath}/w500${item.backdrop_path}`} alt="" />
-                                <div className={item.backdrop_path ? "absolute inset-0 flex flex-col justify-end w-full h-full gap-4 p-4 bg-gradient-to-b from-primary/50 via-background/70 to-background" : "flex flex-col gap-4 p-4"}>
+                                <div className={item.backdrop_path ? "absolute inset-0 flex flex-col justify-end w-full h-full gap-4 p-4 bg-secondary/80" : "flex flex-col gap-4 p-4"}>
                                     <Link to={`/movie/${item.id}-${((item.title || item.original_title || item.name) as string).toLowerCase().replace(/ /g, "-").replace(":", "")}`}>
                                         <CardTitle className="text-lg duration-100 ease-in hover:opacity-80">{item.title || item.original_title || item.name}</CardTitle>
                                     </Link>

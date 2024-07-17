@@ -37,7 +37,7 @@ const HomePage = () => {
         <Helmet>
             <title>Cinemania</title>
         </Helmet>
-        <div className="flex flex-col w-full gap-16">
+        <div className="flex flex-col w-full gap-8">
             {/* <HeroSegment /> */}
             {!MovieGenrePending && !TVGenrePending &&
                 <>

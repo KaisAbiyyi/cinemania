@@ -106,8 +106,8 @@ const Filter: FC<FilterProps> = ({
                 <AccordionTrigger className={buttonVariants({ variant: "outline", className: "hover:no-underline !justify-between flex-none w-[100px]" })} >Filter</AccordionTrigger>
                 <AccordionContent>
                     <div className="flex flex-col gap-8">
-                        <div className="flex gap-4 mt-4">
-                            <div className="flex flex-col w-1/2 gap-4">
+                        <div className="flex flex-col gap-4 mt-4 md:flex-row">
+                            <div className="flex flex-col w-full gap-4 md:w-1/2">
                                 <Select onValueChange={sortByHandler}>
                                     <SelectTrigger title="Filter">
                                         <SelectValue placeholder="Sort by" />
@@ -190,7 +190,7 @@ const Filter: FC<FilterProps> = ({
                                     </div>
                                 </div>
                             </div>
-                            <div className="flex flex-col w-1/2 gap-6">
+                            <div className="flex flex-col w-full gap-4 md:w-1/2">
                                 <div className="flex flex-col gap-4">
                                     <CardDescription>User Score</CardDescription>
                                     <div className="flex justify-between">

@@ -63,7 +63,7 @@ const DetailHeroSegment: FC<DetailHeroSegmentProps> = ({ detail, detailType, ori
                 className="relative inset-0 z-0 hidden object-cover w-full h-full lg:block"
                 alt={detail?.title ?? detail?.original_title ?? detail?.name ?? "Detail Image"}
             />
-            <div className="flex gap-8 lg:items-center relative lg:absolute lg:bg-gradient-to-t lg:from-background lg:via-background/70 lg:to-transparent/50 w-full lg:h-[700px] inset-0 p-4 lg:p-16 !z-20">
+            <div className="flex gap-8 lg:items-center relative lg:absolute lg:bg-gradient-to-t lg:from-background lg:via-background/70 lg:to-transparent/50 w-full lg:h-[700px] inset-0 p-4 lg:p-8 !z-20">
                 <BlurImage
                     src={posterPath}
                     className="hidden w-64 border rounded-lg lg:block border-primary-foreground/40 border-opacity-5 xl:w-50 xl:h-[400px] object-cover drop-shadow-2xl"

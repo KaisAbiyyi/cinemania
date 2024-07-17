@@ -9,7 +9,6 @@ interface MainPersonCardProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 const MainPersonCard: FC<MainPersonCardProps> = ({ data, className, ...props }) => {
-    console.log(data)
     const imagePath = import.meta.env.VITE_TMDB_POSTER_URL
     return (
         <Card className={cn("bg-secondary/50 relative rounded-sm h-fit lg:rounded-lg flex flex-row lg:flex-col", className)}{...props}>
@@ -36,9 +35,9 @@ const MainPersonCard: FC<MainPersonCardProps> = ({ data, className, ...props }) 
                 <CardHeader className="flex flex-col w-1/2 gap-4 p-4 border-secondary-foreground/10 xl:border-t xl:w-full">
                     <div className="flex flex-col gap-2">
                         <CardTitle className="text-base">Also Known As</CardTitle>
-                        <div className="flex flex-col gap-2">
-                            {data.also_known_as.map((item: string) => (
-                                <CardDescription>{item}</CardDescription>
+                        <div className="flex flex-wrap gap-2">
+                            {data.also_known_as.map((item: string, index: number) => (
+                                <CardDescription key={index}>{item}</CardDescription>
                             ))}
                         </div>
                     </div>

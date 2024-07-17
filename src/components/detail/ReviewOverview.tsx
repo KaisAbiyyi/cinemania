@@ -4,6 +4,7 @@ import { FC, Fragment } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
+import { buttonVariants } from "../ui/button";
 
 interface ReviewOverviewProps {
     reviews: any
@@ -15,7 +16,7 @@ const ReviewOverview: FC<ReviewOverviewProps> = ({ reviews, title }) => {
     const { pathname } = useLocation()
     if (reviews.results.length === 0) {
         return (
-            <Card className="flex flex-col gap-8 p-8 border-none bg-background">
+            <Card className="flex flex-col gap-8 p-0 border-none bg-background">
                 <CardHeader className="flex flex-row items-center justify-between p-0">
                     <div className="flex items-center gap-4">
                         <CardTitle className="text-lg">Reviews</CardTitle>
@@ -54,12 +55,12 @@ const ReviewOverview: FC<ReviewOverviewProps> = ({ reviews, title }) => {
     }
 
     return (
-        <Card className="flex flex-col gap-8 p-8 border-none bg-background">
+        <Card className="flex flex-col gap-8 p-0 border-none bg-background">
             <CardHeader className="flex flex-row items-center justify-between p-0">
                 <div className="flex items-center gap-4">
                     <CardTitle className="text-lg">Reviews</CardTitle>
                 </div>
-                <Link to={`${pathname}/reviews`} className="p-2 px-4 text-base font-semibold duration-200 ease-out rounded-full hover:text-primary-foreground hover:bg-primary">Read All Reviews</Link>
+                <Link to={`${pathname}/reviews`} className={buttonVariants({variant:"ghost"})}>Read All Reviews</Link>
             </CardHeader>
             {reviews.results.length > 0 ?
                 <CardContent className="border shadow-sm bg-secondary/70 rounded-xl">
