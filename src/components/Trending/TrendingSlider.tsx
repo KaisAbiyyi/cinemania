@@ -57,7 +57,7 @@ const TrendingSlider: FC<TrendingSliderProps> = ({ data }) => {
         <div className="relative flex flex-col h-[700px] overflow-hidden">
             <img
                 src={`${imgUrl}/original/${sliderData[activeIndex].backdrop_path}`}
-                className={`h-[700px] object-cover transition-filter duration-500 ${loading ? 'blur-lg' : 'blur-0'}`}
+                className={`h-[60vh] object-cover transition-filter duration-500 ${loading ? 'blur-lg' : 'blur-0'}`}
                 alt={sliderData[activeIndex].title ?? sliderData[activeIndex].name ?? sliderData[activeIndex].original_name}
                 onLoad={handleImageLoad}
                 onLoadStart={() => setLoading(true)}

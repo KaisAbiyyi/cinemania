@@ -32,7 +32,7 @@ const ContentAside: FC<ContentAsideProps> = ({ detailType, Detail }) => {
     }
 
     return (
-        <Card className="z-20 flex flex-col w-full gap-6 p-8 border-none lg:w-1/5 rounded-3xl bg-background h-fit">
+        <Card className="z-20 flex flex-col w-full gap-6 p-4 rounded-lg bg-gradient-to-b from-secondary via-secondary to-secondary/50 lg:w-2/6 h-fit">
             <CardHeader className="p-0">
                 <CardTitle className="text-base">Status</CardTitle>
                 <CardDescription>{Detail.status || "N/A"}</CardDescription>
@@ -95,13 +95,13 @@ const ContentAside: FC<ContentAsideProps> = ({ detailType, Detail }) => {
                         <Skeleton className="w-4 h-2" />
                     ) : detailType === "movie" ? (
                         Keywords?.keywords?.map((item: any) => (
-                            <Link key={item.id} to={`/keyword/${item.id}-${item.name.toLowerCase().replace(/ /g, "-")}/${detailType}`} className={buttonVariants({variant:"secondary", size:"sm"})}>
+                            <Link key={item.id} to={`/keyword/${item.id}-${item.name.toLowerCase().replace(/ /g, "-")}/${detailType}`} className={buttonVariants({variant:"secondary", size:"sm", className:"!bg-background hover:!bg-primary !whitespace-break-spaces !h-auto !min-h-9"})}>
                                 {item.name}
                             </Link>
                         ))
                     ) : (
                         Keywords?.results?.map((item: any) => (
-                            <Link key={item.id} to={`/keyword/${item.id}-${item.name.toLowerCase().replace(/ /g, "-")}/${detailType}`} className={buttonVariants({variant:"secondary",size:"sm"})}>
+                            <Link key={item.id} to={`/keyword/${item.id}-${item.name.toLowerCase().replace(/ /g, "-")}/${detailType}`} className={buttonVariants({variant:"secondary",size:"sm", className:"!bg-background hover:!bg-primary !whitespace-break-spaces !h-auto !min-h-9"})}>
                                 {item.name}
                             </Link>
                         ))

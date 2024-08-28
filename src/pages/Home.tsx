@@ -1,5 +1,6 @@
 import TrendingSliderSkeleton from '@/components/Trending/Skeletons/TrendingSliderSkeleton';
 import TrendingSlider from '@/components/Trending/TrendingSlider';
+import GenreList from '@/components/home/GenreList';
 import PopularList from '@/components/home/PopularList';
 import { useQuery } from '@tanstack/react-query';
 import axios from 'axios';
@@ -46,6 +47,7 @@ const HomePage = () => {
                     }
                     {/* <TrendingList MovieGenre={MovieGenre.genres} TVGenre={TVGenre.genres} /> */}
                     <PopularList MovieGenre={MovieGenre.genres} TVGenre={TVGenre.genres} />
+                    <GenreList data={{ TVGenre, MovieGenre }} />
                 </>
             }
         </div>

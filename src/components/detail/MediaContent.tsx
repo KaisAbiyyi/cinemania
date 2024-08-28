@@ -10,15 +10,13 @@ interface MediaContentProps {
 }
 
 const MediaContent: FC<MediaContentProps> = ({ posters, backdrops }) => {
-    // console.log(posters)
     const { pathname } = useLocation()
     const imagePath = import.meta.env.VITE_TMDB_POSTER_URL
-    console.log(posters)
 
     return (
         <Tabs defaultValue="backdrops" className="px-0 h-96">
             <div className="flex flex-col gap-2">
-                <CardTitle className="text-lg">Media</CardTitle>
+                <CardTitle>Media</CardTitle>
                 <TabsList className="w-fit">
                     <TabsTrigger value="backdrops" className="flex gap-2">
                         <span>Backdrops</span>
@@ -33,7 +31,7 @@ const MediaContent: FC<MediaContentProps> = ({ posters, backdrops }) => {
             <TabsContent className="relative flex flex-col" value="backdrops">
                 <div className="flex w-full overflow-x-scroll rounded-sm scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
                     {backdrops.slice(0, 5).map((item: any) => (
-                        <img src={`${imagePath}/w500/${item.file_path}`} key={item.id} className="object-cover aspect-video h-72" alt="" />
+                        <img src={`${imagePath}/w500/${item.file_path}`} key={item.id} className="object-cover aspect-video !h-72" alt="" />
                     ))}
                     {backdrops.length > 10 &&
                         <Link to={`${pathname}/images/backdrops`} className="z-10 flex items-center justify-center p-4 ml-4 duration-200 ease-out rounded-lg hover:bg-primary/90 bg-primary text-primary-foregound">
@@ -45,8 +43,8 @@ const MediaContent: FC<MediaContentProps> = ({ posters, backdrops }) => {
             </TabsContent>
             <TabsContent className="relative flex flex-col" value="posters">
                 <div className="flex w-full overflow-x-scroll rounded-sm scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
-                    {posters.slice(0, 10).map((item: any) => (
-                        <img src={`${imagePath}/w500/${item.file_path}`} key={item.id} className="object-cover h-72" alt="" />
+                    {posters.slice(0, 15).map((item: any) => (
+                        <img src={`${imagePath}/w500/${item.file_path}`} key={item.id} className="object-cover !h-72" alt="" />
                     ))}
                     {posters.length > 10
                         &&

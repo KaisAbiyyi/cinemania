@@ -1,8 +1,6 @@
-import { formatDurationFromMinutes } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import axios from "axios";
-import { format } from "date-fns";
-import { Star } from "lucide-react";
+import { Plus, Star } from "lucide-react";
 import { FC } from "react";
 import { Link } from "react-router-dom";
 import { Button, buttonVariants } from "../ui/button";
@@ -57,45 +55,36 @@ const SlideInfo: FC<SlideInfoProps> = ({ id, detailType }) => {
 
     return (
         <div className="flex flex-col justify-end gap-6">
-            <div className="flex flex-col gap-2 text-lg font-thin">
-                <h3>DAILY TRENDING</h3>
+            <div className="flex flex-col gap-2">
+                <h3 className="text-sm font-thin lg:text-lg text-secondary-foreground/50">DAILY TRENDING</h3>
                 <h1 className="flex gap-2 text-2xl font-bold lg:text-5xl text-primary-foreground">
                     {Info.title ?? Info.original_title ?? Info.name}
                 </h1>
             </div>
-            <div className="flex flex-col gap-4 lg:items-center lg:flex-row">
-                <div className="flex items-center gap-2 lg:order-last">
-                    {Info.genres.map((item: any) => (
-                        <Link
-                            to={`/genre/${item.id}-${(item.name as string).toLowerCase().replace(/ /g, "-")}/${detailType}`}
-                            className={buttonVariants({ className: "!px-4 text-sm !py-1 h-auto hover:!bg-primary", size: "sm", variant: "secondary" })}
-                            key={item.id}
-                        >
-                            {item.name}
-                        </Link>
-                    ))}
-                </div>
+            <div className="flex gap-4 lg:items-center">
                 <div className="flex items-center gap-4">
                     <span className="flex items-center gap-2 text-sm font-bold rounded-sm ">
                         <Star fill="currentColor" size={14} />
                         {Info.vote_average.toFixed(1)}
                     </span>
-                    {detailType === "movie" && (
-                        <time className="text-sm font-bold rounded-sm ">
-                            {formatDurationFromMinutes(Info.runtime)}
-                        </time>
-                    )}
-                    <time className="text-sm font-bold rounded-sm ">
-                        {format(new Date(Info.release_date ?? Info.first_air_date), "MMM d, yyyy")}
-                    </time>
+                </div>
+                <div className="flex gap-2">
+                    {Info.genres.map((item: any) => (
+                        <>
+                            <Link
+                                to={`/genre/${item.id}-${(item.name as string).toLowerCase().replace(/ /g, "-")}/${detailType}`}
+                                className="text-secondary-foreground/50  font-bold hover:text-secondary-foreground/90"
+                                key={item.id}
+                            >
+                                {item.name}
+                            </Link>
+                        </>
+                    ))}
                 </div>
             </div>
-            <i className="text-xl italic font-thin text-background-foreground lg:text-primary-foreground">
-                {Info.tagline}
-            </i>
             <div className="flex gap-4">
                 <Link to={`/${Info.media_type ?? detailType}/${Info.id}-${((Info.title || Info.original_title || Info.name) as string).toLowerCase().replace(/ /g, "-").replace(":", "")}`} className={buttonVariants({ className: "shadow-lg !rounded-full" })}>View Details</Link>
-                <Button variant="secondary" className="rounded-full">Add to list</Button>
+                <Button variant="secondary" className="rounded-full"><Plus /></Button>
             </div>
         </div>
     );

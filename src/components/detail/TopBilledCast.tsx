@@ -1,30 +1,16 @@
-import { useQuery } from "@tanstack/react-query";
-import axios from "axios";
 import { User } from "lucide-react";
 import { FC, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
-import TopBilledCastSkeleton from "./Skeletons/TopBilledCastSkeleton";
 import { buttonVariants } from "../ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 
 interface TopBilledCastProps {
     detailType: string;
-    id: number
+    Credit: any
 }
 
-const TopBilledCast: FC<TopBilledCastProps> = ({ detailType, id }) => {
-    const token = import.meta.env.VITE_TMDB_API_RAT;
+const TopBilledCast: FC<TopBilledCastProps> = ({ detailType, Credit }) => {
     const { pathname } = useLocation();
-
-    const { data: Credit, isPending: CreditPending } = useQuery({
-        queryKey: [`Credit${id}`],
-        queryFn: async () => {
-            const { data } = await axios.get(`https://api.themoviedb.org/3/${detailType}/${id}/${detailType === "movie" ? "credits" : "aggregate_credits"}`, {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            return data;
-        }
-    });
 
     const castList = useMemo(() => Credit?.cast.slice(0, 10) ?? [], [Credit]);
 
@@ -33,10 +19,6 @@ const TopBilledCast: FC<TopBilledCastProps> = ({ detailType, id }) => {
     const handleImageLoad = (id: number) => {
         setLoadedImages(prev => new Set(prev).add(id));
     };
-
-    if (CreditPending) return (
-        <TopBilledCastSkeleton pathName={pathname} />
-    );
 
     return (
         <Card className="flex flex-col gap-8 p-0 border-none bg-background rounded-3xl">
@@ -70,7 +52,7 @@ const TopBilledCast: FC<TopBilledCastProps> = ({ detailType, id }) => {
                                 <CardDescription className="text-xs text-center">{item.character}</CardDescription>
                                 {detailType === "tv" &&
                                     <div className="flex flex-wrap justify-center gap-1">
-                                        {item.roles.map((roles: any) => (<CardDescription className="text-xs text-center">{roles.character}</CardDescription>))}
+                                        {item.roles.map((roles: any) => (<CardDescription className="text-xs text-center" key={roles.id}>{roles.character}</CardDescription>))}
                                     </div>
                                 }
                             </div>

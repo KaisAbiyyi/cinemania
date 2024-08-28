@@ -12,6 +12,7 @@ import { getYear } from "date-fns";
 import { Helmet } from "react-helmet";
 import { useLocation, useParams } from "react-router-dom";
 import NotFound404 from "./NotFound404";
+import TopBilledCastSkeleton from "@/components/detail/Skeletons/TopBilledCastSkeleton";
 
 const ContentDetail = () => {
     const { id } = useParams();
@@ -29,6 +30,17 @@ const ContentDetail = () => {
             return data;
         },
         enabled: !!splittedId, // Only run query if splittedId exists
+    });
+
+    const { data: Credit, isPending: CreditPending, error: CreditError } = useQuery({
+        queryKey: [`Credit${id}`],
+        queryFn: async () => {
+            const { data } = await axios.get(`https://api.themoviedb.org/3/${detailType}/${id}/${detailType === "movie" ? "credits" : "aggregate_credits"}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            return data;
+        },
+        enabled: !!id
     });
 
     const { data: Reviews, isPending: ReviewPending, error: ReviewError } = useQuery({
@@ -53,6 +65,8 @@ const ContentDetail = () => {
         enabled: !!id, // Only run query if id exists
     });
 
+
+
     if (DetailPending) {
         return (
             <div className="flex flex-col">
@@ -74,12 +88,15 @@ const ContentDetail = () => {
                 </title>
             </Helmet>
             <div className="flex flex-col">
-                <DetailHeroSegment originCountry={Detail?.origin_country?.[0]} detailType={detailType} detail={Detail} />
-                <div className="flex flex-col pb-8 mx-2 lg:mx-8 lg:flex-row">
-                    <div className="flex flex-col w-full gap-8 lg:w-4/5">
-                        <TopBilledCast detailType={detailType} id={Detail?.id} />
-                        {ReviewPending ? <ReviewSkeleton /> : ReviewError ? <div>Error loading reviews.</div> : <ReviewOverview reviews={Reviews} title={Detail?.title || Detail?.original_title || Detail?.name} />}
+                {CreditPending ? <HeroSkeleton /> :
+                    <DetailHeroSegment Credit={Credit} originCountry={Detail?.origin_country?.[0]} detailType={detailType} detail={Detail} />
+                }
+                <div className="flex flex-col gap-8 pb-8 mx-4 lg:mx-8 lg:flex-row">
+                    <div className="flex flex-col w-full gap-16 lg:w-4/6">
+
+                        {CreditPending ? <TopBilledCastSkeleton pathName={pathname} /> : CreditError ? <div> Error loading credits.</div> : <TopBilledCast Credit={Credit} detailType={detailType} />}
                         {ImagesPending ? <MediaSkeleton /> : ImagesError ? <div>Error loading images.</div> : <MediaContent posters={Images?.posters} backdrops={Images?.backdrops} />}
+                        {ReviewPending ? <ReviewSkeleton /> : ReviewError ? <div>Error loading reviews.</div> : <ReviewOverview reviews={Reviews} />}
                     </div>
                     <ContentAside detailType={detailType} Detail={Detail} />
                 </div>
