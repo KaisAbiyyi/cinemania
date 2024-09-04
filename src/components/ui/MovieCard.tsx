@@ -23,19 +23,20 @@ const formatDate = (dateString?: string): string => {
     }
 };
 
+// @ts-ignore
 const MovieCard: FC<MovieCardProps> = ({ item, mediaType, MovieGenre, TVGenre, isGrid }) => {
-    let genre;
-    if (!!MovieGenre || !!TVGenre) {
-        if (!!item.genre_ids) {
-            if (mediaType === "movie") {
-                genre = MovieGenre.filter((genre: any) => item.genre_ids.includes(genre.id)) ?? [];
-            } else {
-                genre = TVGenre.filter((genre: any) => item.genre_ids.includes(genre.id)) ?? [];
-            }
-        } else {
-            genre = [];
-        }
-    }
+    // let genre;
+    // if (!!MovieGenre || !!TVGenre) {
+    //     if (!!item.genre_ids) {
+    //         if (mediaType === "movie") {
+    //             genre = MovieGenre.filter((genre: any) => item.genre_ids.includes(genre.id)) ?? [];
+    //         } else {
+    //             genre = TVGenre.filter((genre: any) => item.genre_ids.includes(genre.id)) ?? [];
+    //         }
+    //     } else {
+    //         genre = [];
+    //     }
+    // }
     const releaseDate = item.release_date || item.first_air_date;
     const formattedDate = formatDate(releaseDate);
 
@@ -48,7 +49,7 @@ const MovieCard: FC<MovieCardProps> = ({ item, mediaType, MovieGenre, TVGenre, i
                     </span>
                     {item.vote_average ? (item.vote_average as number).toFixed(1) : "NR"}
                 </div>
-                <Button title="Add to Watchlist" variant={"ghost"} className="absolute top-0 right-0 z-10 w-8 h-8 p-0 rounded-none rounded-tr-lg rounded-bl-sm bg-secondary/60" size={"icon"}><Plus size={18}/></Button>
+                <Button title="Add to Watchlist" variant={"ghost"} className="absolute top-0 right-0 z-10 w-8 h-8 p-0 rounded-none rounded-tr-lg rounded-bl-sm bg-secondary/60" size={"icon"}><Plus size={18} /></Button>
                 <CardHeader className={isGrid ? "w-full p-0 h-80 lg:h-96" : "w-56 p-0 h-80 lg:w-64 lg:h-96"}>
                     <img
                         src={item.poster_path ? `${import.meta.env.VITE_TMDB_POSTER_URL}/w500${item.poster_path}` : "/images/blankimage.png"}
