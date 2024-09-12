@@ -46,8 +46,8 @@ const HomePage = () => {
                         <TrendingSlider data={Trending} />
                     }
                     {/* <TrendingList MovieGenre={MovieGenre.genres} TVGenre={TVGenre.genres} /> */}
-                    <PopularList MovieGenre={MovieGenre.genres} TVGenre={TVGenre.genres} />
                     <GenreList data={{ TVGenre, MovieGenre }} />
+                    <PopularList MovieGenre={MovieGenre.genres} TVGenre={TVGenre.genres} />
                 </>
             }
         </div>

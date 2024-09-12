@@ -10,7 +10,7 @@ import { FC, useCallback, useRef, useState } from "react";
 import { Helmet } from "react-helmet";
 import { Link } from "react-router-dom";
 
-const MoviePage: FC = () => {
+const MovieIndex: FC = () => {
     const token = import.meta.env.VITE_TMDB_API_RAT;
     const [sortBy, setSortBy] = useState<string>("popularity.desc");
     const [FromReleaseDate, setFromReleaseDate] = useState<Date>();
@@ -130,7 +130,7 @@ const MoviePage: FC = () => {
                     />
                 </div>
                 <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
-                    {(TrendingPending || MovieGenrePending) ? <MoviePageSkeleton /> :
+                    {(TrendingPending || MovieGenrePending) ? <MovieIndexSkeleton /> :
                         Trending?.pages.map((page) =>
                             page.results.map((item: any, index: number) => {
                                 if (page.results.length === index + 1) {
@@ -158,7 +158,7 @@ const MoviePage: FC = () => {
                                 }
                             })
                         )}
-                    {isFetchingNextPage && <MoviePageSkeleton />}
+                    {isFetchingNextPage && <MovieIndexSkeleton />}
                 </div>
                 <div ref={observerElem} />
                 {TrendingError && <div>Error loading trending movies. Please try again later.</div>}
@@ -168,7 +168,7 @@ const MoviePage: FC = () => {
     );
 }
 
-const MoviePageSkeleton = () => {
+const MovieIndexSkeleton = () => {
     return (
         <>
             <Skeleton className="w-full h-96" />
@@ -180,4 +180,4 @@ const MoviePageSkeleton = () => {
     )
 }
 
-export default MoviePage;
+export default MovieIndex;

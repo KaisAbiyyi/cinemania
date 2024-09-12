@@ -5,20 +5,20 @@ import { Route, BrowserRouter, Routes } from 'react-router-dom'
 import Layout from './layout'
 
 // Page Import
-import HomePage from './pages/Home'
+import HomePage from './pages/index'
 import NotFound404 from './pages/NotFound404'
 import ContentDetail from './pages/ContentDetail'
-import PersonDetail from './pages/PersonDetail'
+import PersonDetail from './pages/person/PersonDetail'
 import SearchPage from './pages/SearchPage'
 import TrendingPage from './pages/TrendingPage'
-import MoviePage from './pages/MoviePage'
-import TVPage from './pages/TVPage'
-import MovieNowPlayingPage from './pages/MovieNowPlayingPage'
-import MovieUpcoming from './pages/MovieUpcoming'
-import MovieTopRated from './pages/MovieTopRated'
-import TVAiringToday from './pages/TVAiringToday'
-import TvOnTheAir from './pages/TVOnTheAir'
-import TVTopRated from './pages/TVTopRated'
+import TVPage from './pages/tv/TVPage'
+import MovieNowPlayingPage from './pages/movie/MovieNowPlayingPage'
+import MovieUpcoming from './pages/movie/MovieUpcoming'
+import MovieTopRated from './pages/movie/MovieTopRated'
+import TVAiringToday from './pages/tv/TVAiringToday'
+import TvOnTheAir from './pages/tv/TVOnTheAir'
+import TVTopRated from './pages/tv/TVTopRated'
+import MovieIndex from './pages/movie/MoviePage'
 
 const container = document.getElementById("root")
 
@@ -36,7 +36,7 @@ if (container) {
           <Route path='/tv/on-the-air' element={<Layout><TvOnTheAir /></Layout>} />
           <Route path='/tv/top-rated' element={<Layout><TVTopRated /></Layout>} />
           <Route path='/tv/:id' element={<Layout><ContentDetail /></Layout>} />
-          <Route path="/movie" element={<Layout><MoviePage /></Layout>} />
+          <Route path="/movie" element={<Layout><MovieIndex /></Layout>} />
           <Route path='/movie/now-playing' element={<Layout><MovieNowPlayingPage /></Layout>} />
           <Route path='/movie/upcoming' element={<Layout><MovieUpcoming /></Layout>} />
           <Route path='/movie/top-rated' element={<Layout><MovieTopRated /></Layout>} />
