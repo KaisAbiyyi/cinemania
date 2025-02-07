@@ -10,8 +10,8 @@ import {
     SidebarMenuButton,
     SidebarMenuItem,
 } from "@/components/ui/sidebar"
-import { Clapperboard, Compass, Heart, Icon, List, TrendingUp, Tv } from "lucide-react"
-import { title } from "process"
+import { Clapperboard, Compass, Heart, List, TrendingUp, Tv } from "lucide-react"
+import { useLocation } from "react-router-dom"
 
 const BrowseItems = [
     {
@@ -50,9 +50,15 @@ const MyMovieItems = [
 ]
 
 export function AppSidebar() {
+    const { pathname } = useLocation()
+
     return (
         <Sidebar collapsible="icon">
-            <SidebarHeader />
+            <SidebarHeader>
+                <SidebarGroup>
+                    <SidebarGroupLabel className="m-auto text-secondary-foreground">cinemania</SidebarGroupLabel>
+                </SidebarGroup>
+            </SidebarHeader>
             <SidebarContent>
                 <SidebarGroup>
                     <SidebarGroupLabel>Browse</SidebarGroupLabel>
@@ -60,7 +66,7 @@ export function AppSidebar() {
                         <SidebarMenu>
                             {BrowseItems.map((item) => (
                                 <SidebarMenuItem key={item.title}>
-                                    <SidebarMenuButton asChild>
+                                    <SidebarMenuButton isActive={pathname === item.url} asChild>
                                         <a href={item.url}>
                                             <item.icon />
                                             <span>{item.title}</span>
