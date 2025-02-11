@@ -16,7 +16,11 @@ const App = () => {
         </Route>
 
         {/* Fallback route */}
-        <Route path="*" element={<NotFoundPage />} />
+        <Route path="*" element={
+          <MainLayout>
+            <NotFoundPage />
+          </MainLayout>
+        } />
       </Routes>
     </BrowserRouter>
   );

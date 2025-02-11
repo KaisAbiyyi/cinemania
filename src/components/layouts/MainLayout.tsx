@@ -14,7 +14,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
         <SidebarProvider>
           <HelmetProvider>
             <AppSidebar />
-            <main className="flex flex-col w-full">
+            <main className="flex flex-col w-full md:w-[calc(100%-16rem)]">
               <Navbar />
               <div className="flex flex-col gap-8 p-8">
                 {children}
