@@ -10,11 +10,12 @@ import { Genre } from "@/types/genre";
 import { FC } from "react";
 import { Link } from "react-router-dom";
 import { useGenres } from "../../hooks/useGenres";
+import GenreListSkeleton from "./GenreListSkeleton";
 
 const MVGenreList: FC = () => {
     const { data: genres, isPending } = useGenres('movie')
     if (isPending) return (
-        <h1>loading</h1>
+        <GenreListSkeleton/>
     )
     // console.log(genres)
     return (
@@ -22,7 +23,7 @@ const MVGenreList: FC = () => {
             <CarouselPrevious className="relative top-auto left-auto translate-y-0" />
             <CarouselContent className="items-center">
                 {genres.map((genre: Genre) => (
-                    <CarouselItem className="basis-1/6">
+                    <CarouselItem className="basis-1/6" key={genre.id}>
                         <Link to={`/genre/${genre.id}-${genre.name.toLowerCase().replace(/ /g, "-")}/tv`}
                             className={buttonVariants({ variant: "secondary", className: "w-full" })}>
                             {genre.name}

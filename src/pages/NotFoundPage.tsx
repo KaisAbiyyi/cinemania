@@ -1,19 +1,22 @@
 import { buttonVariants } from '@/components/ui/button';
+import { CardTitle } from '@/components/ui/card';
 import { FC } from 'react';
+import { Helmet } from 'react-helmet-async';
 import { Link } from 'react-router-dom';
 
 const NotFoundPage: FC = () => {
   return (
-    <div className="flex flex-col items-center justify-center h-screen text-gray-800 bg-gray-100">
-      <h1 className="mb-4 text-6xl font-bold">404</h1>
-      <p className="mb-6 text-xl">Oops! The page you're looking for doesn't exist.</p>
-      <Link
-        to="/"
-        className={buttonVariants()}
-      >
-        Back to Homepage
-      </Link>
-    </div>
+    <>
+      <Helmet>
+        <title>404 Not Found | Cinemania</title>
+      </Helmet>
+      <div className="flex flex-col items-center justify-center h-full gap-8 m-auto w-96">
+        <img src="/notfound404.svg" alt="" />
+        <CardTitle className="text-5xl">Oops...</CardTitle>
+        <h1>The page you're looking for doesn't exists</h1>
+        <Link to={"/"} className={buttonVariants()}>Back to home</Link>
+      </div>
+    </>
   );
 };
 

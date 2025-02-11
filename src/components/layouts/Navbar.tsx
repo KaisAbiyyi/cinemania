@@ -9,7 +9,7 @@ const Navbar = () => {
     const { setTheme } = useTheme()
 
     return (
-        <div className="flex items-center justify-between gap-4 p-4 border-b">
+        <div className="sticky top-0 left-0 right-0 z-50 flex items-center justify-between gap-4 p-4 border-b bg-background">
             <SidebarTrigger />
             <div className="flex gap-4">
                 <Input className="w-80" placeholder="Search..." />

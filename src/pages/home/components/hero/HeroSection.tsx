@@ -8,11 +8,12 @@ import { FC } from "react";
 import HeroMovieInfo from "./HeroMovieInfo";
 import HeroMiniCarousel from "./HeroMiniCarousel";
 import { HeroCarouselProvider } from "../../hooks/HeroCarouselProvider";
+import HeroSectionSkeleton from "./HeroSectionSkeleton";
 
 const HeroSection: FC = () => {
     const { data: movies, isPending, error } = useHeroMovies();
 
-    if (isPending) return <h1>Loading...</h1>;
+    if (isPending) return <HeroSectionSkeleton />;
     if (error || !movies || movies.length === 0) return <h1>Failed to load movies.</h1>;
 
     return (
