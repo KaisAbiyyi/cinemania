@@ -51,12 +51,30 @@ export const fetchMovieRecommendations = (detailType: string, id: number) => {
  * Fetch daftar popular movies
  * @returns {Promise<any>} - List of popular movies dari TMDB
  */
-export const fetchPopular = (detailType:string) => {
-    console.log(detailType)
-    return fetchFromTMDB(`discover/${detailType}`, {
+export const fetchPopular = (detailType: string) => {
+    return fetchFromTMDB(`${detailType}/popular`, {
         include_adult: false,
         language: "en-US",
-        page: 1,
-        sort_by: "popularity.desc",
     });
 };
+export const fetchTopRatedMovie = () => {
+    return fetchFromTMDB(`movie/top_rated`, {
+        include_adult: false,
+        language: "en-US",
+    });
+};
+
+export const fetchNowPlayingMovie = () => {
+    return fetchFromTMDB('movie/now_playing', {
+        include_adult: false,
+        language: "en-US",
+        page: 1
+    })
+}
+
+export const fetchUpcomingMovie = () => {
+    return fetchFromTMDB('movie/upcoming', {
+        include_adult: false,
+        language: "en-US"
+    })
+}

@@ -23,7 +23,7 @@ const MVGenreList: FC = () => {
             <CarouselPrevious className="relative top-auto left-auto translate-y-0" />
             <CarouselContent className="items-center">
                 {genres.map((genre: Genre) => (
-                    <CarouselItem className="basis-1/6" key={genre.id}>
+                    <CarouselItem className="basis-1/3 md:basis-1/6" key={genre.id}>
                         <Link to={`/genre/${genre.id}-${genre.name.toLowerCase().replace(/ /g, "-")}/tv`}
                             className={buttonVariants({ variant: "secondary", className: "w-full" })}>
                             {genre.name}

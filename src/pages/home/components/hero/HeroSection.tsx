@@ -27,7 +27,7 @@ const HeroSection: FC = () => {
                             <ChevronRight />
                         </Link>
                     </CardHeader>
-                    <CardHeader className="flex-row items-end justify-between">
+                    <CardHeader className="md:items-end md:justify-between md:flex-row">
                         <HeroMovieInfo movies={movies} />
                         <HeroMiniCarousel movies={movies} />
                     </CardHeader>

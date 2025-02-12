@@ -18,7 +18,7 @@ const HeroMovieInfo: FC<HeroMovieInfoProps> = ({ movies }) => {
 
     if (isLoading) {
         return (
-            <div className="flex flex-col justify-end w-2/3 gap-6">
+            <div className="flex flex-col justify-end w-full gap-6 md:w-2/3">
                 <Skeleton className="h-16 w-96" />
                 <Skeleton className="w-24 h-8" />
                 <Skeleton className="w-64 h-8" />
@@ -29,7 +29,7 @@ const HeroMovieInfo: FC<HeroMovieInfoProps> = ({ movies }) => {
     if (!movieDetail) return null;
 
     return (
-        <div className="flex flex-col justify-end w-2/3 gap-6">
+        <div className="flex flex-col justify-end w-full gap-6 md:w-2/3">
             <h3 className="text-sm font-thin lg:text-lg text-slate-50">DAILY TRENDING</h3>
             <h1 className="text-2xl font-bold lg:text-5xl text-primary-foreground">
                 {movieDetail.title ?? movieDetail.original_title ?? movieDetail.name}

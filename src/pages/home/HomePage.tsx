@@ -4,6 +4,9 @@ import { Helmet } from 'react-helmet-async';
 import GenreList from './components/genre/GenreList';
 import PopularMovieList from './components/PopularMovieList';
 import PopularTVList from './components/PopularTVList';
+import TopRatedMovieList from './components/TopRatedMovieList';
+import NowPlayingMovie from './components/NowPlayingMovie';
+import UpcomingMovie from './components/UpcomingMovie';
 
 const HomePage: FC = () => {
     return (
@@ -15,6 +18,11 @@ const HomePage: FC = () => {
             <GenreList />
             <PopularMovieList />
             <PopularTVList />
+            <div className="flex flex-col gap-10 lg:flex-row">
+                <NowPlayingMovie />
+                <UpcomingMovie />
+            </div>
+            <TopRatedMovieList />
         </>
     );
 };

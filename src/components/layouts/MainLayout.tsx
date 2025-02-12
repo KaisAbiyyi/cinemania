@@ -7,28 +7,38 @@ import Navbar from "./Navbar"
 import { AppSidebar } from "./AppSidebar"
 
 function MainContent({ children }: { children: React.ReactNode }) {
-  const { state } = useSidebar()
+  const { state, isMobile } = useSidebar()
 
   // Tentukan lebar sidebar sesuai state:
-  // Jika collapsed: gunakan var(--sidebar-width-icon) misalnya "3rem"
-  // Jika expanded: gunakan var(--sidebar-width) misalnya "16rem"
+  // Jika collapsed: gunakan var(--sidebar-width-icon) (misalnya "3rem")
+  // Jika expanded: gunakan var(--sidebar-width) (misalnya "16rem")
   const sidebarWidth =
     state === "collapsed" ? "var(--sidebar-width-icon)" : "var(--sidebar-width)"
 
-  // Dengan menggunakan absolute positioning dan right: 0,
-  // kita mengatur left sesuai lebar sidebar, sehingga main content
-  // akan selalu menempel ke sisi kanan.
-  const mainStyle = {
-    position: "absolute" as const,
-    top: 0,
-    bottom: 0,
-    right: 0,
-    left: sidebarWidth,
-    transition: "left 0.2s ease, width 0.2s ease",
-  }
+  // Jika di mobile, main content akan memiliki full width (offset sidebar tidak berlaku)
+  const mainStyle = isMobile
+    ? {
+      position: "absolute" as const,
+      top: 0,
+      bottom: 0,
+      right: 0,
+      left: 0,
+      transition: "left 0.2s ease, width 0.2s ease",
+    }
+    : {
+      position: "absolute" as const,
+      top: 0,
+      bottom: 0,
+      right: 0,
+      left: sidebarWidth,
+      transition: "left 0.2s ease, width 0.2s ease",
+    }
 
   return (
-    <main style={mainStyle} className="flex flex-col overflow-y-auto scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent">
+    <main
+      style={mainStyle}
+      className="flex flex-col overflow-y-auto scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent"
+    >
       <Navbar />
       <div className="flex flex-col gap-10 p-8">
         {children}

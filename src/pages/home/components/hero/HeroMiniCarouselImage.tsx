@@ -13,7 +13,7 @@ const HeroMiniCarouselImage: FC<HeroMiniCarouselImageProps> = ({ src, className 
         <img
             src={src}
             alt=""
-            className={cn(`rounded-md transition-filter duration-500 ${loading ? 'blur-lg' : 'blur-0'}`, className)}
+            className={cn(`rounded-md h-10 md:h-fit md:w-fit w-full object-cover  transition-filter duration-500 ${loading ? 'blur-lg' : 'blur-0'}`, className)}
             onLoad={() => setLoading(false)}
             onLoadStart={() => setLoading(true)}
         />
