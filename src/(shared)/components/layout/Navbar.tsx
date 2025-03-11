@@ -18,7 +18,7 @@ const Navbar = () => {
                 {/* ✅ Search Input dengan Label */}
                 <div className="relative">
                     <label htmlFor="search" className="sr-only">Search Movies and TV Shows</label>
-                    <Input id="search" className="w-80" placeholder="Search Movies or TV Shows..." />
+                    <Input id="search" className="w-full md:w-80" placeholder="Search Movies or TV Shows..." />
                 </div>
 
                 {/* ✅ Theme Toggle */}

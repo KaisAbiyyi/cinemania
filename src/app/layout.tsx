@@ -1,10 +1,10 @@
 "use client";
 
-import Footer from "@/components/layout/Footer";
-import Navbar from "@/components/layout/Navbar";
-import { AppSidebar } from "@/components/layout/Sidebar";
-import { ThemeProvider } from "@/components/layout/theme-provider";
-import { SidebarProvider, useSidebar } from "@/components/ui/sidebar";
+import Footer from "@/(shared)/components/layout/Footer";
+import Navbar from "@/(shared)/components/layout/Navbar";
+import { AppSidebar } from "@/(shared)/components/layout/Sidebar";
+import { ThemeProvider } from "@/(shared)/components/layout/theme-provider";
+import { SidebarProvider, useSidebar } from "@/(shared)/components/ui/sidebar";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Geist, Geist_Mono } from "next/font/google";
 import { useMemo } from "react";
@@ -53,16 +53,16 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <QueryClientProvider client={queryClient}>
-          <ThemeProvider attribute="class" defaultTheme="light">
+        <ThemeProvider attribute="class" defaultTheme="light">
+          <QueryClientProvider client={queryClient}>
             <SidebarProvider>
               <div className="relative w-full h-svh">
                 <AppSidebar />
                 <MainContent>{children}</MainContent>
               </div>
             </SidebarProvider>
-          </ThemeProvider>
-        </QueryClientProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

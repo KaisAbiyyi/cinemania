@@ -1,3 +1,4 @@
+import GenreList from "@/(shared)/genre/GenreList";
 import { Metadata } from "next";
 import Image from "next/image";
 
@@ -25,6 +26,6 @@ export const metadata: Metadata = {
 
 export default function Home() {
   return (
-   <h1>anjay gua ganteng</h1>
+    <GenreList />
   );
 }

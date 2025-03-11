@@ -10,7 +10,7 @@ import {
     SidebarMenu,
     SidebarMenuButton,
     SidebarMenuItem,
-} from "@/components/ui/sidebar"
+} from "@/(shared)/components/ui/sidebar"
 import { Clapperboard, Compass, Heart, List, TrendingUp, Tv } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
