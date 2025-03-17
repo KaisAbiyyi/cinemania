@@ -10,7 +10,7 @@ import {
     SidebarMenu,
     SidebarMenuButton,
     SidebarMenuItem,
-} from "@/(shared)/components/ui/sidebar"
+} from "@/components/ui/sidebar"
 import { Clapperboard, Compass, Heart, List, TrendingUp, Tv } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -38,18 +38,18 @@ const BrowseItems = [
     },
 ]
 
-const MyMovieItems = [
-    {
-        title: "Watchlist",
-        url: "/watchlist",
-        icon: List
-    },
-    {
-        title: "Favorites",
-        url: "/favorites",
-        icon: Heart
-    }
-]
+// const MyMovieItems = [
+//     {
+//         title: "Watchlist",
+//         url: "/watchlist",
+//         icon: List
+//     },
+//     {
+//         title: "Favorites",
+//         url: "/favorites",
+//         icon: Heart
+//     }
+// ]
 
 export function AppSidebar() {
     const pathname = usePathname()
@@ -84,7 +84,7 @@ export function AppSidebar() {
                         </SidebarMenu>
                     </SidebarGroupContent>
                 </SidebarGroup>
-                <SidebarGroup>
+                {/* <SidebarGroup>
                     <SidebarGroupLabel>My Movies</SidebarGroupLabel>
                     <SidebarGroupContent>
                         <SidebarMenu>
@@ -100,7 +100,7 @@ export function AppSidebar() {
                             ))}
                         </SidebarMenu>
                     </SidebarGroupContent>
-                </SidebarGroup>
+                </SidebarGroup> */}
             </SidebarContent>
             <SidebarFooter />
         </Sidebar>

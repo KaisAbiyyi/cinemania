@@ -2,15 +2,12 @@
 
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious } from "@/components/ui/carousel";
 import Link from "next/link";
-import { buttonVariants } from "../components/ui/button";
+import { buttonVariants } from "../../../components/ui/button";
 import { useGenres } from "../hooks/useGenre";
 import GenreListSkeleton from "./GenreListSkeleton";
+import { Genre } from "@/types/genre";
 
-// Tipe untuk Genre
-interface Genre {
-    id: number;
-    name: string;
-}
+
 
 const MediaGenreList = ({ type }: { type: "movie" | "tv" }) => {
     const { data: genres, isLoading, error } = useGenres(type);

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import apiClient from "../services/apiClient";
+import apiClient from "../../../services/apiClient";
 
 /**
  * Custom Hook for fetching genres via API Route (Axios version)

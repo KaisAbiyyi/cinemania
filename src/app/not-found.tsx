@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Metadata } from "next";
-import { buttonVariants } from "@/(shared)/components/ui/button";
-import { CardTitle } from "@/(shared)/components/ui/card";
+import { buttonVariants } from "@/components/ui/button";
+import { CardTitle } from "@/components/ui/card";
 
 export const metadata: Metadata = {
   title: "404 Not Found | Cinemania",
