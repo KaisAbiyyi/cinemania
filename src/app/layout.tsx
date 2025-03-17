@@ -1,7 +1,7 @@
 "use client";
 
 import Footer from "@/components/layout/Footer";
-import Navbar from "@/components/layout/Navbar";
+import Navbar from "@/components/layout/navbar/Navbar";
 import { AppSidebar } from "@/components/layout/Sidebar";
 import { ThemeProvider } from "@/components/layout/theme-provider";
 import { SidebarProvider, useSidebar } from "@/components/ui/sidebar";
@@ -53,16 +53,16 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <QueryClientProvider client={queryClient}>
-          <ThemeProvider attribute="class" defaultTheme="light">
+        <ThemeProvider attribute="class" defaultTheme="light">
+          <QueryClientProvider client={queryClient}>
             <SidebarProvider>
-              <div className="relative w-full h-svh">
+              <div className="relative w-full h-svh bg-gradient-to-tl from-primary/15 dark:from-black via-background to-primary/5">
                 <AppSidebar />
                 <MainContent>{children}</MainContent>
               </div>
             </SidebarProvider>
-          </ThemeProvider>
-        </QueryClientProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

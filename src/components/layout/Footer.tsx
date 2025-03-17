@@ -5,11 +5,33 @@ import { buttonVariants } from "../ui/button";
 import Link from "next/link";
 
 const Footer: FC = () => {
+    const linkClass = "transition text-muted-foreground hover:text-secondary-foreground";
+    const socialButtonClass = buttonVariants({ variant: "ghost", className: "!justify-start hover:bg-primary transition-all duration-75 ease-in hover:text-primary-foreground" });
+
+    const navLinks = [
+        { label: "Home", href: "/" },
+        { label: "Movies", href: "/movie" },
+        { label: "TV Shows", href: "/tv" },
+        { label: "About", href: "/about" },
+    ];
+
+    const personalLinks = [
+        { label: "Portfolio", href: "https://kaisabiyyi.com" },
+        { label: "Resume", href: "https://kaisabiyyi.com/assets/resume-KaisAbiyyi.pdf" },
+    ];
+
+    const socialLinks = [
+        { label: "Github", href: "https://github.com/KaisAbiyyi", icon: <Github size={24} /> },
+        { label: "LinkedIn", href: "https://linkedin.com/in/kais-abiyyi-109572208", icon: <Linkedin size={24} /> },
+        { label: "X", href: "https://x.com/kaisabiyyi", icon: <Twitter size={24} /> },
+        { label: "Instagram", href: "https://instagram.com/kaisabiyyi", icon: <Instagram size={24} /> },
+        { label: "Email", href: "mailto:business.kaisabiyyi@gmail.com", icon: <Mail size={24} /> },
+    ];
+
     return (
         <footer className="p-8 border-t" itemScope itemType="https://schema.org/Organization">
             <div className="grid grid-cols-1 gap-8 mx-auto md:grid-cols-4 md:text-left">
-
-                {/* 🏆 Brand & Navigasi */}
+                {/* Brand & Overview */}
                 <nav aria-label="Cinemania Overview" className="flex flex-col gap-4">
                     <CardTitle className="text-lg" itemProp="name">Cinemania</CardTitle>
                     <CardDescription itemProp="description">
@@ -17,52 +39,37 @@ const Footer: FC = () => {
                     </CardDescription>
                 </nav>
 
+                {/* Navigation */}
                 <nav aria-label="Site Navigation" className="flex flex-col gap-4">
                     <CardTitle className="text-lg">Browse</CardTitle>
                     <div className="flex flex-col gap-2">
-                        <Link href="/" className="transition text-muted-foreground hover:text-secondary-foreground">Home</Link>
-                        <Link href="/movie" className="transition text-muted-foreground hover:text-secondary-foreground">Movies</Link>
-                        <Link href="/tv" className="transition text-muted-foreground hover:text-secondary-foreground">TV Shows</Link>
-                        <Link href="/about" className="transition text-muted-foreground hover:text-secondary-foreground">About</Link>
+                        {navLinks.map(({ label, href }) => (
+                            <Link key={href} href={href} className={linkClass}>{label}</Link>
+                        ))}
                     </div>
                 </nav>
 
-                {/* 👤 Personal Branding */}
+                {/* Personal Branding */}
                 <address aria-label="Personal Links" className="flex flex-col gap-4 not-italic">
                     <CardTitle className="text-lg">Personal</CardTitle>
                     <div className="flex flex-col gap-2">
-                        <Link href="https://kaisabiyyi.com" target="_blank" rel="noopener noreferrer nofollow" className="transition text-muted-foreground hover:text-secondary-foreground">Portfolio</Link>
-                        <Link href="https://kaisabiyyi.com/assets/resume-KaisAbiyyi.pdf" target="_blank" rel="noopener noreferrer nofollow" className="transition text-muted-foreground hover:text-secondary-foreground">Resume</Link>
+                        {personalLinks.map(({ label, href }) => (
+                            <Link key={href} href={href} target="_blank" rel="noopener noreferrer nofollow" className={linkClass}>{label}</Link>
+                        ))}
                     </div>
                 </address>
 
-                {/* 🌍 Sosial Media */}
+                {/* Social Media */}
                 <address aria-label="Social Media Links" className="flex flex-col gap-4 not-italic">
                     <CardTitle className="text-lg">Social</CardTitle>
                     <div className="flex flex-col gap-2 md:justify-start">
-                        <Link href="https://github.com/KaisAbiyyi" target="_blank" rel="noopener noreferrer nofollow" className={buttonVariants({ variant: "secondary", className: "!justify-start" })}>
-                            <Github size={24} />
-                            Github
-                        </Link>
-                        <Link href="https://linkedin.com/in/kais-abiyyi-109572208" target="_blank" rel="noopener noreferrer nofollow" className={buttonVariants({ variant: "secondary", className: "!justify-start" })}>
-                            <Linkedin size={24} />
-                            LinkedIn
-                        </Link>
-                        <Link href="https://x.com/kaisabiyyi" target="_blank" rel="noopener noreferrer nofollow" className={buttonVariants({ variant: "secondary", className: "!justify-start" })}>
-                            <Twitter size={24} />
-                            X
-                        </Link>
-                        <Link href="https://instagram.com/kaisabiyyi" target="_blank" rel="noopener noreferrer nofollow" className={buttonVariants({ variant: "secondary", className: "!justify-start" })}>
-                            <Instagram size={24} />
-                            Instagram
-                        </Link>
-                        <Link href="mailto:business.kaisabiyyi@gmail.com" className={buttonVariants({ variant: "secondary", className: "!justify-start" })}>
-                            <Mail size={24} />
-                            Email
-                        </Link>
+                        {socialLinks.map(({ label, href, icon }) => (
+                            <Link key={href} href={href} target="_blank" rel="noopener noreferrer nofollow" className={socialButtonClass}>
+                                {icon} {label}
+                            </Link>
+                        ))}
                     </div>
                 </address>
-
             </div>
 
             {/* Credit to TMDB */}

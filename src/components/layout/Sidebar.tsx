@@ -38,18 +38,18 @@ const BrowseItems = [
     },
 ]
 
-const MyMovieItems = [
-    {
-        title: "Watchlist",
-        url: "/watchlist",
-        icon: List
-    },
-    {
-        title: "Favorites",
-        url: "/favorites",
-        icon: Heart
-    }
-]
+// const MyMovieItems = [
+//     {
+//         title: "Watchlist",
+//         url: "/watchlist",
+//         icon: List
+//     },
+//     {
+//         title: "Favorites",
+//         url: "/favorites",
+//         icon: Heart
+//     }
+// ]
 
 export function AppSidebar() {
     const pathname = usePathname()
@@ -84,7 +84,7 @@ export function AppSidebar() {
                         </SidebarMenu>
                     </SidebarGroupContent>
                 </SidebarGroup>
-                <SidebarGroup>
+                {/* <SidebarGroup>
                     <SidebarGroupLabel>My Movies</SidebarGroupLabel>
                     <SidebarGroupContent>
                         <SidebarMenu>
@@ -100,7 +100,7 @@ export function AppSidebar() {
                             ))}
                         </SidebarMenu>
                     </SidebarGroupContent>
-                </SidebarGroup>
+                </SidebarGroup> */}
             </SidebarContent>
             <SidebarFooter />
         </Sidebar>
