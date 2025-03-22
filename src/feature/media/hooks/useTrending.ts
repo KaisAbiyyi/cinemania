@@ -39,7 +39,7 @@ export const useInfiniteTrending = (params: TrendingQueryParams) => {
         queryKey: ["trending", params],
         initialPageParam: 1, // halaman awal
         queryFn: async ({ pageParam = 1 }) => {
-            const { data } = await apiClient.get<TrendingResponse>("/trending", {
+            const { data } = await apiClient.get<TrendingResponse>("/media/trending", {
                 params: { ...params, page: pageParam },
             });
             return data;

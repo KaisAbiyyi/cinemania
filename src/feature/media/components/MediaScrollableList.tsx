@@ -35,6 +35,7 @@ const MediaScrollableList: FC<MediaScrollableListProps> = ({
     const baseParams: MediaQueryParams = {
         mediaType: type,
         language: "en-US",
+        include_adults: false,
         ...queryParams,
     };
 
