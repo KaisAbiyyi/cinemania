@@ -42,6 +42,7 @@ const MediaCard: FC<MediaCardProps> = ({
 
     const genres = genresData?.filter((genre: Genre) => genre_ids.includes(genre.id)) || [];
 
+
     // Format tanggal menggunakan date-fns
     const formattedDate = releaseDate ? format(new Date(releaseDate), "MMM d, yyyy", { locale: enUS }) : "Unknown";
 

@@ -22,7 +22,7 @@ export default function HeroSearchBar() {
         <form
             role="search"
             onSubmit={handleSubmit}
-            className="flex gap-2 p-4 bg-indigo-950 dark"
+            className="flex gap-2 p-4 bg-indigo-950"
             aria-label="Search movies, TV shows, or people"
         >
             <Input
@@ -31,7 +31,7 @@ export default function HeroSearchBar() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search for a movie, TV show, or person..."
-                className="bg-slate-950 text-indigo-100 placeholder:text-indigo-300"
+                className="dark:bg-slate-950 bg-background text-indigo-950 dark:text-indigo-100 dark:placeholder:text-indigo-300"
                 aria-label="Search input"
             />
             <Button type="submit" size="icon" aria-label="Search">

@@ -9,23 +9,23 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { LayoutGrid, StretchHorizontal } from "lucide-react";
-import { useTrendingFilters } from "../hooks/useTrendingFilters";
+import { useTrendingFilters } from "../../hooks/useTrendingFilters";
 
 const TrendingFilters: FC = () => {
-    const { 
-        mediaType, 
-        setMediaType, 
-        timeWindow, 
-        setTimeWindow, 
-        orientation, 
-        setOrientation 
+    const {
+        mediaType,
+        setMediaType,
+        timeWindow,
+        setTimeWindow,
+        orientation,
+        setOrientation
     } = useTrendingFilters();
 
     return (
         <div className="flex justify-between">
             <div className="flex gap-4">
-                <Select 
-                    value={mediaType} 
+                <Select
+                    value={mediaType}
                     onValueChange={(value) => setMediaType(value as "all" | "movie" | "tv")}
                 >
                     <SelectTrigger className="w-[125px]">
@@ -37,8 +37,8 @@ const TrendingFilters: FC = () => {
                         <SelectItem value="tv">TV Shows</SelectItem>
                     </SelectContent>
                 </Select>
-                <Select 
-                    value={timeWindow} 
+                <Select
+                    value={timeWindow}
                     onValueChange={(value) => setTimeWindow(value as "day" | "week")}
                 >
                     <SelectTrigger className="w-[125px]">
@@ -50,14 +50,14 @@ const TrendingFilters: FC = () => {
                     </SelectContent>
                 </Select>
             </div>
-            <Select 
-                value={orientation} 
+            <Select
+                value={orientation}
                 onValueChange={(value) => setOrientation(value as "horizontal" | "vertical")}
             >
                 <SelectTrigger>
                     <SelectValue placeholder={orientation === "horizontal" ? <LayoutGrid /> : <StretchHorizontal />} />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent align="end">
                     <SelectItem value="horizontal">
                         <LayoutGrid />
                     </SelectItem>

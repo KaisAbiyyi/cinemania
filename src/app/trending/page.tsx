@@ -1,5 +1,5 @@
 import TrendingContainer from "@/feature/media/components/TrendingContainer";
-import TrendingFilters from "@/feature/media/components/TrendingFilters";
+import TrendingFilters from "@/feature/media/components/filter/TrendingFilters";
 import { Metadata } from "next";
 import { FC } from "react";
 

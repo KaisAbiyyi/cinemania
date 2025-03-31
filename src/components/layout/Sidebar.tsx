@@ -10,10 +10,13 @@ import {
     SidebarMenu,
     SidebarMenuButton,
     SidebarMenuItem,
+    SidebarMenuSub,
+    SidebarMenuSubItem,
 } from "@/components/ui/sidebar"
-import { Clapperboard, Compass, Heart, List, TrendingUp, Tv } from "lucide-react"
+import { Clapperboard, Compass, TrendingUp, Tv } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible"
 
 const BrowseItems = [
     {
@@ -26,16 +29,43 @@ const BrowseItems = [
         url: "/trending",
         icon: TrendingUp,
     },
+]
+
+const MoviesCollapsibleItems = [
     {
-        title: "Movies",
+        title: "Popular",
         url: "/movie",
-        icon: Clapperboard,
     },
     {
-        title: "TV Shows",
-        url: "/tv",
-        icon: Tv,
+        title: "Now Playing",
+        url: "/movie/now-playing"
     },
+    {
+        title: "Upcoming",
+        url: "/movie/upcoming"
+    },
+    {
+        title: "Top Rated",
+        url: "/movie/top-rated"
+    }
+]
+const TvCollapsibleItems = [
+    {
+        title: "Popular",
+        url: "/tv",
+    },
+    {
+        title: "Airing Today",
+        url: "/tv/airing-today"
+    },
+    {
+        title: "On TV",
+        url: "/tv/on-tv"
+    },
+    {
+        title: "Top Rated",
+        url: "/tv/top-rated"
+    }
 ]
 
 // const MyMovieItems = [
@@ -81,6 +111,48 @@ export function AppSidebar() {
                                     </SidebarMenuButton>
                                 </SidebarMenuItem>
                             ))}
+                            <Collapsible className="group/collapsible">
+                                <SidebarMenuItem>
+                                    <CollapsibleTrigger asChild>
+                                        <SidebarMenuButton>
+                                            <Clapperboard />
+                                            Movies
+                                        </SidebarMenuButton>
+                                    </CollapsibleTrigger>
+                                    <CollapsibleContent>
+                                        <SidebarMenuSub>
+                                            {MoviesCollapsibleItems.map((item) => (
+                                                <SidebarMenuSubItem key={item.title} className="hover:underline w-fit">
+                                                    <a href={item.url}>
+                                                        {item.title}
+                                                    </a>
+                                                </SidebarMenuSubItem>
+                                            ))}
+                                        </SidebarMenuSub>
+                                    </CollapsibleContent>
+                                </SidebarMenuItem>
+                            </Collapsible>
+                            <Collapsible className="group/collapsible">
+                                <SidebarMenuItem>
+                                    <CollapsibleTrigger asChild>
+                                        <SidebarMenuButton>
+                                            <Tv />
+                                            TV Shows
+                                        </SidebarMenuButton>
+                                    </CollapsibleTrigger>
+                                    <CollapsibleContent>
+                                        <SidebarMenuSub>
+                                            {TvCollapsibleItems.map((item) => (
+                                                <SidebarMenuSubItem key={item.title} className="hover:underline w-fit">
+                                                    <a href={item.url}>
+                                                        {item.title}
+                                                    </a>
+                                                </SidebarMenuSubItem>
+                                            ))}
+                                        </SidebarMenuSub>
+                                    </CollapsibleContent>
+                                </SidebarMenuItem>
+                            </Collapsible>
                         </SidebarMenu>
                     </SidebarGroupContent>
                 </SidebarGroup>

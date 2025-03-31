@@ -1,7 +1,7 @@
 import { Skeleton } from "@/components/ui/skeleton";
 import { FC } from "react";
 
-interface TrendingContainerSkeletonProps {
+interface MediaContainerSkeletonProps {
     orientation?: "horizontal" | "vertical";
 }
 
@@ -10,7 +10,7 @@ const gridClass: Record<"horizontal" | "vertical", string> = {
     vertical: "grid-cols-1 lg:grid-cols-2",
 };
 
-const TrendingContainerSkeleton: FC<TrendingContainerSkeletonProps> = ({
+const MediaContainerSkeleton: FC<MediaContainerSkeletonProps> = ({
     orientation = "horizontal",
 }) => {
     return (
@@ -22,4 +22,4 @@ const TrendingContainerSkeleton: FC<TrendingContainerSkeletonProps> = ({
     );
 };
 
-export default TrendingContainerSkeleton;
+export default MediaContainerSkeleton;

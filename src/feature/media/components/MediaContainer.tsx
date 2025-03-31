@@ -1,23 +1,34 @@
-// TrendingContainer.tsx
 "use client";
 
-import { cn } from "@/lib/utils";
 import { FC, useEffect, useRef } from "react";
-import { useInfiniteTrending } from "../hooks/useTrending";
-import { useTrendingFilters } from "../hooks/useTrendingFilters";
+import { useInfiniteMedia, MediaQueryParams } from "../hooks/useMedia";
 import MediaCard from "./MediaCard";
 import MediaContainerSkeleton from "./MediaContainerSkeleton";
 import TrendingLoadMoreSkeleton from "./TrendingLoadMoreSkeleton";
+import { cn } from "@/lib/utils";
+import { useTrendingFilters } from "../hooks/useTrendingFilters";
+import { buildMediaQueryParams, useFilterContext } from "./filter/FilterProvider";
 
+// Grid layout berdasarkan orientasi
 const GRID_CLASSES: Record<"horizontal" | "vertical", string> = {
-    horizontal: "grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6",
+    horizontal:
+        "grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6",
     vertical: "grid-cols-1 lg:grid-cols-2",
 };
 
 const ITEMS_PER_PAGE = 20;
 
-const TrendingContainer: FC = () => {
-    const { mediaType, timeWindow, orientation } = useTrendingFilters();
+interface MediaContainerProps {
+    mediaType: "movie" | "tv";
+}
+
+const MediaContainer: FC<MediaContainerProps> = ({ mediaType }) => {
+    // Ambil filter dari global context
+    const { filters } = useFilterContext();
+    const { orientation } = useTrendingFilters();
+
+    // Bangun query dari global filter state
+    const query: MediaQueryParams = buildMediaQueryParams(mediaType, filters);
 
     const {
         data,
@@ -26,11 +37,7 @@ const TrendingContainer: FC = () => {
         fetchNextPage,
         hasNextPage,
         isFetchingNextPage,
-    } = useInfiniteTrending({
-        mediaType,
-        timeWindow,
-        language: "en-US",
-    });
+    } = useInfiniteMedia(query);
 
     const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
@@ -41,19 +48,25 @@ const TrendingContainer: FC = () => {
                     fetchNextPage();
                 }
             },
-            { threshold: 1 }
+            { threshold: 0.1, rootMargin: '100px' }
         );
 
-        const currentRef = loadMoreRef.current;
-        if (currentRef) observer.observe(currentRef);
+        const current = loadMoreRef.current;
+        if (current) observer.observe(current);
 
         return () => {
-            if (currentRef) observer.unobserve(currentRef);
+            if (current) observer.unobserve(current);
+            observer.disconnect(); // Tambahkan ini untuk memastikan observer dihapus
         };
     }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
     if (isLoading) return <MediaContainerSkeleton orientation={orientation} />;
-    if (error) return <h1 className="text-center text-xl text-red-500">Failed to load media.</h1>;
+    if (error)
+        return (
+            <h1 className="text-center text-xl text-red-500">
+                Failed to load media.
+            </h1>
+        );
 
     const gridClass = cn("grid gap-4", GRID_CLASSES[orientation]);
 
@@ -64,7 +77,7 @@ const TrendingContainer: FC = () => {
                     <MediaCard
                         key={`${item.id}-${pageIndex}`}
                         id={item.id}
-                        mediaType={item.media_type}
+                        mediaType={mediaType}
                         posterPath={item.poster_path}
                         rating={item.vote_average}
                         releaseDate={item.release_date || item.first_air_date}
@@ -84,14 +97,10 @@ const TrendingContainer: FC = () => {
             )}
 
             {hasNextPage && (
-                <div
-                    ref={loadMoreRef}
-                    className="h-4 w-full"
-                    aria-hidden="true"
-                />
+                <div ref={loadMoreRef} className="h-4 w-full" aria-hidden="true" />
             )}
         </section>
     );
 };
 
-export default TrendingContainer;
+export default MediaContainer;
