@@ -28,3 +28,15 @@ export function parseQuery(queryString: string): Partial<Filters> {
 
   return result;
 }
+
+export function slugToTitle(slug: string): string {
+  // Menghapus numeric prefix misalnya "950387-a-minecraft-movie" => "a-minecraft-movie"
+  const withoutId = slug.replace(/^\d+-/, '');
+  // Mengganti tanda hubung dengan spasi
+  const withSpaces = withoutId.replace(/-/g, ' ');
+  // Mengubah setiap kata menjadi title case (huruf awal kapital)
+  return withSpaces
+      .split(' ')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+}

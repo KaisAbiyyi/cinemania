@@ -23,8 +23,9 @@ const HeroSection: FC = () => {
     });
 
     if (isLoading) return <HeroSectionSkeleton />;
-    if (error || !data || data.results.length === 0)
+    if (error || !data || !data.results || data.results.length === 0)
         return <h1>Failed to load movies.</h1>;
+
 
     // Mengambil array media dari properti results pada response
     const trendingMedia = data.results.slice(0, 5);
@@ -34,7 +35,7 @@ const HeroSection: FC = () => {
             <Card className="relative flex flex-col overflow-hidden p-0 gap-0">
                 <div className="relative">
                     <HeroBackground movies={trendingMedia} />
-                    <div className="absolute inset-0 flex flex-col justify-between bg-gradient-to-t from-indigo-950 to-slate-indigo/10 p-4">
+                    <div className="absolute inset-0 flex flex-col justify-between bg-gradient-to-t from-indigo-950 to-indigo/10 p-4">
                         <div className="absolute lg:hidden top-1/2 -translate-y-1/2 flex justify-between right-0 left-0">
                             <HeroScrollButton direction="prev" />
                             <HeroScrollButton direction="next" />
