@@ -6,8 +6,8 @@ import { FC, useEffect, useRef } from "react";
 import { useInfiniteTrending } from "../hooks/useTrending";
 import { useTrendingFilters } from "../hooks/useTrendingFilters";
 import MediaCard from "./MediaCard";
-import MediaContainerSkeleton from "./MediaContainerSkeleton";
-import TrendingLoadMoreSkeleton from "./TrendingLoadMoreSkeleton";
+import MediaContainerSkeleton from "./skeletons/MediaContainerSkeleton";
+import TrendingLoadMoreSkeleton from "./skeletons/TrendingLoadMoreSkeleton";
 
 const GRID_CLASSES: Record<"horizontal" | "vertical", string> = {
     horizontal: "grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6",

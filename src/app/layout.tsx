@@ -37,7 +37,7 @@ function MainContent({ children }: { children: React.ReactNode }) {
       className="absolute top-0 bottom-0 right-0 flex flex-col overflow-y-auto scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent"
     >
       <Navbar />
-      <div className="flex flex-col gap-10 p-8">{children}</div>
+      <div className="flex flex-col gap-10 p-4 md:p-6 lg:p-8 xl:p-10 transition-all duration-100 ease-in">{children}</div>
       <Footer />
     </main>
   );

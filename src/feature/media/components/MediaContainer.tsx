@@ -3,8 +3,8 @@
 import { FC, useEffect, useRef } from "react";
 import { useInfiniteMedia, MediaQueryParams } from "../hooks/useMedia";
 import MediaCard from "./MediaCard";
-import MediaContainerSkeleton from "./MediaContainerSkeleton";
-import TrendingLoadMoreSkeleton from "./TrendingLoadMoreSkeleton";
+import MediaContainerSkeleton from "./skeletons/MediaContainerSkeleton";
+import TrendingLoadMoreSkeleton from "./skeletons/TrendingLoadMoreSkeleton";
 import { cn } from "@/lib/utils";
 import { useTrendingFilters } from "../hooks/useTrendingFilters";
 import { buildMediaQueryParams, useFilterContext } from "./filter/FilterProvider";
@@ -63,7 +63,7 @@ const MediaContainer: FC<MediaContainerProps> = ({ mediaType }) => {
     if (isLoading) return <MediaContainerSkeleton orientation={orientation} />;
     if (error)
         return (
-            <h1 className="text-center text-xl text-red-500">
+            <h1 className="text-xl text-center text-red-500">
                 Failed to load media.
             </h1>
         );
@@ -97,7 +97,7 @@ const MediaContainer: FC<MediaContainerProps> = ({ mediaType }) => {
             )}
 
             {hasNextPage && (
-                <div ref={loadMoreRef} className="h-4 w-full" aria-hidden="true" />
+                <div ref={loadMoreRef} className="w-full h-4" aria-hidden="true" />
             )}
         </section>
     );

@@ -7,6 +7,16 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
+export function formatRuntime(runtime: number): string {
+  if (!runtime || runtime <= 0) return 'N/A';
+
+  const hours = Math.floor(runtime / 60);
+  const minutes = runtime % 60;
+
+  return minutes > 0 ? `${hours}h ${minutes}min` : `${hours}h`;
+}
+
+
 
 export function parseQuery(queryString: string): Partial<Filters> {
   const params = new URLSearchParams(queryString);
@@ -29,6 +39,22 @@ export function parseQuery(queryString: string): Partial<Filters> {
   return result;
 }
 
+export function getInitials(name: string) {
+  // Memisahkan nama menjadi array berdasarkan spasi
+  const nameArray = name.split(' ');
+  // Mengambil huruf pertama dari setiap kata dan menggabungkannya
+  const initials = nameArray.map(word => word.charAt(0).toUpperCase()).join('');
+  return initials;
+}
+
+export function getProfileImageUrl(profilePath: string) {
+  const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL
+  const baseImageUrl = `${imagePath}/w500`; // Sesuaikan 'imagePath' dengan URL dasar gambar Anda
+
+  return profilePath ? `${baseImageUrl}/${profilePath}` : '/placeholder.jpg';
+}
+
+
 export function slugToTitle(slug: string): string {
   // Menghapus numeric prefix misalnya "950387-a-minecraft-movie" => "a-minecraft-movie"
   const withoutId = slug.replace(/^\d+-/, '');
@@ -36,7 +62,10 @@ export function slugToTitle(slug: string): string {
   const withSpaces = withoutId.replace(/-/g, ' ');
   // Mengubah setiap kata menjadi title case (huruf awal kapital)
   return withSpaces
-      .split(' ')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
+    .split(' ')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 }
+
+export const slugify = (name: string): string =>
+  name.toLowerCase().replace(/\s+/g, "-").replace(/[^\w-]/g, "");

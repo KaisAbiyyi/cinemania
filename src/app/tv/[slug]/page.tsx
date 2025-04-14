@@ -2,7 +2,7 @@ import MediaDetail from '@/feature/media/components/detail/MediaDetailWrapper';
 import { slugToTitle } from '@/lib/utils';
 import { Metadata } from 'next';
 
-// ✅ Metadata SEO dengan format title yang diinginkan (contoh: "A Minecraft Movie | Cinemania")
+// ✅ Metadata SEO dengan format title yang diinginkan (contoh: "A Minecraft TV | Cinemania")
 export async function generateMetadata({
     params,
 }: {
@@ -11,23 +11,23 @@ export async function generateMetadata({
     // Jangan hapus await pada params
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
-    const movieTitle = slugToTitle(decodedSlug);
+    const tvTitle = slugToTitle(decodedSlug);
 
     return {
-        title: `${movieTitle} | Cinemania`,
-        description: `Discover more about "${movieTitle}". See full details, cast, release date, and more.`,
-        keywords: [movieTitle, 'Movie Detail', 'Cast', 'Release Date', 'Movie Info'],
+        title: `${tvTitle} | Cinemania`,
+        description: `Discover more about "${tvTitle}". See full details, cast, release date, and more.`,
+        keywords: [tvTitle, 'TV Detail', 'Cast', 'Release Date', 'TV Info'],
         openGraph: {
-            title: `${movieTitle} | Cinemania`,
-            description: `Explore everything about "${movieTitle}".`,
+            title: `${tvTitle} | Cinemania`,
+            description: `Explore everything about "${tvTitle}".`,
             type: 'website',
-            url: `https://yourdomain.com/movie/${slug}`,
+            url: `https://yourdomain.com/tv/${slug}`,
         },
     };
 }
 
 // ✅ Page Component sebagai async function
-export default async function MovieDetailPage({
+export default async function TVDetailPage({
     params,
 }: {
     params: { slug: string };
@@ -36,10 +36,10 @@ export default async function MovieDetailPage({
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
 
-    // Ekstrak ID numerik dari slug, misalnya "950387-a-minecraft-movie"
+    // Ekstrak ID numerik dari slug, misalnya "950387-a-minecraft-tv"
     const id = Number(decodedSlug.split('-')[0]);
 
     return (
-        <MediaDetail id={id} mediaType="movie" />
+        <MediaDetail id={id} mediaType="tv" />
     );
 }

@@ -16,7 +16,6 @@ export const useGeolocation = (options = {}) => {
         queryKey: ["geolocation"],
         queryFn: async () => {
             const { data } = await apiClient.get<GeolocationResponse>("/geolocation");
-            console.log(data)
             return data;
         },
         ...options,

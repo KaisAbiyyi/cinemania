@@ -7,7 +7,7 @@ import MediaCard from "./MediaCard";
 import { buttonVariants } from "@/components/ui/button";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
-import MediaScrollableListSkeleton from "./MediaScrollableListSkeleton";
+import MediaScrollableListSkeleton from "./skeletons/MediaScrollableListSkeleton";
 
 interface MediaScrollableListProps extends HTMLAttributes<HTMLDivElement> {
     title: string;
