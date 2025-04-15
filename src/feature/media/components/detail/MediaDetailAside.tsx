@@ -23,7 +23,6 @@ const MediaDetailAside: FC<MediaDetailAsideProps> = ({ id, mediaType, detailData
 
     const original_language = LanguageData.find((lang: any) => lang.iso_639_1 === detailData.original_language);
     const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL
-    console.log(detailData)
 
     return (
         <aside className="flex flex-col w-full gap-2 md:gap-4 md:w-1/3 lg:gap-6 xl:gap-8">

@@ -77,6 +77,7 @@ const MediaDetailWrapper: React.FC<MediaDetailProps> = ({ id, mediaType }) => {
     const contentRatingsError = contentRatingsQuery.error
 
 
+    
     const {
         data: regionData,
         isLoading: langLoading,
@@ -112,6 +113,7 @@ const MediaDetailWrapper: React.FC<MediaDetailProps> = ({ id, mediaType }) => {
                     crewData={crew}
                     releaseData={releaseDates as MediaReleaseDates}
                     regionData={region}
+                    contentRatings={contentRatings as TVContentRatingsResponse}
                     mediaType="movie"
                 />
             ) : (
@@ -127,9 +129,16 @@ const MediaDetailWrapper: React.FC<MediaDetailProps> = ({ id, mediaType }) => {
 
             <div className="flex flex-col gap-4 lg:flex-row md:gap-6 lg:gap-8 xl:gap-10">
                 <div className="flex flex-col w-full gap-4 lg:w-2/3 md:gap-6 lg:gap-8 xl:gap-10">
-                    <Suspense fallback={<MediaCastCrewSkeleton />}>
-                        <MediaDetailCastCrew data={creditsData} mediaType={mediaType} />
-                    </Suspense>
+                    {mediaType === "movie" ? (
+                        <Suspense fallback={<MediaCastCrewSkeleton />}>
+                            <MediaDetailCastCrew data={creditsData} mediaType={"movie"} mediaData={detailData as MovieDetail} />
+                        </Suspense>
+                    ) : (
+                        <Suspense fallback={<MediaCastCrewSkeleton />}>
+                            <MediaDetailCastCrew data={creditsData} mediaType={"tv"} mediaData={detailData as TVDetail} />
+                        </Suspense>
+                    )
+                    }
                     <Suspense fallback={<MediaDetailReviewsSkeleton />}>
                         <MediaDetailReviews id={id} mediaType={mediaType} />
                     </Suspense>

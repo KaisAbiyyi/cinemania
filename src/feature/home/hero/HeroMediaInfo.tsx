@@ -43,8 +43,8 @@ const HeroMediaInfo: FC<HeroMediaInfoProps> = ({ media }) => {
 
     return (
         <div className="flex flex-col justify-end w-full gap-3 md:gap-4 lg:gap-6 lg:w-2/3">
-            <h3 className="text-xs font-thin md:text-sm lg:text-base ease-in duration-300 transition-all text-slate-50">DAILY TRENDING</h3>
-            <h1 className="text-2xl font-bold md:text-3xl lg:text-4xl transition-all ease-in duration-300 text-primary-foreground">
+            <h3 className="text-xs font-thin transition-all duration-300 ease-in md:text-sm lg:text-base text-slate-50">DAILY TRENDING</h3>
+            <h1 className="text-2xl font-bold transition-all duration-300 ease-in md:text-3xl lg:text-4xl text-primary-foreground">
                 {movieDetail.title ?? movieDetail.original_title ?? movieDetail.name}
             </h1>
             <div className="flex gap-4 lg:items-center">
@@ -53,12 +53,12 @@ const HeroMediaInfo: FC<HeroMediaInfoProps> = ({ media }) => {
                     {movieDetail.vote_average ? movieDetail.vote_average.toFixed(1) : "N/A"}
                 </span>
                 {movieDetail.genres && movieDetail.genres.length > 0 && (
-                    <div className="flex gap-2 flex-wrap">
+                    <div className="flex flex-wrap gap-2">
                         {movieDetail.genres.map((genre: any) => (
                             <Link
                                 href={`/genre/${genre.id}-${genre.name.toLowerCase().replace(/ /g, "-")}/${movieDetail.media_type ?? "movie"
                                     }`}
-                                className="font-bold text-sm md:text-base text-slate-400 hover:text-slate-100"
+                                className="text-sm font-bold md:text-base text-slate-400 hover:text-slate-100"
                                 key={genre.id}
                             >
                                 {genre.name}
@@ -69,7 +69,7 @@ const HeroMediaInfo: FC<HeroMediaInfoProps> = ({ media }) => {
             </div>
             <div className="flex gap-4">
                 <Link
-                    href={`/${movieDetail.media_type ?? "movie"}/${movieDetail.id
+                    href={`/${media[activeIndex].media_type ?? "movie"}/${movieDetail.id
                         }-${(movieDetail.title || movieDetail.original_title || movieDetail.name)
                             .toLowerCase()
                             .replace(/ /g, "-")

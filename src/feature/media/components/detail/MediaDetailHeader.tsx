@@ -33,6 +33,7 @@ const MediaDetailHeader: FC<MediaDetailHeaderProps> = ({
     crewData,
     releaseData,
     regionData,
+    contentRatings
 }) => {
     const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL;
     const isMovie = mediaType === "movie";
@@ -44,6 +45,7 @@ const MediaDetailHeader: FC<MediaDetailHeaderProps> = ({
 
     const backdropPath = data.backdrop_path;
     const hasBackdrop = backdropPath && imagePath;
+
 
     return (
         <header className="relative overflow-hidden rounded-lg">
@@ -70,6 +72,7 @@ const MediaDetailHeader: FC<MediaDetailHeaderProps> = ({
                         crewData={crewData}
                         releaseData={releaseData}
                         regionData={regionData}
+                        contentRatings={contentRatings}
                     />
                 ) : (
                     <DetailHeaderInfo
@@ -78,6 +81,7 @@ const MediaDetailHeader: FC<MediaDetailHeaderProps> = ({
                         crewData={crewData}
                         releaseData={releaseData}
                         regionData={regionData}
+                        contentRatings={contentRatings}
                     />
                 )}
             </div>

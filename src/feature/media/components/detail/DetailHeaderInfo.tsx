@@ -70,6 +70,8 @@ const DetailHeaderInfo: FC<DetailHeaderInfoProps> = ({ mediaType, data, crewData
         : contentRatings?.results.find(r => r.iso_3166_1 === regionCode)?.rating ||
         contentRatings?.results.find(r => r.iso_3166_1 === "US")?.rating;
 
+        console.log(contentRatings)
+        
 
     const dateFormatted = rawReleaseDate
         ? format(new Date(rawReleaseDate), isMovie ? "MMMM dd, yyyy" : "dd MMMM, yyyy")
