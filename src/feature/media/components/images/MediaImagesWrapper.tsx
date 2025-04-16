@@ -35,7 +35,6 @@ const MediaImagesWrapper: FC<MediaImagesWrapperProps> = ({ id, mediaType }) => {
         },
     ]
 
-    console.log(data)
 
     return (
         <Tabs defaultValue="backdrop" className="w-full">
