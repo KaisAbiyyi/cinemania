@@ -1,9 +1,10 @@
 import { FC } from "react";
 import { MediaVideos } from "../../hooks/useMediaVideos";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import { Play } from "lucide-react";
 import Image from "next/image";
 import { formatDate } from "date-fns";
+import VideoCardDialog from "./VideoCardDialog";
 
 interface VideoCardProps {
     data: MediaVideos["results"][number];
@@ -25,26 +26,16 @@ const VideoCard: FC<VideoCardProps> = ({ data }) => {
                         src={`https://img.youtube.com/vi/${data.key}/hqdefault.jpg`}
                     />
                 </DialogTrigger>
-                <DialogContent>
-                    <DialogHeader>
-                        <DialogTitle>{data.name}</DialogTitle>
-                        <iframe
-                            className="self-stretch w-full mt-4 aspect-video"
-                            src={`https://www.youtube.com/embed/${data.key}`}
-                            frameBorder={0}
-                            title={data.name}
-                            allowFullScreen
-                            aria-hidden="true"
-                        />
-                    </DialogHeader>
-                </DialogContent>
+                <VideoCardDialog videoKey={data.key} videoName={data.name} />
             </Dialog>
-            <div className="flex justify-between gap-2 px-2">
-                <h1 className="text-lg font-bold">{data.name}</h1>
-                <p className="text-sm text-muted-foreground">{formatDate(new Date(data.published_at), "MMMM dd, yyyy")}</p>
+            <div className="flex flex-wrap items-center justify-between px-2 py-2">
+                <h1 className="text-lg font-semibold leading-snug">{data.name}</h1>
+                <span className="text-sm text-muted-foreground">
+                    {formatDate(new Date(data.published_at), "MMM dd, yyyy")}
+                </span>
             </div>
         </div>
     );
-}
+};
 
 export default VideoCard;

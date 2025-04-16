@@ -49,7 +49,7 @@ const MediaVideosWrapper: FC<MediaVideosWrapperProps> = ({ id, mediaType }) => {
         },
     ]
 
-
+console.log(data)
 
     return (
         <Tabs defaultValue="Trailer" className="w-full">

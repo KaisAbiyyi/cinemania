@@ -69,3 +69,24 @@ export function slugToTitle(slug: string): string {
 
 export const slugify = (name: string): string =>
   name.toLowerCase().replace(/\s+/g, "-").replace(/[^\w-]/g, "");
+
+export function formatDuration(isoDuration: string | undefined): string {
+  if (!isoDuration) return "N/A";
+
+  const match = isoDuration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return "N/A";
+
+  const [, hours, minutes, seconds] = match.map((val) => parseInt(val || "0"));
+  const parts = [];
+  if (hours) parts.push(String(hours).padStart(2, "0"));
+  parts.push(String(minutes).padStart(2, "0"));
+  parts.push(String(seconds).padStart(2, "0"));
+  return parts.join(":");
+}
+
+export function formatViewCount(viewCount: string | number): string {
+  const num = typeof viewCount === "string" ? parseInt(viewCount) : viewCount;
+  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
+  if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
+  return `${num}`;
+}
