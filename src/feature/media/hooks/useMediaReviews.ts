@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import apiClient from "@/services/apiClient";
 
 // Parameter untuk query reviews, termasuk mediaType (movie atau tv)
@@ -48,6 +48,30 @@ export const useMediaReviews = (params: MediaReviewsParams) => {
                 params: { mediaType, language, page },
             });
             return data;
+        },
+    });
+};
+
+/**
+ * Hook untuk fetching reviews dari media (movie atau tv) dengan infinite query.
+ * Contoh penggunaan:
+ * GET /media/12345/reviews?mediaType=movie&language=en-US&page=1
+ */
+export const useInfiniteMediaReviews = (params: MediaReviewsParams) => {
+    const { id, mediaType, language = "en-US" } = params;
+
+    return useInfiniteQuery<MediaReviews, Error>({
+        queryKey: ["mediaReviews", id, mediaType, language],
+        initialPageParam: 1, // Halaman awal
+        queryFn: async ({ pageParam = 1 }) => {
+            const { data } = await apiClient.get<MediaReviews>(`/media/${id}/reviews`, {
+                params: { mediaType, language, page: pageParam },
+            });
+            return data;
+        },
+        // Menentukan halaman berikutnya berdasarkan data pagination dari TMDB
+        getNextPageParam: (lastPage) => {
+            return lastPage.page < lastPage.total_pages ? lastPage.page + 1 : undefined;
         },
     });
 };

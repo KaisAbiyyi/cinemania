@@ -52,7 +52,7 @@ const MediaDetailVideos: FC<MediaDetailVideosProps> = ({ id, mediaType }) => {
                 <div className="flex items-center justify-between">
                     <h1 className="text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl">Videos</h1>
                     <Link
-                        href={`${pathname}/reviews`}
+                        href={`${pathname}/videos`}
                         className={buttonVariants({ variant: "ghost", className: "w-fit" })}
                     >
                         View All Videos

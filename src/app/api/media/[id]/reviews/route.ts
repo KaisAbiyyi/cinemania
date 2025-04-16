@@ -11,9 +11,10 @@ export async function GET(
 ) {
     const { id } = await context.params;
     const url = new URL(request.url);
-    const mediaType = url.searchParams.get("mediaType");
+    const searchParams = url.searchParams;
 
-    // Validasi mediaType
+    // Ambil parameter mediaType
+    const mediaType = searchParams.get("mediaType");
     if (!mediaType || (mediaType !== "movie" && mediaType !== "tv")) {
         return NextResponse.json(
             { error: "Invalid or missing mediaType query parameter." },
@@ -21,11 +22,20 @@ export async function GET(
         );
     }
 
-    // Endpoint untuk mendapatkan ulasan
+    // Hapus mediaType dari parameter agar tidak diteruskan ke TMDB
+    searchParams.delete("mediaType");
+
+    // Tentukan endpoint berdasarkan mediaType dan id
     const endpoint = `/${mediaType}/${id}/reviews`;
 
     try {
-        const { data } = await tmdbApi.get(endpoint);
+        // Konversi searchParams ke object untuk diteruskan sebagai params
+        const params = Object.fromEntries(searchParams.entries());
+
+        // Fetch data dari TMDB API menggunakan tmdbApi instance
+        const { data } = await tmdbApi.get(endpoint, { params });
+
+        // Kembalikan hanya data
         return NextResponse.json(data);
     } catch (error: any) {
         console.error("Error fetching reviews:", error);

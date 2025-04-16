@@ -1,5 +1,5 @@
 import { FC } from "react";
-import { MediaCredits } from "../hooks/useMediaCredits";
+import { MediaCredits } from "../../hooks/useMediaCredits";
 import Image from "next/image";
 import Link from "next/link";
 import { getProfileImageUrl, slugify } from "@/lib/utils";

@@ -13,6 +13,7 @@ import { FC, useMemo, useState } from "react";
 import { useMediaReviews } from "../../hooks/useMediaReviews";
 import { MediaReviews } from "../../hooks/useMediaReviews";
 import MediaDetailReviewsSkeleton from "../skeletons/MediaDetailReviewsSkeleton";
+import ReviewCard from "../reviews/ReviewCard";
 
 interface MediaDetailReviewsProps {
     id: number;
@@ -21,7 +22,6 @@ interface MediaDetailReviewsProps {
 
 const MediaDetailReviews: FC<MediaDetailReviewsProps> = ({ id, mediaType }) => {
     const pathname = usePathname();
-    const [expanded, setExpanded] = useState(false);
 
     const { data, isLoading, error } = useMediaReviews({
         id,
@@ -58,47 +58,8 @@ const MediaDetailReviews: FC<MediaDetailReviewsProps> = ({ id, mediaType }) => {
                 </div>
             </div>
             <Card className="bg-transparent">
-                {sortedReviews.map((review, index) => (
-                    <div className="flex flex-col gap-4 md:gap-6" key={review.id}>
-                        <CardHeader className="flex flex-row items-start justify-between">
-                            <div className="flex flex-row items-center gap-2 md:gap-4 lg:gap-6">
-                                <Avatar>
-                                    <AvatarImage
-                                        src={getProfileImageUrl(review.author_details.avatar_path as string)}
-                                    />
-                                    <AvatarFallback>
-                                        {getInitials(review.author_details.name as string)}
-                                    </AvatarFallback>
-                                </Avatar>
-                                <div className="flex flex-col gap-1 md:gap-2">
-                                    <div className="flex gap-2">
-                                        <h4 className="font-bold">{review.author}</h4>
-                                        <span className="font-secondary-foreground/70">
-                                            {review.author_details.username}
-                                        </span>
-                                    </div>
-                                    <span>{formatDate(new Date(review.updated_at), "MMMM dd, yyyy")}</span>
-                                </div>
-                            </div>
-                            <span className="px-1 text-xs font-bold rounded bg-primary h-fit text-primary-foreground">
-                                {review.author_details.rating?.toFixed(1)}
-                            </span>
-                        </CardHeader>
-                        <CardContent>
-                            <p className={cn("whitespace-pre-wrap", !expanded && "line-clamp-5")}>
-                                {review.content}
-                            </p>
-                            {review.content.split(" ").length > 50 && (
-                                <button
-                                    className="mt-2 font-medium text-primary"
-                                    onClick={() => setExpanded((prev) => !prev)}
-                                >
-                                    {expanded ? "Show Less" : "Read More"}
-                                </button>
-                            )}
-                        </CardContent>
-                        {index < sortedReviews.length - 1 && <Separator />}
-                    </div>
+                {sortedReviews.map((review) => (
+                    <ReviewCard data={review} key={review.id} />
                 ))}
             </Card>
             {sortedReviews.length === 0 && (

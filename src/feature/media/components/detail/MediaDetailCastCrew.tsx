@@ -8,7 +8,7 @@ import { usePathname } from "next/navigation";
 import { FC } from "react";
 import { MediaCredits } from "../../hooks/useMediaCredits";
 import { useMediaAggregateCredits } from "../../hooks/useMediaAggregateCredits";
-import CastCard from "../CastCard";
+import CastCard from "../cast/CastCard";
 import { MovieDetail, TVDetail } from "@/types/media";
 import MediaCastCrewSkeleton from "../skeletons/MediaCastCrewSkeleton";
 
