@@ -1,7 +1,7 @@
 "use client";
 
 import { useGenres } from "@/feature/genre/hooks/useGenre";
-import { cn } from "@/lib/utils";
+import { cn, getPosterImageUrl } from "@/lib/utils";
 import { Genre } from "@/types/genre";
 import { format } from "date-fns";
 import { enUS } from "date-fns/locale";
@@ -37,7 +37,6 @@ const MediaCard: FC<MediaCardProps> = ({
     className,
     ...props
 }) => {
-    const posterBaseUrl = process.env.NEXT_PUBLIC_TMDB_POSTER_URL || "";
     const { data: genresData, isPending } = useGenres(mediaType);
 
     const genres = genresData?.filter((genre: Genre) => genre_ids.includes(genre.id)) || [];
@@ -59,7 +58,7 @@ const MediaCard: FC<MediaCardProps> = ({
         >
             {/* Poster */}
             <Image
-                src={`${posterBaseUrl}/w500/${posterPath}`}
+                src={`${getPosterImageUrl(posterPath)}`}
                 alt={title}
                 width={layout === "vertical" ? 500 : 160}
                 height={layout === "vertical" ? 720 : 240}
@@ -90,7 +89,7 @@ const MediaCard: FC<MediaCardProps> = ({
 
             {/* Konten untuk horizontal layout */}
             {layout === "vertical" && (
-                <div className="flex flex-col p-3 flex-grow bg-gradient-to-bl via-transparent from-secondary/50 to-transparent">
+                <div className="flex flex-col flex-grow p-3 bg-gradient-to-bl via-transparent from-secondary/50 to-transparent">
                     <div className="flex flex-col gap-2">
                         <h2 className="text-lg font-bold ">{title}</h2>
                         <CardDescription className="text-xs">
@@ -102,7 +101,7 @@ const MediaCard: FC<MediaCardProps> = ({
                     <Badge className="absolute top-2 right-2">{rating.toFixed(1)}</Badge>
 
                     {/* Genre List */}
-                    <div className="flex z-10 gap-2 mt-1">
+                    <div className="z-10 flex gap-2 mt-1">
                         {isPending
                             ? <span className="text-xs text-gray-500">Loading genres...</span>
                             : genres.map((genre: Genre) => (

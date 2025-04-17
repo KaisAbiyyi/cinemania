@@ -53,6 +53,12 @@ export function getProfileImageUrl(profilePath: string) {
 
   return profilePath ? `${baseImageUrl}/${profilePath}` : '/placeholder.jpg';
 }
+export function getPosterImageUrl(profilePath: string) {
+  const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL
+  const baseImageUrl = `${imagePath}/w500`; // Sesuaikan 'imagePath' dengan URL dasar gambar Anda
+
+  return profilePath ? `${baseImageUrl}/${profilePath}` : '/placeholder.jpg';
+}
 
 
 export function slugToTitle(slug: string): string {
