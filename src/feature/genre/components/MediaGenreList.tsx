@@ -19,8 +19,8 @@ const MediaGenreList = ({ type }: { type: "movie" | "tv" }) => {
             <CarouselPrevious className="relative top-auto left-auto translate-y-0" />
             <CarouselContent className="items-center">
                 {genres.map((genre: Genre) => (
-                    <CarouselItem className="basis-1/3 md:basis-1/4 lg:basis-1/5 xl:basis-1/6 transition-all duration-300 ease-in" key={genre.id}>
-                        <Link href={`/genre/${genre.id}-${genre.name.toLowerCase().replace(/ /g, "-")}/tv`}
+                    <CarouselItem className="transition-all duration-300 ease-in basis-1/3 md:basis-1/4 lg:basis-1/5 xl:basis-1/6" key={genre.id}>
+                        <Link href={`/genre/${genre.id}-${genre.name.toLowerCase().replace(/ /g, "-")}/${type}`}
                             className={buttonVariants({ variant: "secondary", className: "w-full whitespace-pre-wrap text-center" })}>
                             {genre.name}
                         </Link>
