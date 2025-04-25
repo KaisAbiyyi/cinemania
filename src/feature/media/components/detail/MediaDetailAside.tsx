@@ -7,6 +7,7 @@ import Link from "next/link";
 import { slugify } from "@/lib/utils";
 import MediaDetailAsideSkeleton from "../skeletons/MediaDetailAsideSkeleton";
 import Image from "next/image";
+import ErrorState from "@/components/ErrorState";
 
 interface MediaDetailAsideProps {
     id: number;
@@ -19,7 +20,7 @@ const MediaDetailAside: FC<MediaDetailAsideProps> = ({ id, mediaType, detailData
     const { data: KeywordsData, isLoading: KeywordsLoading, error: KeywordsError } = useMediaKeywords({ id, mediaType })
 
     if (LanguageLoading || KeywordsLoading) return <MediaDetailAsideSkeleton />;
-    if ((LanguageError || !LanguageData) || (KeywordsError || !KeywordsData)) return <div>Error fetching languages</div>;
+    if ((LanguageError || !LanguageData) || (KeywordsError || !KeywordsData)) return <ErrorState message={(LanguageError?.message || KeywordsError?.message) || "There was an error loading the data."} onRetry={() => window.location.reload()} />;
 
     const original_language = LanguageData.find((lang: any) => lang.iso_639_1 === detailData.original_language);
     const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL

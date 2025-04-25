@@ -17,6 +17,7 @@ import MediaDetailSimilarSkeleton from "../skeletons/MediaDetailSimilarSkeleton"
 import MediaDetailRecommendationsSkeleton from "../skeletons/MediaDetailRecommendationsSkeleton";
 import MediaDetailAside from "./MediaDetailAside";
 import { TVContentRatingsResponse, useTVContentRatings } from "../../hooks/useTVContentRating";
+import ErrorState from "@/components/ErrorState";
 
 const MediaDetailReviews = dynamic(() => import("./MediaDetailReviews"), {
     ssr: false,
@@ -30,7 +31,7 @@ const MediaDetailCastCrew = dynamic(() => import("./MediaDetailCastCrew"), {
     ssr: false
 })
 
-const MediaDetailImages = dynamic(() => import("./MediaDetailImages"), {
+const MediaDetailImages = dynamic(() => import("../../../../components/DetailImages"), {
     ssr: false,
 });
 
@@ -77,7 +78,7 @@ const MediaDetailWrapper: React.FC<MediaDetailProps> = ({ id, mediaType }) => {
     const contentRatingsError = contentRatingsQuery.error
 
 
-    
+
     const {
         data: regionData,
         isLoading: langLoading,
@@ -97,8 +98,15 @@ const MediaDetailWrapper: React.FC<MediaDetailProps> = ({ id, mediaType }) => {
         const message = isPrimaryLoading
             ? <MediaDetailHeaderSkeleton />
             : isPrimaryError
-                ? "Error loading media details."
-                : "No data available.";
+                ? <ErrorState
+                    message={isPrimaryError?.message || "There was an error loading the data."}
+                    onRetry={() => window.location.reload()}
+                />
+                : <ErrorState
+                    message={"No Data Available."}
+                    onRetry={() => window.location.reload()}
+                />
+            ;
         return message;
     }
     const crew = creditsData.crew as MediaDetails["crew"];
@@ -146,7 +154,7 @@ const MediaDetailWrapper: React.FC<MediaDetailProps> = ({ id, mediaType }) => {
                         <MediaDetailVideos id={id} mediaType={mediaType} />
                     </Suspense>
                     <Suspense fallback={<MediaDetailImagesSkeleton />}>
-                        <MediaDetailImages id={id} mediaType={mediaType} />
+                        <MediaDetailImages id={id} mediaType={mediaType} type="media" />
                     </Suspense>
                     <Suspense fallback={<MediaDetailRecommendationsSkeleton />}>
                         <MediaDetailRecommendations id={id} mediaType={mediaType} />

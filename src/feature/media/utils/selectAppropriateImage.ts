@@ -1,4 +1,5 @@
 import { MediaImages } from "../hooks/useMediaImages";
+import { PersonImages } from "../../person/hooks/usePersonImages";
 
 // Helper function to determine image size classes based on index
 export function getImageSizeClasses(index: number): string {
@@ -46,44 +47,19 @@ export function getImageSizeClasses(index: number): string {
 }
 
 // Helper function to select appropriate images for each position
-export function selectAppropriateImages(backdrops: MediaImages["posters"], posters: MediaImages["posters"]): MediaImages["posters"] {
-    // Sort by vote_average to get the best images first
-    const sortedBackdrops = [...backdrops].sort((a, b) =>
-        ((b.vote_average || 0) - (a.vote_average || 0))
+export function selectAppropriateImages(
+    backdrops: MediaImages["posters"] = [],
+    posters: MediaImages["posters"] = [],
+    profiles: PersonImages["profiles"] = []
+): MediaImages["posters"] | PersonImages["profiles"] {
+    // Combine all images into a single array if profiles are provided (for person)
+    const allImages = profiles.length > 0 ? profiles : [...backdrops, ...posters];
+
+    // Sort by vote_average or popularity to get the best images first
+    const sortedImages = [...allImages].sort((a, b) =>
+        ((b.vote_average || b.popularity || 0) - (a.vote_average || a.popularity || 0))
     );
-
-    const sortedPosters = [...posters].sort((a, b) =>
-        ((b.vote_average || 0) - (a.vote_average || 0))
-    );
-
-    // Define position preferences (true = prefer backdrop, false = prefer poster)
-    const preferBackdrop = [true, true, false, false, false, true, true, true, true];
-
-    const result: MediaImages["posters"] = [];
-    let backdropIndex = 0;
-    let posterIndex = 0;
 
     // Limit to 9 images or less
-    const maxImages = Math.min(9, sortedBackdrops.length + sortedPosters.length);
-
-    for (let i = 0; i < maxImages; i++) {
-        // For positions where we prefer backdrops
-        if (preferBackdrop[i]) {
-            if (backdropIndex < sortedBackdrops.length) {
-                result.push(sortedBackdrops[backdropIndex++]);
-            } else if (posterIndex < sortedPosters.length) {
-                result.push(sortedPosters[posterIndex++]);
-            }
-        }
-        // For positions where we prefer posters
-        else {
-            if (posterIndex < sortedPosters.length) {
-                result.push(sortedPosters[posterIndex++]);
-            } else if (backdropIndex < sortedBackdrops.length) {
-                result.push(sortedBackdrops[backdropIndex++]);
-            }
-        }
-    }
-
-    return result;
+    return sortedImages.slice(0, 9);
 }

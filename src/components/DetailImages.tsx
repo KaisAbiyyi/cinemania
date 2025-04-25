@@ -6,31 +6,50 @@ import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { buttonVariants } from "@/components/ui/button";
-import { useMediaImages } from "../../hooks/useMediaImages";
-import MediaDetailImagesSkeleton from "../skeletons/MediaDetailImagesSkeleton";
-import { getImageSizeClasses, selectAppropriateImages } from "../../utils/selectAppropriateImage";
+import { useMediaImages } from "../feature/media/hooks/useMediaImages";
+import { usePersonImages } from "../feature/person/hooks/usePersonImages";
+import MediaDetailImagesSkeleton from "../feature/media/components/skeletons/MediaDetailImagesSkeleton";
+import { getImageSizeClasses, selectAppropriateImages } from "../feature/media/utils/selectAppropriateImage";
+import { cn } from "@/lib/utils";
 
-interface MediaDetailImagesProps {
+interface DetailImagesProps {
     id: number;
-    mediaType: "movie" | "tv";
+    type: "media" | "person";
+    mediaType?: "movie" | "tv"; // Required only if type is "media"
+    className?: string;
 }
 
-const MediaDetailImages: FC<MediaDetailImagesProps> = ({ id, mediaType }) => {
+const DetailImages: FC<DetailImagesProps> = ({ id, type, mediaType, className }) => {
     const pathname = usePathname();
-    const { data, isLoading, error } = useMediaImages({ id, mediaType });
+
+    // Fetch data based on the type
+    const { data, isLoading, error } =
+        type === "media"
+            ? useMediaImages({ id, mediaType: mediaType! })
+            : usePersonImages({ id });
 
     if (isLoading) return <MediaDetailImagesSkeleton />;
     if (error || !data) return <p className="text-muted-foreground">Failed to load images.</p>;
 
     // Select best images based on their appropriate type and orientation
-    const selectedImages = selectAppropriateImages(data.backdrops || [], data.posters || []);
+    const selectedImages =
+        type === "media" && "backdrops" in data && "posters" in data
+            ? selectAppropriateImages(data.backdrops || [], data.posters || [], [])
+            : "profiles" in data
+                ? selectAppropriateImages([], [], data.profiles || [])
+                : [];
 
     // Calculate total remaining images
-    const totalImages = (data.backdrops?.length || 0) + (data.posters?.length || 0);
+    const totalImages =
+        type === "media"
+            ? ("backdrops" in data && "posters" in data ? (data.backdrops?.length || 0) + (data.posters?.length || 0) : 0)
+            : type === "person" && "profiles" in data
+                ? data.profiles?.length || 0
+                : 0;
     const remainingImages = totalImages - selectedImages.length;
 
     return (
-        <div className="flex flex-col gap-4 sm:gap-6">
+        <div className={cn("flex flex-col gap-4 sm:gap-6", className)}>
             <div className="flex items-center justify-between">
                 <h1 className="text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl">Photos</h1>
                 <Link
@@ -52,7 +71,7 @@ const MediaDetailImages: FC<MediaDetailImagesProps> = ({ id, mediaType }) => {
                                 <div className="relative w-full h-full">
                                     <Image
                                         src={`https://image.tmdb.org/t/p/w780${image.file_path}`}
-                                        alt={`Media image ${index + 1}`}
+                                        alt={`Image ${index + 1}`}
                                         fill
                                         sizes="(max-width: 640px) 100vw, (max-width: 768px) 50vw, (max-width: 1024px) 33vw, 25vw"
                                         className="object-cover transition-transform duration-300 hover:scale-105"
@@ -74,5 +93,4 @@ const MediaDetailImages: FC<MediaDetailImagesProps> = ({ id, mediaType }) => {
     );
 };
 
-export default MediaDetailImages;
-export { default } from "../../../../components/DetailImages";
+export default DetailImages;
