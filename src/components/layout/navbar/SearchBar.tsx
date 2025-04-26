@@ -22,9 +22,9 @@ const SearchBar = ({ onSearch }: { onSearch: (query: string) => void }) => {
     };
 
     return (
-        <form 
-            role="search" 
-            onSubmit={handleSubmit} 
+        <form
+            role="search"
+            onSubmit={handleSubmit}
             className="relative flex items-center gap-2"
             aria-label="Search movies and TV shows"
         >

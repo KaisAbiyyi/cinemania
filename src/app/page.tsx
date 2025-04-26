@@ -38,7 +38,7 @@ export default function Home() {
     <GenreList />
     <MediaScrollableList showOnly={10} title="Popular Movies" redirectTo="movie" orientation="horizontal" type="movie" />
     <MediaScrollableList showOnly={10} title="Popular TV Series" redirectTo="tv" orientation="horizontal" type="tv" />
-    <Tabs defaultValue="now-playing" className="-mx-8 p-8 bg-gradient-to-tl from-indigo-950 via via-indigo-950 to-primary">
+    <Tabs defaultValue="now-playing" className="p-8 -mx-8 bg-gradient-to-tl from-indigo-950 via via-indigo-950 to-primary">
       <TabsList className="z-10 bg-indigo-950">
         <TabsTrigger value="now-playing" className="data-[state=active]:bg-gradient-to-tl data-[state=active]:from-indigo-950 data-[state=active]:via-primary data-[state=active]:to-primary data-[state=active]:text-primary-foreground text-slate-100">Now Playing Movies</TabsTrigger>
         <TabsTrigger value="upcoming" className="data-[state=active]:bg-gradient-to-tl data-[state=active]:from-indigo-950 data-[state=active]:via-primary data-[state=active]:to-primary data-[state=active]:text-primary-foreground text-slate-100">Upcoming Movies</TabsTrigger>
