@@ -48,10 +48,10 @@ const MediaCard: FC<MediaCardProps> = ({
     return (
         <article
             className={cn(
-                "relative overflow-hidden rounded-lg transition-all duration-75 shadow  ease-in",
+                "relative overflow-hidden rounded-lg transition-all duration-75 ease-in",
                 layout === "horizontal"
                     ? "h-72 md:h-80 w-full"
-                    : "flex flex-row w-full drop-shadow-md",
+                    : "flex flex-row w-full border border-secondary",
                 className
             )}
             {...props}
@@ -89,7 +89,7 @@ const MediaCard: FC<MediaCardProps> = ({
 
             {/* Konten untuk horizontal layout */}
             {layout === "vertical" && (
-                <div className="flex flex-col flex-grow p-3 bg-gradient-to-bl via-transparent from-secondary/50 to-transparent">
+                <div className="flex flex-col flex-grow p-3">
                     <div className="flex flex-col gap-2">
                         <h2 className="text-lg font-bold ">{title}</h2>
                         <CardDescription className="text-xs">

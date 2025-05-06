@@ -29,24 +29,24 @@ const MediaDetailAside: FC<MediaDetailAsideProps> = ({ id, mediaType, detailData
         <aside className="flex flex-col w-full gap-2 md:gap-4 md:w-1/3 lg:gap-6 xl:gap-8">
             <div className="flex flex-col gap-2">
                 <Label>Status</Label>
-                <p className="text-muted-foreground">{detailData.status}</p>
+                <p className="text-muted-foreground">{detailData.status || "No status available"}</p>
             </div>
             <div className="flex flex-col gap-2">
                 <Label>Original Language</Label>
-                <p className="text-muted-foreground">{original_language?.english_name}</p>
+                <p className="text-muted-foreground">{original_language?.english_name || "No original language available"}</p>
             </div>
             {mediaType === "movie" ? (
                 <>
                     <div className="flex flex-col gap-2">
                         <Label>Budget</Label>
                         <p className="text-muted-foreground">
-                            {detailData.budget ? `$${detailData.budget.toLocaleString()}` : "-"}
+                            {detailData.budget ? `$${detailData.budget.toLocaleString()}` : "No budget available"}
                         </p>
                     </div>
                     <div className="flex flex-col gap-2">
                         <Label>Revenue</Label>
                         <p className="text-muted-foreground">
-                            {detailData.revenue ? `$${detailData.revenue.toLocaleString()}` : "-"}
+                            {detailData.revenue ? `$${detailData.revenue.toLocaleString()}` : "No revenue available"}
                         </p>
                     </div>
                 </>
@@ -71,14 +71,14 @@ const MediaDetailAside: FC<MediaDetailAsideProps> = ({ id, mediaType, detailData
                                     </div>
                                 ))
                             ) : (
-                                <p className="text-muted-foreground">-</p>
+                                <p className="text-muted-foreground">No networks available</p>
                             )}
                         </div>
                     </div>
 
                     <div className="flex flex-col gap-2">
                         <Label>Type</Label>
-                        <p className="text-muted-foreground">{detailData.type || "-"}</p>
+                        <p className="text-muted-foreground">{detailData.type || "No type available"}</p>
                     </div>
                 </>
             )}
@@ -86,9 +86,13 @@ const MediaDetailAside: FC<MediaDetailAsideProps> = ({ id, mediaType, detailData
             <div className="flex flex-col gap-2">
                 <Label>Keywords</Label>
                 <div className="flex flex-wrap gap-2">
-                    {KeywordsData.keywords.map((keyword: any) => (
-                        <Link href={`/keyword/${keyword.id}-${slugify(keyword.name)}/${mediaType}`} key={keyword.id} className={buttonVariants({ variant: "secondary" })}>{keyword.name}</Link>
-                    ))}
+                    {KeywordsData.keywords.length ? (
+                        KeywordsData.keywords.map((keyword: any) => (
+                            <Link href={`/keyword/${keyword.id}-${slugify(keyword.name)}/${mediaType}`} key={keyword.id} className={buttonVariants({ variant: "secondary" })}>{keyword.name}</Link>
+                        ))
+                    ) : (
+                        <p className="text-muted-foreground">No keywords available</p>
+                    )}
                 </div>
             </div>
         </aside>

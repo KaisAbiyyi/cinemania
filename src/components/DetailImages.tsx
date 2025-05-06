@@ -11,6 +11,7 @@ import { usePersonImages } from "../feature/person/hooks/usePersonImages";
 import MediaDetailImagesSkeleton from "../feature/media/components/skeletons/MediaDetailImagesSkeleton";
 import { getImageSizeClasses, selectAppropriateImages } from "../feature/media/utils/selectAppropriateImage";
 import { cn } from "@/lib/utils";
+import { Alert, AlertDescription } from "./ui/alert";
 
 interface DetailImagesProps {
     id: number;
@@ -52,13 +53,15 @@ const DetailImages: FC<DetailImagesProps> = ({ id, type, mediaType, className })
         <div className={cn("flex flex-col gap-4 sm:gap-6", className)}>
             <div className="flex items-center justify-between">
                 <h1 className="text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl">Photos</h1>
-                <Link
-                    href={`${pathname}/images`}
-                    className={buttonVariants({ variant: "ghost", className: "w-fit" })}
-                >
-                    View All Images
-                    <ChevronRight className="w-4 h-4" />
-                </Link>
+                {selectedImages.length > 0 &&
+                    <Link
+                        href={`${pathname}/images`}
+                        className={buttonVariants({ variant: "ghost", className: "w-fit" })}
+                    >
+                        View All Images
+                        <ChevronRight className="w-4 h-4" />
+                    </Link>
+                }
             </div>
 
             {selectedImages.length > 0 ? (
@@ -87,7 +90,11 @@ const DetailImages: FC<DetailImagesProps> = ({ id, type, mediaType, className })
                     })}
                 </div>
             ) : (
-                <p className="text-sm text-muted-foreground">No images available.</p>
+                <Alert>
+                    <AlertDescription>
+                        No images available.
+                    </AlertDescription>
+                </Alert>
             )}
         </div>
     );

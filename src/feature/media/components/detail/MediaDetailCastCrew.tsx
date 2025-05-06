@@ -11,6 +11,7 @@ import { useMediaAggregateCredits } from "../../hooks/useMediaAggregateCredits";
 import CastCard from "../cast/CastCard";
 import { MovieDetail, TVDetail } from "@/types/media";
 import MediaCastCrewSkeleton from "../skeletons/MediaCastCrewSkeleton";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 type MediaDetailCastCrewProps =
     | {
@@ -51,36 +52,46 @@ const MediaDetailCastCrew: FC<MediaDetailCastCrewProps> = ({ data, mediaType, me
             <div className="flex flex-col gap-2 md:gap-4 lg:gap-6">
                 <div className="flex items-center justify-between">
                     <h1 className="text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl">Top Cast</h1>
-                    <Link href={`${pathname}/cast`} className={buttonVariants({ variant: "ghost", className: "w-fit" })}>
-                        View Full Cast & Crew
-                        <ChevronRight />
-                    </Link>
+                    {cast.length > 0 &&
+                        <Link href={`${pathname}/cast`} className={buttonVariants({ variant: "ghost", className: "w-fit" })}>
+                            View Full Cast & Crew
+                            <ChevronRight />
+                        </Link>
+                    }
                 </div>
-                <div className="grid grid-cols-1 gap-2 md:grid-cols-2 md:gap-4 lg:gap-6">
-                    {cast.slice(0, 10).map((castMember, index) => {
-                        if (isMovie) {
-                            return <CastCard key={index} data={castMember as MediaCredits["cast"][number]} mediaType="movie" />;
-                        }
-                        return <CastCard key={index} data={castMember} mediaType="tv" />;
-                    })}
-                </div>
-                <Separator />
-                <div className="grid grid-cols-1 gap-2 md:grid-cols-2 md:gap-4 lg:gap-6">
-                    {mediaType === "movie" ? (
-                        <>
-                            {director && <CastCard data={director as MediaCredits["crew"][number]} mediaType="movie" />}
-                            {topWriters.map((writer, index) => (
-                                <CastCard key={index} data={writer} mediaType="movie" />
-                            ))}
-                        </>
-                    ) : (
-                        <>
-                            {creators && creators.map((creator, index) => (
-                                <CastCard key={index} data={creator} mediaType="tv" />
-                            ))}
-                        </>
-                    )}
-                </div>
+                {cast.length > 0 ?
+                    <>
+                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 md:gap-4 lg:gap-6">
+                            {cast.slice(0, 10).map((castMember, index) => {
+                                if (isMovie) {
+                                    return <CastCard key={index} data={castMember as MediaCredits["cast"][number]} mediaType="movie" />;
+                                }
+                                return <CastCard key={index} data={castMember} mediaType="tv" />;
+                            })}
+                        </div>
+                        <Separator />
+                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 md:gap-4 lg:gap-6">
+                            {mediaType === "movie" ? (
+                                <>
+                                    {director && <CastCard data={director as MediaCredits["crew"][number]} mediaType="movie" />}
+                                    {topWriters.map((writer, index) => (
+                                        <CastCard key={index} data={writer} mediaType="movie" />
+                                    ))}
+                                </>
+                            ) : (
+                                <>
+                                    {creators && creators.map((creator, index) => (
+                                        <CastCard key={index} data={creator} mediaType="tv" />
+                                    ))}
+                                </>
+                            )}
+                        </div>
+                    </>
+                    :
+                    <Alert>
+                        <AlertDescription>We don't have any cast added tot his movie yet.</AlertDescription>
+                    </Alert>
+                }
             </div>
         </div>
     );

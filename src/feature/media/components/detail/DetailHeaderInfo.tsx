@@ -70,8 +70,8 @@ const DetailHeaderInfo: FC<DetailHeaderInfoProps> = ({ mediaType, data, crewData
         : contentRatings?.results.find(r => r.iso_3166_1 === regionCode)?.rating ||
         contentRatings?.results.find(r => r.iso_3166_1 === "US")?.rating;
 
-        console.log(contentRatings)
-        
+    console.log(contentRatings)
+
 
     const dateFormatted = rawReleaseDate
         ? format(new Date(rawReleaseDate), isMovie ? "MMMM dd, yyyy" : "dd MMMM, yyyy")
@@ -142,7 +142,7 @@ const DetailHeaderInfo: FC<DetailHeaderInfoProps> = ({ mediaType, data, crewData
                     )}
                     <p className="mt-2">{data.overview}</p>
                     <div className="flex flex-col gap-4 mt-4 text-slate-100">
-                        {isMovie ? (
+                        {isMovie && director ? (
                             <>
                                 <div className="flex flex-col gap-2">
                                     <Label className="text-xs text-slate-300 md:text-sm">Director</Label>
@@ -223,7 +223,7 @@ const DetailHeaderInfo: FC<DetailHeaderInfoProps> = ({ mediaType, data, crewData
                                 {genres.map((genre) => (
                                     <Link
                                         key={genre.id}
-                                        href={`/genre/${genre.id}-${genre.name.toLowerCase().replace(/ /g, "-")}/${mediaType}`}
+                                        href={`/genre/${genre.id}-${slugify(genre.name)}/${mediaType}`}
                                         className="font-bold md:text-base text-slate-400 hover:text-slate-50 hover:underline"
                                     >
                                         {genre.name}
@@ -241,7 +241,7 @@ const DetailHeaderInfo: FC<DetailHeaderInfoProps> = ({ mediaType, data, crewData
                         <p>{data.overview}</p>
                     </div>
                     <div className="flex gap-6 text-slate-100">
-                        {isMovie ? (
+                        {isMovie && director ? (
                             <>
                                 <div className="flex flex-col gap-2">
                                     <Label className="text-xs text-slate-300 md:text-sm">Director</Label>
@@ -272,22 +272,24 @@ const DetailHeaderInfo: FC<DetailHeaderInfoProps> = ({ mediaType, data, crewData
                                 </div>
                             </>
                         ) : (
-                            <div className="flex flex-col gap-2">
-                                <Label className="text-xs text-slate-300 lg:text-sm">Creator{creators.length > 1 && "s"}</Label>
-                                <h4 className="flex flex-wrap items-center text-slate-300 gap-x-1">
-                                    {creators.map((person, index) => (
-                                        <span key={index} className="flex items-center gap-1">
-                                            <Link
-                                                href={`/person/${person.id}-${slugify(person.name)}`}
-                                                className="font-bold hover:text-slate-50 hover:underline"
-                                            >
-                                                {person.name}
-                                            </Link>
-                                            {index < creators.length - 1 && <span className="text-slate-400">•</span>}
-                                        </span>
-                                    ))}
-                                </h4>
-                            </div>
+                            creators.length > 0 && (
+                                <div className="flex flex-col gap-2">
+                                    <Label className="text-xs text-slate-300 lg:text-sm">Creator{creators.length > 1 && "s"}</Label>
+                                    <h4 className="flex flex-wrap items-center text-slate-300 gap-x-1">
+                                        {creators.map((person, index) => (
+                                            <span key={index} className="flex items-center gap-1">
+                                                <Link
+                                                    href={`/person/${person.id}-${slugify(person.name)}`}
+                                                    className="font-bold hover:text-slate-50 hover:underline"
+                                                >
+                                                    {person.name}
+                                                </Link>
+                                                {index < creators.length - 1 && <span className="text-slate-400">•</span>}
+                                            </span>
+                                        ))}
+                                    </h4>
+                                </div>
+                            )
                         )}
 
                     </div>

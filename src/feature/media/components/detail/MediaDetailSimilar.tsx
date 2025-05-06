@@ -2,6 +2,7 @@ import { FC } from "react";
 import { useMediaSimilar } from "../../hooks/useMediaSimilar";
 import MediaCard from "../MediaCard";
 import MediaDetailSimilarSkeleton from "../skeletons/MediaDetailSimilarSkeleton";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface MediaDetailSimilarProps {
     id: number
@@ -43,7 +44,9 @@ const MediaDetailSimilar: FC<MediaDetailSimilarProps> = ({ id, mediaType }) => {
                 ))}
             </div>
             {similarData.results.length === 0 && (
-                <p className="text-muted-foreground">No similar media available.</p>
+                <Alert className="-mt-20">
+                    <AlertDescription>No similar media available.</AlertDescription>
+                </Alert>
             )}
         </div>
     );

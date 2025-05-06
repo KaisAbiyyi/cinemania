@@ -2,6 +2,8 @@ import { FC } from "react";
 import { useMediaRecommendations } from "../../hooks/useMediaRecommendations";
 import MediaCard from "../MediaCard";
 import MediaDetailRecommendationsSkeleton from "../skeletons/MediaDetailRecommendationsSkeleton";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { cn } from "@/lib/utils";
 
 interface MediaDetailRecommendationsProps {
     id: number
@@ -43,7 +45,9 @@ const MediaDetailRecommendations: FC<MediaDetailRecommendationsProps> = ({ id, m
                 ))}
             </div>
             {similarData.results.length === 0 && (
-                <p className="text-muted-foreground">No similar media available.</p>
+                <Alert className="-mt-20">
+                    <AlertDescription>No recommended media available.</AlertDescription>
+                </Alert>
             )}
         </div>
     );

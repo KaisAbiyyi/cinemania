@@ -37,7 +37,7 @@ function MainContent({ children }: { children: React.ReactNode }) {
       className="absolute top-0 bottom-0 right-0 flex flex-col overflow-y-auto scrollbar-thin scrollbar-thumb-primary scrollbar-track-rounded-full scrollbar-thumb-rounded-full scrollbar-corner-rounded scrollbar-w-3 scrollbar-track-transparent"
     >
       <Navbar />
-      <div className="flex flex-col gap-10 p-4 md:p-6 lg:p-8 xl:p-10 transition-all duration-100 ease-in">{children}</div>
+      <div className="flex flex-col gap-10 p-4 transition-all duration-100 ease-in md:p-6 lg:p-8 xl:p-10">{children}</div>
       <Footer />
     </main>
   );
@@ -56,7 +56,7 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="light">
           <QueryClientProvider client={queryClient}>
             <SidebarProvider>
-              <div className="relative w-full h-svh bg-gradient-to-tl from-primary/15 dark:from-black via-background to-primary/5">
+              <div className="relative w-full h-svh bg-gradient-to-tl from-transparent dark:from-black via-background to-primary/5">
                 <AppSidebar />
                 <MainContent>{children}</MainContent>
               </div>

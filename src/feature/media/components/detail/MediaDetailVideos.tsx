@@ -15,6 +15,7 @@ import { usePathname } from "next/navigation";
 import { FC } from "react";
 import { useMediaVideos } from "../../hooks/useMediaVideos";
 import MediaDetailVideosSkeleton from "../skeletons/MediaDetailVideosSkeleton";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 interface MediaDetailVideosProps {
     id: number;
@@ -34,7 +35,18 @@ const MediaDetailVideos: FC<MediaDetailVideosProps> = ({ id, mediaType }) => {
     }
 
     if (error || !data || !data.results.length) {
-        return <p className="text-muted-foreground">No videos available.</p>;
+        return (
+            <div className="flex flex-col gap-4 md:gap-6 lg:gap-8 xl:gap-10">
+                <div className="flex flex-col gap-2 md:gap-4 lg:gap-8">
+                    <h1 className="text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl">Videos</h1>
+                </div>
+                <Alert>
+                    <AlertDescription>
+                        No videos available.
+                    </AlertDescription>
+                </Alert>
+            </div>
+        );
     }
 
     const sortedVideos = data.results

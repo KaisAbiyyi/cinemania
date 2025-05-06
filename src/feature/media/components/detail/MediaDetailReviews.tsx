@@ -14,6 +14,7 @@ import { useMediaReviews } from "../../hooks/useMediaReviews";
 import { MediaReviews } from "../../hooks/useMediaReviews";
 import MediaDetailReviewsSkeleton from "../skeletons/MediaDetailReviewsSkeleton";
 import ReviewCard from "../reviews/ReviewCard";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 interface MediaDetailReviewsProps {
     id: number;
@@ -39,7 +40,7 @@ const MediaDetailReviews: FC<MediaDetailReviewsProps> = ({ id, mediaType }) => {
         return <MediaDetailReviewsSkeleton />;
     }
 
-    if (error || !data || !data.results.length || !sortedReviews.length) {
+    if (error || !data) {
         return <p className="text-muted-foreground">No reviews available.</p>;
     }
 
@@ -48,23 +49,28 @@ const MediaDetailReviews: FC<MediaDetailReviewsProps> = ({ id, mediaType }) => {
             <div className="flex flex-col gap-2 md:gap-4 lg:gap-6">
                 <div className="flex items-center justify-between">
                     <h1 className="text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl">Top Reviews</h1>
-                    <Link
-                        href={`${pathname}/reviews`}
-                        className={buttonVariants({ variant: "ghost", className: "w-fit" })}
-                    >
-                        Read All Reviews
-                        <ChevronRight />
-                    </Link>
+                    {sortedReviews.length > 0 &&
+                        <Link
+                            href={`${pathname}/reviews`}
+                            className={buttonVariants({ variant: "ghost", className: "w-fit" })}
+                        >
+                            Read All Reviews
+                            <ChevronRight />
+                        </Link>
+                    }
                 </div>
             </div>
-            <Card className="bg-transparent">
-                {sortedReviews.map((review) => (
-                    <ReviewCard data={review} key={review.id} />
-                ))}
-            </Card>
-            {sortedReviews.length === 0 && (
-                <p className="text-muted-foreground">No reviews available.</p>
-            )}
+            {sortedReviews.length > 0 ?
+                <Card className="bg-transparent">
+                    {sortedReviews.map((review) => (
+                        <ReviewCard data={review} key={review.id} />
+                    ))}
+                </Card>
+                :
+                <Alert>
+                    <AlertDescription>No review available.</AlertDescription>
+                </Alert>
+            }
         </div>
     );
 };
