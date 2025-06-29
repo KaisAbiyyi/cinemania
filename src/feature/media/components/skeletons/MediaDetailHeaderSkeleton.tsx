@@ -70,11 +70,11 @@ const MediaDetailHeaderSkeleton: FC = () => {
 
                         <div className="flex gap-6">
                             <div className="flex flex-col gap-2">
-                                <Label className="text-slate-300 text-xs">Director</Label>
+                                <Skeleton className="h-4 w-28" />
                                 <Skeleton className="h-4 w-28" />
                             </div>
                             <div className="flex flex-col gap-2">
-                                <Label className="text-slate-300 text-xs">Writers</Label>
+                                <Skeleton className="w-20 h-4" />
                                 <div className="flex gap-2 flex-wrap">
                                     <Skeleton className="w-20 h-4" />
                                     <Skeleton className="w-16 h-4" />

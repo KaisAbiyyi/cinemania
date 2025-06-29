@@ -1,5 +1,5 @@
-import { NextResponse } from "next/server";
 import axios from "axios";
+import { NextResponse } from "next/server";
 
 /**
  * API Route untuk mendapatkan region berdasarkan IP menggunakan ipinfo.io.
@@ -17,10 +17,12 @@ export async function GET(request: Request) {
     const token = process.env.IPINFO_TOKEN || "YOUR_TOKEN";
 
     // Jika IP adalah localhost, langsung kembalikan region default
-    if (ip === "127.0.0.1") {
+    if (ip === "127.0.0.1" || ip === "::1") {
         return NextResponse.json({ region: "US" });
     }
-
+    if (!token) {
+        return NextResponse.json({ region: "US" }, { status: 500 });
+    }
     try {
         // Panggil API geolokasi menggunakan axios
         const { data } = await axios.get(`https://ipinfo.io/${ip}`, {
@@ -29,7 +31,7 @@ export async function GET(request: Request) {
         const region = data.country || "US";
         console.log("Ini adalah region" + region)
         return NextResponse.json({ region });
-    } catch (error: any) {
+    } catch (error) {
         console.error("Error fetching geolocation:", error);
         return NextResponse.json({ region: "US" }, { status: 500 });
     }

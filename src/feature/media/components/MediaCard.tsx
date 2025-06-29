@@ -79,7 +79,7 @@ const MediaCard: FC<MediaCardProps> = ({
                         </Badge>
                     </CardHeader>
                     <CardHeader className="p-3">
-                        <h2 className="text-lg font-bold text-slate-200">{title}</h2>
+                        <h2 className="text-lg font-bold text-slate-200 whitespace-break-spaces">{title}</h2>
                         <CardDescription className="text-sm text-slate-400">
                             <time dateTime={releaseDate}>{formattedDate}</time>
                         </CardDescription>
@@ -90,8 +90,8 @@ const MediaCard: FC<MediaCardProps> = ({
             {/* Konten untuk horizontal layout */}
             {layout === "vertical" && (
                 <div className="flex flex-col flex-grow p-3">
-                    <div className="flex flex-col gap-2">
-                        <h2 className="text-lg font-bold ">{title}</h2>
+                    <div className="flex flex-col gap-2 flex-wrap">
+                        <h2 className="text-lg font-bold whitespace-break-spaces">{title}</h2>
                         <CardDescription className="text-xs">
                             <time dateTime={releaseDate}>{formattedDate}</time>
                         </CardDescription>
@@ -101,7 +101,7 @@ const MediaCard: FC<MediaCardProps> = ({
                     <Badge className="absolute top-2 right-2">{rating.toFixed(1)}</Badge>
 
                     {/* Genre List */}
-                    <div className="z-10 flex gap-2 mt-1">
+                    <div className="z-10 flex gap-2 mt-1 flex-wrap">
                         {isPending
                             ? <span className="text-xs text-gray-500">Loading genres...</span>
                             : genres.map((genre: Genre) => (

@@ -53,6 +53,7 @@ const DetailBackBanner: FC<DetailBackBannerProps> = ({ id, title, slug, context,
                         height={200}
                         className="rounded-lg"
                     />
+                    
                     <div className="text-white">
                         <h2 className="text-base font-semibold">{title} ({new Date(movieDetails?.release_date || movieDetails?.first_air_date).getFullYear()})</h2>
                         <h1 className="text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl">{context}</h1>

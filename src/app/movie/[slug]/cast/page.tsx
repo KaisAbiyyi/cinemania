@@ -38,7 +38,7 @@ const CastPage: FC<CastPageProps> = async ({ params }) => {
 
     return (
         <div className="flex flex-col gap-6">
-            <CastBanner mediaType="tv" id={Number(id)} title={title} slug={slug} context="Full Cast and Crew" />
+            <CastBanner mediaType="movie" id={Number(id)} title={title} slug={slug} context="Full Cast and Crew" />
             <MediaCastWrapper id={Number(id)} />
         </div>
     );
