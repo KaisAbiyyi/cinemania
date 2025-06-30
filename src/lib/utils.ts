@@ -29,10 +29,10 @@ export function parseQuery(queryString: string): Partial<Filters> {
     if (fieldType === "number") {
       const num = Number(value);
       if (!isNaN(num)) {
-        result[fieldKey] = num as any;
+        result[fieldKey] = num as Filters[typeof fieldKey];;
       }
     } else {
-      result[fieldKey] = value as any;
+      result[fieldKey] = value as Filters[typeof fieldKey];
     }
   });
 

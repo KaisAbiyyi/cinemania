@@ -1,20 +1,15 @@
 "use client";
 
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
-import { cn, getInitials, getProfileImageUrl } from "@/lib/utils";
-import { formatDate } from "date-fns";
+import { Card } from "@/components/ui/card";
 import { ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FC, useMemo, useState } from "react";
-import { useMediaReviews } from "../../hooks/useMediaReviews";
-import { MediaReviews } from "../../hooks/useMediaReviews";
-import MediaDetailReviewsSkeleton from "../skeletons/MediaDetailReviewsSkeleton";
+import { FC, useMemo } from "react";
+import { MediaReviews, useMediaReviews } from "../../hooks/useMediaReviews";
 import ReviewCard from "../reviews/ReviewCard";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import MediaDetailReviewsSkeleton from "../skeletons/MediaDetailReviewsSkeleton";
 
 interface MediaDetailReviewsProps {
     id: number;

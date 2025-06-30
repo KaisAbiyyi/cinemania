@@ -3,9 +3,9 @@ import { slugToTitle } from "@/lib/utils";
 import { FC } from "react";
 
 interface TVKeywordPageProps {
-    params: {
+    params: Promise<{
         slug: string;
-    };
+    }>;
 }
 
 export const generateMetadata = async ({ params }: TVKeywordPageProps) => {

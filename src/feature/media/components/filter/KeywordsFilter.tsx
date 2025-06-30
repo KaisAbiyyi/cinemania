@@ -1,19 +1,19 @@
 "use client";
 
-import { FC, useState, useEffect, useMemo } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
     Command,
-    CommandInput,
-    CommandList,
-    CommandItem,
-    CommandGroup,
     CommandEmpty,
+    CommandGroup,
+    CommandInput,
+    CommandItem,
+    CommandList,
 } from "@/components/ui/command";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { X } from "lucide-react";
-import { useKeywordsSearch } from "@/feature/keywords/hooks/useKeywords";
 import { Label } from "@/components/ui/label";
+import { useKeywordsSearch } from "@/feature/keywords/hooks/useKeywords";
+import { X } from "lucide-react";
+import { FC, useEffect, useState } from "react";
 
 interface KeywordsFilterProps {
     value?: string; // berisi kumpulan keyword (ID) dalam format misal "1,2,3"
@@ -77,6 +77,7 @@ const KeywordsFilter: FC<KeywordsFilterProps> = ({
         if (hasChanges) {
             setKeywordNames(newKeywordNames);
         }
+        // eslint-disable-next-line
     }, [allKeywordsResponse, keywordIds]);
 
     // Update keywordNames dari suggestions juga
@@ -96,6 +97,7 @@ const KeywordsFilter: FC<KeywordsFilterProps> = ({
         if (hasChanges) {
             setKeywordNames(newKeywordNames);
         }
+        // eslint-disable-next-line
     }, [suggestions, keywordIds]);
 
     // Fungsi untuk menambahkan keyword

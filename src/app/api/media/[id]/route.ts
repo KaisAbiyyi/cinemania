@@ -7,7 +7,7 @@ import tmdbApi from "@/services/tmdbApi";
  */
 export async function GET(
     request: Request,
-    context: { params: { id: string } | Promise<{ id: string }> }
+    context: { params: Promise<{ id: string }> }
 ) {
     // Await params sebelum mendestructure
     const { id } = await context.params;
@@ -33,7 +33,7 @@ export async function GET(
         // Fetch data dari TMDB API menggunakan instance tmdbApi
         const { data } = await tmdbApi.get(endpoint, { params: paramsObject });
         return NextResponse.json(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Error fetching media details:", error);
         return NextResponse.json(
             { error: "Failed to fetch media details" },

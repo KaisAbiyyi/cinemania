@@ -1,8 +1,12 @@
 import SearchWrapper from '@/feature/search/components/SearchWrapper';
 import React from 'react';
 
-export async function generateMetadata({ searchParams }: { searchParams: { q?: string } }) {
-    const query = searchParams.q || 'Search';
+// Force dynamic rendering
+export const dynamic = 'force-dynamic';
+
+export async function generateMetadata({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+    const resolvedSearchParams = await searchParams;
+    const query = resolvedSearchParams.q || 'Search';
     return {
         title: `${query} | Cinemania`,
         description: `Search results for "${query}" on Cinemania.`,
@@ -24,8 +28,9 @@ export async function generateMetadata({ searchParams }: { searchParams: { q?: s
     };
 }
 
-const SearchPage = ({ searchParams }: { searchParams: { q?: string } }) => {
-    const query = searchParams.q || '';
+const SearchPage = async ({ searchParams }: { searchParams: Promise<{ q?: string }> }) => {
+    const resolvedSearchParams = await searchParams;
+    const query = resolvedSearchParams.q || '';
 
     return (
         <>
@@ -34,7 +39,6 @@ const SearchPage = ({ searchParams }: { searchParams: { q?: string } }) => {
             </h1>
             <SearchWrapper query={query} />
         </>
-
     );
 };
 

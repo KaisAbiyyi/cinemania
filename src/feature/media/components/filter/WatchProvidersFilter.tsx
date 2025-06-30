@@ -1,22 +1,23 @@
 "use client";
 
-import React, { FC, useState, useMemo, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { useProviderRegions } from "@/feature/providers/hooks/useProviderRegions";
-import { useProviderMedia } from "@/feature/providers/hooks/useProviderMedia";
-import { useGeolocation } from "@/feature/geolocation/hooks/useGeolocation";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
     Command,
-    CommandInput,
-    CommandList,
-    CommandGroup,
-    CommandItem,
     CommandEmpty,
+    CommandGroup,
+    CommandInput,
+    CommandItem,
+    CommandList,
 } from "@/components/ui/command";
-import { Check, ChevronsUpDown } from "lucide-react";
+import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { useGeolocation } from "@/feature/geolocation/hooks/useGeolocation";
+import { useProviderMedia } from "@/feature/providers/hooks/useProviderMedia";
+import { useProviderRegions } from "@/feature/providers/hooks/useProviderRegions";
 import { cn } from "@/lib/utils";
+import { Check, ChevronsUpDown } from "lucide-react";
+import Image from "next/image";
+import { FC, useEffect, useMemo, useRef, useState } from "react";
 
 interface WatchProvidersFilterProps {
     mediaType: "movie" | "tv";
@@ -61,6 +62,7 @@ const WatchProvidersFilter: FC<WatchProvidersFilterProps> = ({
 
     // Ambil daftar region dengan bahasa "en-US"
     const { data: regionData, isLoading: isLoadingRegions, error: errorRegions } = useProviderRegions("en-US");
+    // eslint-disable-next-line
     const regions = regionData?.results || [];
 
     // Filter regions berdasarkan query
@@ -181,6 +183,7 @@ const WatchProvidersFilter: FC<WatchProvidersFilterProps> = ({
                     {errorProviders && <p>Error loading providers</p>}
                     {!isLoadingProviders && providers.length === 0 && <p>No providers found.</p>}
                     {!isLoadingProviders &&
+                        // eslint-disable-next-line
                         providers.map((prov: any) => {
                             const { provider_id, provider_name, logo_path } = prov;
                             const isSelected = selectedProviders.includes(provider_id);
@@ -193,10 +196,12 @@ const WatchProvidersFilter: FC<WatchProvidersFilterProps> = ({
                                     onClick={() => toggleProvider(provider_id)}
                                 >
                                     {logo_path ? (
-                                        <img
+                                        <Image
+                                            height={32}
+                                            width={32}
                                             src={`https://image.tmdb.org/t/p/original${logo_path}`}
                                             alt={provider_name}
-                                            className="w-8 h-8 object-contain rounded"
+                                            className=" object-contain rounded"
                                         />
                                     ) : (
                                         provider_name

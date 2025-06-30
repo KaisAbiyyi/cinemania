@@ -5,12 +5,14 @@ import apiClient from "@/services/apiClient";
 export interface MediaRecommendationsParams {
     id: number;
     mediaType: "movie" | "tv";
+    // eslint-disable-next-line
     [key: string]: any; // Untuk parameter opsional seperti language
 }
 
 // Struktur dasar response dari TMDB videos endpoint
 export interface MediaRecommendations {
     page: number;
+    // eslint-disable-next-line
     results: any[]
     total_pages: number;
 }

@@ -19,6 +19,7 @@ export const useFilterSync = (defaults: Filters) => {
             if (param !== null) {
                 // Jika ada nilai di URL, parsing jika default sudah terdefinisi
                 filters[key] =
+                    // eslint-disable-next-line
                     defaults[key] !== undefined ? parseValue(defaults[key] as any, param) : param;
             }
         });

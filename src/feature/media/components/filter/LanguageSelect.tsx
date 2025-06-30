@@ -1,21 +1,20 @@
 "use client";
 
-import * as React from "react";
-import { FC, useState, useEffect, useMemo } from "react";
-import { Check, ChevronsUpDown } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
 import {
     Command,
-    CommandInput,
-    CommandList,
-    CommandGroup,
-    CommandItem,
     CommandEmpty,
+    CommandGroup,
+    CommandInput,
+    CommandItem,
+    CommandList,
 } from "@/components/ui/command";
+import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useLanguages } from "@/feature/languages/hooks/useLanguages";
+import { cn } from "@/lib/utils";
+import { Check, ChevronsUpDown } from "lucide-react";
+import { FC, useEffect, useState } from "react";
 
 interface Language {
     iso_639_1: string;
@@ -37,7 +36,6 @@ const LanguageSelect: FC<LanguageSelectProps> = ({
     const { data: languages, isLoading } = useLanguages();
     const [open, setOpen] = useState(false);
     const [value, setValue] = useState(initialValue);
-    const [searchQuery, setSearchQuery] = useState("");
 
     // Update state value jika initialValue berubah
     useEffect(() => {

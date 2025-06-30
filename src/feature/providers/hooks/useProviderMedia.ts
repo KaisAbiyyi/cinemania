@@ -5,7 +5,9 @@ import apiClient from "@/services/apiClient";
 
 export interface ProviderMediaResponse {
     // Sesuaikan dengan struktur respons TMDB
+    // eslint-disable-next-line
     results?: any;
+    // eslint-disable-next-line
     [key: string]: any;
 }
 

@@ -4,12 +4,12 @@ import { slugToTitle } from "@/lib/utils";
 import { FC } from "react";
 
 interface ImagesPageProps {
-    params: {
+    params: Promise<{
         slug: string;
-    };
+    }>;
 }
 
-export const generateMetadata = async ({ params }: { params: { slug: string } }) => {
+export const generateMetadata = async ({ params }: { params: Promise<{ slug: string }> }) => {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
     const tvTitle = slugToTitle(decodedSlug);

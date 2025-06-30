@@ -5,7 +5,7 @@ import { CardContent, CardHeader } from "@/components/ui/card";
 import { cn, getInitials, getProfileImageUrl } from "@/lib/utils";
 import { formatDate } from "date-fns";
 import { FC, useState } from "react";
-import { MediaReviews, Review } from "../../hooks/useMediaReviews";
+import { Review } from "../../hooks/useMediaReviews";
 
 interface ReviewCardProps {
     data: Review

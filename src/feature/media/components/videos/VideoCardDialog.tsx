@@ -1,9 +1,8 @@
-import { FC } from "react";
 import { DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useYoutube } from "@/feature/youtube/hooks/useYoutube";
-import { CalendarDays, Clock, Eye } from "lucide-react";
 import { formatDuration, formatViewCount } from "@/lib/utils";
-import { formatDate } from "date-fns";
+import { Clock, Eye } from "lucide-react";
+import { FC } from "react";
 
 interface VideoCardDialogProps {
     videoKey: string;

@@ -6,12 +6,12 @@ import tmdbApi from "@/services/tmdbApi";
  * Contoh request:
  * GET /api/languages
  */
-export async function GET(request: Request) {
+export async function GET() {
     try {
         // Panggil endpoint TMDB /configuration/languages
         const { data } = await tmdbApi.get("/configuration/languages");
         return NextResponse.json(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Error fetching languages:", error);
         return NextResponse.json({ error: "Failed to fetch languages" }, { status: 500 });
     }

@@ -4,13 +4,16 @@ import apiClient from "@/services/apiClient";
 // Interface untuk parameter query combined credits, termasuk id dan parameter tambahan
 export interface PersonCombinedCreditsParams {
     id: number;
+    // eslint-disable-next-line
     [key: string]: any;
 }
 
 // Interface untuk struktur response combined credits dari TMDB API
 // (Untuk keperluan contoh, struktur response diset sebagai any. Kamu bisa menyesuaikannya sesuai kebutuhan.)
 export interface PersonCombinedCredits {
+    // eslint-disable-next-line
     cast: any[];
+    // eslint-disable-next-line
     crew: any[];
 }
 

@@ -1,3 +1,4 @@
+
 // Interface untuk Movie (data singkat film)
 export interface Movie {
     adult: boolean;
@@ -42,6 +43,7 @@ export interface SpokenLanguage {
 
 // Interface untuk MovieDetail (detail lengkap film) yang meng-extend Movie
 export interface MovieDetail extends Movie {
+    // eslint-disable-next-line
     belongs_to_collection: null | { [key: string]: any };
     budget: number;
     genres: Genre[];

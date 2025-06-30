@@ -1,11 +1,11 @@
-import { FC } from 'react';
-import { PersonCombinedCredits, usePersonCombinedCredits } from '../hooks/usePersonCombinedCredits';
-import Image from 'next/image';
 import { Card, CardContent, CardDescription, CardTitle } from '@/components/ui/card';
-import { Star } from 'lucide-react';
-import { formatDate } from 'date-fns';
-import Link from 'next/link';
 import { cn, getPosterImageUrl, slugify } from '@/lib/utils';
+import { formatDate } from 'date-fns';
+import { Star } from 'lucide-react';
+import Image from 'next/image';
+import Link from 'next/link';
+import { FC } from 'react';
+import { PersonCombinedCredits } from '../hooks/usePersonCombinedCredits';
 interface Props {
     // Define any props you need here
     // For example, if you want to pass a personId or other data

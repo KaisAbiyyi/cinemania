@@ -4,12 +4,14 @@ import apiClient from "@/services/apiClient";
 // Interface untuk parameter query images person, termasuk id dan parameter tambahan
 export interface PersonImagesParams {
     id: number;
+    // eslint-disable-next-line
     [key: string]: any;
 }
 
 // Interface untuk struktur response images dari TMDB API
 // (Untuk keperluan contoh, struktur response diset sebagai any. Kamu bisa menyesuaikannya sesuai kebutuhan.)
 export interface PersonImages {
+    // eslint-disable-next-line
     profiles: any[];
 }
 

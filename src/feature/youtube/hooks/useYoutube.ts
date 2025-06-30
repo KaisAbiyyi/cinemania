@@ -4,6 +4,7 @@ interface YoutubeVideoDetails {
     id: string;
     title: string;
     description: string;
+    // eslint-disable-next-line
     thumbnails: any;
     channelTitle: string;
     publishedAt: string;

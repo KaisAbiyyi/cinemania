@@ -31,14 +31,14 @@ import VotesSlider from "./VotesSlider";
 import { useFilterSync } from "../../hooks/useFilterSync";
 
 // Import tipe dan default global
-import { Filters, globalDefaultFilters } from "@/types/filters";
+import { Filters } from "@/types/filters";
 
 // Import Zustand store untuk orientation
+import { usePathname, useRouter } from "next/navigation";
 import { useTrendingFilters } from "../../hooks/useTrendingFilters";
 import { useFilterContext } from "./FilterProvider";
 import LanguageSelect from "./LanguageSelect";
 import WatchProvidersFilter from "./WatchProvidersFilter";
-import { usePathname, useRouter } from "next/navigation";
 
 interface FilterContainerProps {
     mediaType: "movie" | "tv";
@@ -90,6 +90,7 @@ const FilterContainer: FC<FilterContainerProps> = ({
         setFilters(tempFilters);
         onApply?.(tempFilters);
 
+        // eslint-disable-next-line 
         let finalFilters = { ...tempFilters };
 
         if (mediaType === "tv") {

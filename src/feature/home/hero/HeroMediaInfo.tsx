@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { useHeroCarousel } from "../hooks/HeroCarouselProvider";
 import { useMediaDetails } from "@/feature/media/hooks/useMediaDetails";
+import { Genre } from "@/types/genre";
 
 interface HeroMediaInfoProps {
     media: { id: number; media_type?: "movie" | "tv" }[];
@@ -54,7 +55,7 @@ const HeroMediaInfo: FC<HeroMediaInfoProps> = ({ media }) => {
                 </span>
                 {movieDetail.genres && movieDetail.genres.length > 0 && (
                     <div className="flex flex-wrap gap-2">
-                        {movieDetail.genres.map((genre: any) => (
+                        {movieDetail.genres.map((genre: Genre) => (
                             <Link
                                 href={`/genre/${genre.id}-${genre.name.toLowerCase().replace(/ /g, "-")}/${movieDetail.media_type ?? "movie"
                                     }`}

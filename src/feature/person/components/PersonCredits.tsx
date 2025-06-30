@@ -1,8 +1,6 @@
-import { FC } from 'react';
-import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "@/components/ui/accordion";
-import { PersonCombinedCredits } from '../hooks/usePersonCombinedCredits';
-import { Card, CardContent } from '@/components/ui/card';
 import MediaCastCard from '@/feature/media/components/MediaCastCard';
+import { FC } from 'react';
+import { PersonCombinedCredits } from '../hooks/usePersonCombinedCredits';
 
 interface Props {
     data: PersonCombinedCredits;

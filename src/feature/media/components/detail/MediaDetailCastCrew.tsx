@@ -89,7 +89,7 @@ const MediaDetailCastCrew: FC<MediaDetailCastCrewProps> = ({ data, mediaType, me
                     </>
                     :
                     <Alert>
-                        <AlertDescription>We don't have any cast added tot his movie yet.</AlertDescription>
+                        <AlertDescription>We don&apos;t have any cast added tot his movie yet.</AlertDescription>
                     </Alert>
                 }
             </div>

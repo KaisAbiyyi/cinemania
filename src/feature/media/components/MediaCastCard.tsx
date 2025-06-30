@@ -17,7 +17,7 @@ interface Props {
   character: string
 }
 
-const MediaCastCard: FC<Props> = ({ id, title, posterPath, rating, releaseDate, mediaType, description, character }) => {
+const MediaCastCard: FC<Props> = ({ id, title, posterPath, rating, releaseDate, mediaType, character }) => {
   return (
     <Card key={id} className="flex flex-row gap-2 p-2 overflow-hidden bg-transparent rounded-md shadow-none">
       <Link href={`/${mediaType}/${id}-${slugify(title)}`}>

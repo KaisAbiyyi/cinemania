@@ -62,6 +62,7 @@ const MediaScrollableList: FC<MediaScrollableListProps> = ({
                 )}
             </div>
             <div className={cn("gap-4 flex", orientation === "vertical" ? " flex-col overflow-y-auto" : "overflow-x-auto pb-6", className)}>
+                {/* eslint-disable-next-line */}
                 {mediaItems.map((media: any) => (
                     <MediaCard
                         className={orientation === "horizontal" ? "min-w-52" : ""}

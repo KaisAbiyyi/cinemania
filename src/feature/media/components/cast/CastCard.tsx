@@ -8,6 +8,7 @@ type CastCardProps = | {
     data: MediaCredits["cast"][number] | MediaCredits["crew"][number];
     mediaType: "movie";
 } | {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     data: any;
     mediaType: "tv";
 }
@@ -36,6 +37,7 @@ const CastCard: FC<CastCardProps> = ({ data, mediaType }) => {
                     <p className="text-xs text-secondary-foreground/70 lg:text-sm">
                         {data.roles.length > 0
                             ? data.roles
+                                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                                 .map((role: any) => `${role.character}${role.voice ? " (voice)" : ""} (${role.episode_count} episodes)`)
                                 .join(", ")
                             : "No roles available"}

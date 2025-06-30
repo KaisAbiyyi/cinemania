@@ -14,10 +14,10 @@ import tmdbApi from "@/services/tmdbApi";
  */
 export async function GET(
     request: Request,
-    context: { params: { mediaType: string } }
+    context: { params: Promise<{ mediaType: string }> }
 ) {
     // Pastikan params sudah di-resolve sebelum digunakan.
-    const { mediaType } = await Promise.resolve(context.params);
+    const { mediaType } = await context.params;
     const url = new URL(request.url);
     const language = url.searchParams.get("language") || "en-US";
     const watchRegion = url.searchParams.get("watch_region") || "";
@@ -38,7 +38,7 @@ export async function GET(
             },
         });
         return NextResponse.json(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Error fetching provider media:", error);
         return NextResponse.json(
             { error: "Failed to fetch provider media" },

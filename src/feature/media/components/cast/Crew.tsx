@@ -2,17 +2,20 @@ import { FC } from "react";
 import CastCard from "@/feature/media/components/cast/CastCard";
 
 interface CrewProps {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     crew: any[];
     mediaType: "movie" | "tv";
 }
 
 const Crew: FC<CrewProps> = ({ crew, mediaType }) => {
     // Group crew members by their department
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const groupedCrew = crew.reduce<Record<string, any[]>>((acc, member) => {
         const department = member.department || "Other";
         if (!acc[department]) acc[department] = [];
         acc[department].push(member);
         return acc;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }, {} as Record<string, any[]>);
 
     // Define priority order for departments

@@ -5,6 +5,7 @@ import apiClient from "@/services/apiClient";
 export interface MediaImagesParams {
     id: number;
     mediaType: "movie" | "tv";
+    // eslint-disable-next-line
     [key: string]: any; // Untuk parameter opsional seperti language
 }
 

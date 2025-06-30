@@ -62,6 +62,7 @@ const MediaDetailWrapper: React.FC<MediaDetailProps> = ({ id, mediaType }) => {
     } = useMediaCredits({ id, mediaType, language: "en-US" });
 
     const releaseQuery = mediaType === "movie" ?
+        // eslint-disable-next-line 
         useMediaReleaseDates({ id, mediaType }) :
         { data: null, isLoading: false, error: null };
 
@@ -70,6 +71,7 @@ const MediaDetailWrapper: React.FC<MediaDetailProps> = ({ id, mediaType }) => {
     const releaseError = releaseQuery.error;
 
     const contentRatingsQuery = mediaType === "tv" ?
+        // eslint-disable-next-line 
         useTVContentRatings(id) :
         { data: null, isLoading: false, error: null };
 

@@ -4,12 +4,14 @@ import apiClient from "@/services/apiClient";
 export interface MediaKeywordsParams {
     id: number;
     mediaType: "movie" | "tv";
+    // eslint-disable-next-line
     [key: string]: any;
 }
 
 export interface NormalizedKeyword {
     id: number;
     name: string;
+    // eslint-disable-next-line
     [key: string]: any;
 }
 

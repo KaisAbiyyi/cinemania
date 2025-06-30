@@ -29,7 +29,7 @@ export async function GET(request: Request) {
         });
 
         return NextResponse.json(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Error fetching keywords:", error);
         return NextResponse.json({ error: "Failed to fetch keywords" }, { status: 500 });
     }

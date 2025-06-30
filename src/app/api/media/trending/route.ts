@@ -51,7 +51,7 @@ export async function GET(request: Request) {
     try {
         const { data } = await tmdbApi.get(endpoint, { params: paramsObj });
         return NextResponse.json(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Error fetching trending media:", error);
         return NextResponse.json(
             { error: "Failed to fetch trending media" },

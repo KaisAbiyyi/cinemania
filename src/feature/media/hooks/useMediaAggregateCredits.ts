@@ -5,6 +5,7 @@ import apiClient from "@/services/apiClient";
 export interface MediaAggregateCreditsParams {
     id: number;
     enabled?: boolean; // Untuk mengontrol apakah query diaktifkan atau tidak
+    // eslint-disable-next-line
     [key: string]: any; // Untuk parameter opsional seperti language
 }
 
@@ -19,6 +20,7 @@ export interface MediaAggregateCredits {
             episode_count: number;
         }>;
         profile_path: string | null;
+        // eslint-disable-next-line
         [key: string]: any;
     }>;
     crew: Array<{
@@ -30,6 +32,7 @@ export interface MediaAggregateCredits {
         }>;
         department: string;
         profile_path: string | null;
+        // eslint-disable-next-line
         [key: string]: any;
     }>;
 }

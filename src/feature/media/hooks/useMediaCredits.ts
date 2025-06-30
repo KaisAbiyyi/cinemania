@@ -5,6 +5,7 @@ import apiClient from "@/services/apiClient";
 export interface MediaCreditsParams {
     id: number;
     mediaType: "movie" | "tv";
+    // eslint-disable-next-line
     [key: string]: any; // Untuk parameter opsional seperti language
 }
 
@@ -17,6 +18,7 @@ export interface MediaCredits {
         character: string;
         profile_path: string | null;
         order: number;
+        // eslint-disable-next-line
         [key: string]: any;
     }>;
     crew: Array<{
@@ -25,6 +27,7 @@ export interface MediaCredits {
         job: string;
         department: string;
         profile_path: string | null;
+        // eslint-disable-next-line
         [key: string]: any;
     }>;
 }

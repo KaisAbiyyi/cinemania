@@ -23,11 +23,22 @@ interface DetailImagesProps {
 const DetailImages: FC<DetailImagesProps> = ({ id, type, mediaType, className }) => {
     const pathname = usePathname();
 
+    const mediaQuery = useMediaImages({
+        id,
+        mediaType: mediaType!,
+        // akan di-skip karena `enabled: false` kalau bukan 'media'
+        // handled di dalam hook
+    });
+
+    const personQuery = usePersonImages({
+        id,
+        // akan di-skip karena `enabled: false` kalau bukan 'person'
+        // handled di dalam hook
+    });
+
     // Fetch data based on the type
-    const { data, isLoading, error } =
-        type === "media"
-            ? useMediaImages({ id, mediaType: mediaType! })
-            : usePersonImages({ id });
+    const query = type === "media" ? mediaQuery : personQuery;
+    const { data, isLoading, error } = query;
 
     if (isLoading) return <MediaDetailImagesSkeleton />;
     if (error || !data) return <p className="text-muted-foreground">Failed to load images.</p>;

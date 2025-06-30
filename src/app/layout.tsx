@@ -7,7 +7,7 @@ import { ThemeProvider } from "@/components/layout/theme-provider";
 import { SidebarProvider, useSidebar } from "@/components/ui/sidebar";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Geist, Geist_Mono } from "next/font/google";
-import { useMemo } from "react";
+import { Suspense, useMemo } from "react";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -58,7 +58,11 @@ export default function RootLayout({
             <SidebarProvider>
               <div className="relative w-full h-svh bg-gradient-to-tl from-transparent dark:from-black via-background to-primary/5">
                 <AppSidebar />
-                <MainContent>{children}</MainContent>
+                <MainContent>
+                  <Suspense fallback={null}>
+                    {children}
+                  </Suspense>
+                </MainContent>
               </div>
             </SidebarProvider>
           </QueryClientProvider>

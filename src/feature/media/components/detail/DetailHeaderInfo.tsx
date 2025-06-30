@@ -11,7 +11,6 @@ import { FC } from "react";
 import { MediaCredits } from "../../hooks/useMediaCredits";
 import { MediaReleaseDates } from "../../hooks/useMediaReleaseDates";
 
-import { Language } from "@/feature/languages/hooks/useLanguages"; // pastikan path benar
 import { GeolocationResponse } from "@/feature/geolocation/hooks/useGeolocation";
 import { TVContentRatingsResponse } from "../../hooks/useTVContentRating";
 

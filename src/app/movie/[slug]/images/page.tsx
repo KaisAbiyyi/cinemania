@@ -4,12 +4,12 @@ import { slugToTitle } from "@/lib/utils";
 import { FC } from "react";
 
 interface ImagesPageProps {
-    params: {
+    params: Promise<{
         slug: string;
-    };
+    }>;
 }
 
-export const generateMetadata = async ({ params }: { params: { slug: string } }) => {
+export const generateMetadata = async ({ params }: { params: Promise<{ slug: string }> }) => {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
     const movieTitle = slugToTitle(decodedSlug);
@@ -34,12 +34,12 @@ const ImagesPage: FC<ImagesPageProps> = async ({ params }) => {
     const title = slugToTitle(decodedSlug);
 
 
-    return ( 
+    return (
         <div className="flex flex-col gap-8">
             <DetailBackBanner mediaType="movie" id={id} title={title} context="All Images" slug={slug} />
             <MediaImagesWrapper id={id} mediaType="movie" />
         </div>
-     );
+    );
 }
 
 export default ImagesPage;

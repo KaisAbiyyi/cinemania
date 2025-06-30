@@ -1,9 +1,7 @@
+import Image from "next/image";
+import Link from "next/link";
 import { FC } from "react";
 import { MediaImages } from "../../hooks/useMediaImages";
-import Image from "next/image";
-import { Dialog, DialogContent, DialogHeader, DialogTrigger } from "@/components/ui/dialog";
-import { DialogTitle } from "@radix-ui/react-dialog";
-import Link from "next/link";
 
 interface ImagesCardProps {
     data: MediaImages["posters"][number]

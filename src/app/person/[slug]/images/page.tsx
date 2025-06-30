@@ -1,5 +1,4 @@
 import { buttonVariants } from "@/components/ui/button";
-import DetailBackBanner from "@/feature/media/components/detail/DetailBackBanner";
 import PersonImageWrapper from "@/feature/person/components/PersonImageWrapper";
 import { slugToTitle } from "@/lib/utils";
 import { ArrowLeft } from "lucide-react";
@@ -7,12 +6,12 @@ import Link from "next/link";
 import { FC } from "react";
 
 interface ImagesPageProps {
-    params: {
+    params: Promise<{
         slug: string;
-    };
+    }>;
 }
 
-export const generateMetadata = async ({ params }: { params: { slug: string } }) => {
+export const generateMetadata = async ({ params }: { params: Promise<{ slug: string }> }) => {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
     const personName = slugToTitle(decodedSlug);

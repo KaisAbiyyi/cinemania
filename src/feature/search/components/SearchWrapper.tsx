@@ -65,6 +65,7 @@ const SearchWrapper: FC<Props> = ({ query }) => {
             <TabsContent value="movie" className="mt-4">
                 <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                     {movieQuery.data?.pages.map((page) =>
+                        // eslint-disable-next-line
                         page.results.map((movie: any) => (
                             <MediaCard
                                 key={movie.id}
@@ -87,6 +88,7 @@ const SearchWrapper: FC<Props> = ({ query }) => {
             <TabsContent value="tv" className="mt-4">
                 <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                     {tvQuery.data?.pages.map((page) =>
+                        // eslint-disable-next-line
                         page.results.map((tv: any) => (
                             <MediaCard
                                 key={tv.id}
@@ -109,6 +111,7 @@ const SearchWrapper: FC<Props> = ({ query }) => {
             <TabsContent value="person" className="mt-4">
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
                     {peopleQuery.data?.pages.map((page) =>
+                        // eslint-disable-next-line
                         page.results.map((person: any) => (
                             <CastCard
                                 key={person.id}
@@ -125,6 +128,7 @@ const SearchWrapper: FC<Props> = ({ query }) => {
             <TabsContent value="keyword" className="mt-4">
                 <div className="flex flex-wrap gap-2">
                     {keywordQuery.data?.pages.map((page) =>
+                        // eslint-disable-next-line
                         page.results.map((keyword: any) => (
                             <Link key={keyword.id} href={`/keyword/${keyword.id}-${slugify(keyword.name)}`} className={buttonVariants({ variant: "secondary" })}>
                                 {keyword.name}

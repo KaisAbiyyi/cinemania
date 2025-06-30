@@ -1,19 +1,18 @@
 "use client"
 
-import { Button, buttonVariants } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
-import HeroBackground from "./HeroBackground";
-import { ChevronRight, Search } from "lucide-react";
+import { useTrending } from "@/feature/media/hooks/useTrending";
+import { ChevronRight } from "lucide-react";
+import Link from "next/link";
 import { FC } from "react";
+import { HeroCarouselProvider } from "../hooks/HeroCarouselProvider";
+import HeroBackground from "./HeroBackground";
 import HeroMovieInfo from "./HeroMediaInfo";
 import HeroMiniCarousel from "./HeroMiniCarousel";
-import HeroSectionSkeleton from "./HeroSectionSkeleton";
-import { HeroCarouselProvider } from "../hooks/HeroCarouselProvider";
-import Link from "next/link";
-import { useTrending } from "@/feature/media/hooks/useTrending";
 import HeroScrollButton from "./HeroScrollButton";
-import { Input } from "@/components/ui/input";
 import HeroSearchBar from "./HeroSearchBar";
+import HeroSectionSkeleton from "./HeroSectionSkeleton";
 
 const HeroSection: FC = () => {
     const { data, isLoading, error } = useTrending({

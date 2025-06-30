@@ -9,10 +9,18 @@ import { Button } from "@/components/ui/button";
 const SearchBar = ({ onSearch }: { onSearch: (query: string) => void }) => {
     const searchParams = useSearchParams();
     const [query, setQuery] = useState("");
+    const [mounted, setMounted] = useState(false);
+
+    // Prevent hydration mismatch
+    useEffect(() => {
+        setMounted(true);
+    }, []);
 
     useEffect(() => {
-        setQuery(searchParams.get("q") || "");
-    }, [searchParams]);
+        if (mounted) {
+            setQuery(searchParams.get("q") || "");
+        }
+    }, [searchParams, mounted]);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -20,6 +28,28 @@ const SearchBar = ({ onSearch }: { onSearch: (query: string) => void }) => {
             onSearch(query);
         }
     };
+
+    // Show loading state during hydration
+    if (!mounted) {
+        return (
+            <form
+                role="search"
+                className="relative flex items-center gap-2"
+                aria-label="Search movies and TV shows"
+            >
+                <Input
+                    type="search"
+                    placeholder="Search Movies or TV Shows..."
+                    className="w-full md:w-80"
+                    aria-label="Search input"
+                    disabled
+                />
+                <Button type="submit" size="icon" variant="outline" aria-label="Search" disabled>
+                    <Search />
+                </Button>
+            </form>
+        );
+    }
 
     return (
         <form

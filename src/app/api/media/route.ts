@@ -33,7 +33,7 @@ export async function GET(request: Request) {
         const { data } = await tmdbApi.get(endpoint, { params });
 
         return NextResponse.json(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Error fetching media:", error);
         return NextResponse.json({ error: "Failed to fetch media" }, { status: 500 });
     }

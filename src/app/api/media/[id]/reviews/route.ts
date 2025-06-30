@@ -7,7 +7,7 @@ import tmdbApi from "@/services/tmdbApi";
  */
 export async function GET(
     request: Request,
-    context: { params: { id: string } | Promise<{ id: string }> }
+    context: { params: Promise<{ id: string }> }
 ) {
     const { id } = await context.params;
     const url = new URL(request.url);
@@ -37,7 +37,7 @@ export async function GET(
 
         // Kembalikan hanya data
         return NextResponse.json(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Error fetching reviews:", error);
         return NextResponse.json(
             { error: "Failed to fetch reviews." },

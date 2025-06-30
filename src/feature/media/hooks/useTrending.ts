@@ -6,12 +6,14 @@ export interface TrendingQueryParams {
     mediaType: "all" | "movie" | "tv";
     timeWindow: "day" | "week";
     // Parameter tambahan seperti language, page, dsb.
+    // eslint-disable-next-line
     [key: string]: any;
 }
 
 // Interface untuk struktur response trending (sesuai response TMDB)
 export interface TrendingResponse {
     page: number;
+    // eslint-disable-next-line
     results: any[];
     total_pages: number;
     total_results: number;

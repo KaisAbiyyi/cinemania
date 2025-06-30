@@ -6,7 +6,7 @@ import { Metadata } from 'next';
 export async function generateMetadata({
     params,
 }: {
-    params: { slug: string };
+    params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
     // Jangan hapus await pada params
     const { slug } = await params;
@@ -30,7 +30,7 @@ export async function generateMetadata({
 export default async function TVDetailPage({
     params,
 }: {
-    params: { slug: string };
+    params: Promise<{ slug: string }>;
 }) {
     // Jangan hapus await pada params
     const { slug } = await params;

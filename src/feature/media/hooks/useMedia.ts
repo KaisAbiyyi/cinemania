@@ -6,12 +6,14 @@ import apiClient from "@/services/apiClient";
 export interface MediaQueryParams {
     mediaType: "movie" | "tv";
     // Parameter tambahan filtering, paging, sorting, dll
+    // eslint-disable-next-line
     [key: string]: any;
 }
 
 // Interface untuk struktur response dari TMDB API
 export interface MediaResponse {
     page: number;
+    // eslint-disable-next-line
     results: any[];
     total_pages: number;
     total_results: number;

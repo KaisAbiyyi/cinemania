@@ -21,7 +21,7 @@ export async function GET(request: Request) {
             params: { query },
         });
         return NextResponse.json(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Error fetching movie search results:", error);
         return NextResponse.json(
             { error: "Failed to fetch movie search results" },

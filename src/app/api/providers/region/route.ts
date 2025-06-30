@@ -15,7 +15,7 @@ export async function GET(request: Request) {
             params: { language },
         });
         return NextResponse.json(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Error fetching provider regions:", error);
         return NextResponse.json(
             { error: "Failed to fetch provider regions" },

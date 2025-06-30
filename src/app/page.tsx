@@ -4,6 +4,8 @@ import HeroSection from "@/feature/home/hero/HeroSection";
 import MediaScrollableList from "@/feature/media/components/MediaScrollableList";
 import { Metadata } from "next";
 
+// Force dynamic rendering
+export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
   title: "Cinemania - Explore Movies & TV Shows",

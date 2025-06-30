@@ -6,12 +6,14 @@ export interface MediaDetailsParams {
     id: number;
     mediaType: "movie" | "tv";
     // Parameter tambahan, misalnya language, dll.
+    // eslint-disable-next-line
     [key: string]: any;
 }
 
 // Interface untuk struktur response detail media dari TMDB API
 // (Untuk keperluan contoh, struktur response diset sebagai any. Kamu bisa menyesuaikannya sesuai kebutuhan.)
 export interface MediaDetails {
+    // eslint-disable-next-line
     [key: string]: any;
 }
 

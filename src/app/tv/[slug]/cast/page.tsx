@@ -5,12 +5,12 @@ import MediaCastWrapper from "@/feature/media/components/cast/MediaCastWrapper";
 import CastBanner from "@/feature/media/components/detail/DetailBackBanner";
 
 interface CastPageProps {
-    params: {
+    params: Promise<{
         slug: string;
-    };
+    }>;
 }
 
-export async function generateMetadata({ params }: { params: { slug: string } }): Promise<Metadata> {
+export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
     const tvTitle = slugToTitle(decodedSlug);

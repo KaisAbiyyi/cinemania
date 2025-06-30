@@ -4,12 +4,14 @@ import apiClient from "@/services/apiClient";
 // Interface untuk parameter query detail person, termasuk id dan parameter tambahan
 export interface PersonDetailsParams {
     id: number;
+    // eslint-disable-next-line
     [key: string]: any;
 }
 
 // Interface untuk struktur response detail person dari TMDB API
 // (Untuk keperluan contoh, struktur response diset sebagai any. Kamu bisa menyesuaikannya sesuai kebutuhan.)
 export interface PersonDetails {
+    // eslint-disable-next-line
     [key: string]: any;
 }
 

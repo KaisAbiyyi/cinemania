@@ -7,7 +7,7 @@ import tmdbApi from "@/services/tmdbApi";
  */
 export async function GET(
     request: Request,
-    context: { params: { id: string } | Promise<{ id: string }> }
+    context: { params: Promise<{ id: string }> }
 ) {
     const { id } = await context.params;
     const url = new URL(request.url);
@@ -27,7 +27,7 @@ export async function GET(
     try {
         const { data } = await tmdbApi.get(endpoint);
         return NextResponse.json(data);
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error("Error fetching release dates:", error);
         return NextResponse.json(
             { error: "Failed to fetch release dates." },

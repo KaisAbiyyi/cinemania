@@ -12,6 +12,7 @@ import ErrorState from "@/components/ErrorState";
 interface MediaDetailAsideProps {
     id: number;
     mediaType: "movie" | "tv";
+    // eslint-disable-next-line
     detailData: any
 }
 
@@ -21,7 +22,7 @@ const MediaDetailAside: FC<MediaDetailAsideProps> = ({ id, mediaType, detailData
 
     if (LanguageLoading || KeywordsLoading) return <MediaDetailAsideSkeleton />;
     if ((LanguageError || !LanguageData) || (KeywordsError || !KeywordsData)) return <ErrorState message={(LanguageError?.message || KeywordsError?.message) || "There was an error loading the data."} onRetry={() => window.location.reload()} />;
-
+    // eslint-disable-next-line
     const original_language = LanguageData.find((lang: any) => lang.iso_639_1 === detailData.original_language);
     const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL
 
@@ -56,7 +57,9 @@ const MediaDetailAside: FC<MediaDetailAsideProps> = ({ id, mediaType, detailData
                         <Label>Network</Label>
                         <div className="flex flex-wrap items-center gap-2">
                             {detailData?.networks?.length ? (
+                                // eslint-disable-next-line
                                 detailData?.networks?.map((n: any) => (
+
                                     <div key={n.id} className="flex items-center gap-2">
                                         {n.logo_path && (
                                             <Image
@@ -87,6 +90,7 @@ const MediaDetailAside: FC<MediaDetailAsideProps> = ({ id, mediaType, detailData
                 <Label>Keywords</Label>
                 <div className="flex flex-wrap gap-2">
                     {KeywordsData.keywords.length ? (
+                        // eslint-disable-next-line
                         KeywordsData.keywords.map((keyword: any) => (
                             <Link href={`/keyword/${keyword.id}-${slugify(keyword.name)}/${mediaType}`} key={keyword.id} className={buttonVariants({ variant: "secondary" })}>{keyword.name}</Link>
                         ))

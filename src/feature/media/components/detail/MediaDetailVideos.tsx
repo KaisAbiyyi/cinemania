@@ -1,5 +1,6 @@
 "use client";
 
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { buttonVariants } from "@/components/ui/button";
 import {
     Dialog,
@@ -15,7 +16,6 @@ import { usePathname } from "next/navigation";
 import { FC } from "react";
 import { useMediaVideos } from "../../hooks/useMediaVideos";
 import MediaDetailVideosSkeleton from "../skeletons/MediaDetailVideosSkeleton";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 interface MediaDetailVideosProps {
     id: number;

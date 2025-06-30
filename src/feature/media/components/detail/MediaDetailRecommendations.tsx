@@ -1,9 +1,8 @@
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { FC } from "react";
 import { useMediaRecommendations } from "../../hooks/useMediaRecommendations";
 import MediaCard from "../MediaCard";
 import MediaDetailRecommendationsSkeleton from "../skeletons/MediaDetailRecommendationsSkeleton";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { cn } from "@/lib/utils";
 
 interface MediaDetailRecommendationsProps {
     id: number
