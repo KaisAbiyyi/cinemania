@@ -20,7 +20,7 @@ A complete read-only audit of `KaisAbiyyi/cinemania` was executed against the pi
    - Clean reproducible install via `npm ci` fails deterministically (**Exit Code 1**, `ERESOLVE unable to resolve dependency tree`).
    - Root cause: `cmdk@1.0.0` specifies peer dependency `react@"^18.0.0"`, but the project root specifies `react@"^19.0.0"` (resolved `19.3.1`).
    - Lockfile desynchronization: `package-lock.json` is severely stale (last updated in commit `f5bcfc8` recording `next@15.2.1`), whereas `package.json` specifies `next@15.2.8` and 26 modern root packages added in commits `0205a11` / `675414d` via `bun.lock` are missing from `package-lock.json`.
-   - In accordance with non-negotiable CINE-001 constraints, **this dependency failure is logged as a product defect finding and NOT modified/repaired in this task**. Standardizing package management belongs strictly to CINE-003, and upgrading Next.js belongs to CINE-002.
+   - In accordance with non-negotiable CINE-001 constraints, **this dependency failure is logged as an authentic product defect finding and NOT modified/repaired in this task**. Standardizing package management belongs strictly to CINE-003, and upgrading Next.js belongs to CINE-002.
 2. **Downstream Checks Blocked:**
    - Because reproducible clean install failed, downstream checks (`next build`, local `tsc`, local `eslint`) are **BLOCKED** from running against a valid local `node_modules` on the clean tree.
 3. **Automated Test Coverage is Zero (0):**
@@ -33,23 +33,23 @@ A complete read-only audit of `KaisAbiyyi/cinemania` was executed against the pi
 
 ---
 
-## 2. Command Execution Matrix
+## 2. Command Execution Matrix & Provenance
 
-All checks were executed on Windows 11 with Node `v24.21.0` and npm `11.19.0` in working directory `d:\projects\cinemania` against pinned source `a7b93e9b44d56ea50bb877ef47660e8bb021d358`.
+The following matrix records checks with distinct provenance, distinguishing commands executed locally by the implementor in `d:\projects\cinemania` from independent isolated reproductions executed by the reviewer in an external scratch directory.
 
-| Check | Exact Command | Exit Code | Result | Evidence / Details |
-| :--- | :--- | :---: | :---: | :--- |
-| **Git Baseline Verification** | `git rev-parse HEAD; git status --short` | 0 | **PASS** | `a7b93e9b44d56ea50bb877ef47660e8bb021d358`, working tree clean |
-| **Clean Install** | `npm ci` | 1 | **FAIL** | `npm error code ERESOLVE`, `Could not resolve dependency: peer react@"^18.0.0" from cmdk@1.0.0` |
-| **Clean Install (Isolated)** | `npm ci --ignore-scripts --no-audit --no-fund --loglevel=error` | 1 | **FAIL** | Independently reproduced by reviewer; `ERESOLVE` conflict React 19 vs `cmdk@1.0.0` |
-| **Lockfile Sync Diagnostic** | `npm ci --legacy-peer-deps` | 1 | **FAIL** | `npm error code EUSAGE`: `package.json` and `package-lock.json` are out of sync. Missing 400+ packages |
-| **Dry-run Resolution Diagnostic** | `npm install --dry-run --legacy-peer-deps` | 0 | **PASS (Diagnostic Only)** | Nonstandard install simulation only; not clean reproducible install |
-| **Typecheck (Project node_modules)** | `npm run build` / `tsc --noEmit` | — | **BLOCKED** | Blocked by clean install failure; `tsc` not installed in local environment |
-| **Typecheck (Global npx Diagnostic)** | `npx -p typescript tsc --noEmit` | 1 | **FAIL (Missing types)** | Exited with TS2307 across 250+ locations due to missing uninstalled dependencies in `node_modules` |
-| **Lint (Project node_modules)** | `npm run lint` | — | **BLOCKED** | Blocked by clean install failure |
-| **Lint (Global npx Diagnostic)** | `npx eslint .` | 1 | **FAIL (Missing modules)** | `Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@eslint/eslintrc'` imported from `eslint.config.mjs` |
-| **Production Build** | `npm run build` / `next build` | — | **BLOCKED** | Blocked by clean install failure |
-| **Automated Tests** | File search for `*.test.*` and `*.spec.*` | 0 | **PASS (0 found)** | **0 test files** exist in repository; no test runner configured in `package.json` |
+| Check | Exact Command | Execution Directory & Provenance | Exit Code | Result | Evidence / Details |
+| :--- | :--- | :--- | :---: | :---: | :--- |
+| **Git Baseline Verification** | `git rev-parse HEAD; git status --short` | `d:\projects\cinemania` (Implementor) | 0 | **PASS** | `a7b93e9b44d56ea50bb877ef47660e8bb021d358`, working tree clean. |
+| **Clean Install** | `npm ci` | `d:\projects\cinemania` (Implementor) | 1 | **FAIL (Product Defect)** | `npm error code ERESOLVE`, `Could not resolve dependency: peer react@"^18.0.0" from cmdk@1.0.0`. Node `v24.21.0`, npm `11.19.0`. |
+| **Clean Install (Isolated Reproduction)** | `npm ci --ignore-scripts --no-audit --no-fund --loglevel=error` | External scratch dir (Independent Reviewer) | 1 | **FAIL (Product Defect)** | Independently reproduced by reviewer; `ERESOLVE` conflict React 19 vs `cmdk@1.0.0`. |
+| **Lockfile Sync Diagnostic** | `npm ci --legacy-peer-deps` | `d:\projects\cinemania` (Implementor) | 1 | **FAIL (Product Defect)** | `npm error code EUSAGE`: `package.json` and `package-lock.json` are out of sync. Missing 400+ packages. |
+| **Dry-run Resolution Diagnostic** | `npm install --dry-run --legacy-peer-deps` | `d:\projects\cinemania` (Implementor) | 0 | **PASS (Diagnostic Only)** | Simulated nonstandard install; does NOT demonstrate reproducible clean install. |
+| **Typecheck (Project node_modules)** | `npm run build` / `tsc --noEmit` | `d:\projects\cinemania` (Implementor) | — | **BLOCKED** | Blocked by clean install failure; `tsc` not installed in local project. |
+| **Global Typecheck Diagnostic** | `npx -p typescript tsc --noEmit` | `d:\projects\cinemania` (Implementor) | 1 | **FAIL (Missing types)** | Exited with TS2307 across 250+ locations due to missing uninstalled dependencies in `node_modules`. |
+| **Lint (Project node_modules)** | `npm run lint` | `d:\projects\cinemania` (Implementor) | — | **BLOCKED** | Blocked by clean install failure. |
+| **Global Lint Diagnostic** | `npx eslint .` | `d:\projects\cinemania` (Implementor) | 1 | **FAIL (Missing modules)** | `Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@eslint/eslintrc'` imported from `eslint.config.mjs`. |
+| **Production Build** | `npm run build` / `next build` | `d:\projects\cinemania` (Implementor) | — | **BLOCKED** | Blocked by clean install failure. |
+| **Automated Tests** | File search for `*.test.*` and `*.spec.*` | `d:\projects\cinemania` (Implementor) | 0 | **PASS (0 found)** | **0 test files** exist in repository; no test runner configured in `package.json`. |
 
 ---
 
@@ -73,13 +73,15 @@ The initial summary reported 28 pages, 18 API routes, and 4 environment variable
 
 ### 3.2 Environment Variable Inventory
 
+All citations link directly to immutable GitHub permalinks at baseline commit `a7b93e9b44d56ea50bb877ef47660e8bb021d358`.
+
 | Identifier | Scope | Source File(s) & Line Reference | Default / Fallback Behavior | Classification & Risk |
 | :--- | :--- | :--- | :--- | :--- |
-| `TMDB_API_RAT` | Server-only | [`src/services/tmdbApi.ts:3`](file:///d:/projects/cinemania/src/services/tmdbApi.ts#L3) | `undefined` (Header sent as `Authorization: Bearer undefined`) | **BROKEN / HIGH RISK**: Fails silently with 401 upstream from TMDB if unset. Needs runtime validation. |
-| `YOUTUBE_API_KEY` | Server-only | [`src/app/api/youtube/route.ts:33`](file:///d:/projects/cinemania/src/app/api/youtube/route.ts#L33) | Returns explicit HTTP 500 (`"Server configuration error"`) | **WORKING**: Explicit check before calling Google YouTube API. |
-| `IPINFO_TOKEN` | Server-only | [`src/app/api/geolocation/route.ts:17`](file:///d:/projects/cinemania/src/app/api/geolocation/route.ts#L17) | Defaults to `"YOUR_TOKEN"` | **BROKEN / DEFECTIVE**: Hardcoded dummy string triggers upstream failure or invalid request. |
-| `NEXT_PUBLIC_TMDB_POSTER_URL` | Public / Client | [`src/lib/utils.ts:51,57`](file:///d:/projects/cinemania/src/lib/utils.ts#L51-L57)<br>[`src/feature/home/hero/HeroBackground.tsx:11`](file:///d:/projects/cinemania/src/feature/home/hero/HeroBackground.tsx#L11)<br>[`src/feature/home/hero/HeroMiniCarousel.tsx:13`](file:///d:/projects/cinemania/src/feature/home/hero/HeroMiniCarousel.tsx#L13)<br>[`src/feature/media/components/detail/DetailHeaderInfo.tsx:38`](file:///d:/projects/cinemania/src/feature/media/components/detail/DetailHeaderInfo.tsx#L38)<br>[`src/feature/media/components/detail/MediaDetailAside.tsx:27`](file:///d:/projects/cinemania/src/feature/media/components/detail/MediaDetailAside.tsx#L27)<br>[`src/feature/media/components/detail/MediaDetailHeader.tsx:38`](file:///d:/projects/cinemania/src/feature/media/components/detail/MediaDetailHeader.tsx#L38)<br>[`src/feature/media/components/images/ImageCard.tsx:11`](file:///d:/projects/cinemania/src/feature/media/components/images/ImageCard.tsx#L11)<br>[`src/feature/person/components/PersonBanner.tsx:16`](file:///d:/projects/cinemania/src/feature/person/components/PersonBanner.tsx#L16) | Some components fallback to `"https://default-image-path.com/"`, others evaluate to `undefined` prefix | **UNKNOWN / INCONSISTENT**: Inconsistent fallback patterns across components. |
-| `NEXT_PUBLIC_IMAGE_BASE_URL` | Public / Client | [`src/feature/media/components/detail/DetailBackBanner.tsx:21`](file:///d:/projects/cinemania/src/feature/media/components/detail/DetailBackBanner.tsx#L21) | Defaults to `"https://image.tmdb.org/t/p"` | **WORKING**: Has valid inline default, but introduces duplicate configuration pattern alongside `NEXT_PUBLIC_TMDB_POSTER_URL`. |
+| `TMDB_API_RAT` | Server-only | [`src/services/tmdbApi.ts#L3`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/services/tmdbApi.ts#L3) | `undefined` (Header sent as `Authorization: Bearer undefined`) | **STATIC DEFECT IDENTIFIED**: Fails silently with 401 upstream from TMDB if unset. Needs runtime validation. |
+| `YOUTUBE_API_KEY` | Server-only | [`src/app/api/youtube/route.ts#L33`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/app/api/youtube/route.ts#L33) | Returns explicit HTTP 500 (`"Server configuration error"`) | **STATIC GUARD PRESENT; RUNTIME NOT VERIFIED**: Has defensive check before calling Google YouTube API, but live upstream request was not verified. |
+| `IPINFO_TOKEN` | Server-only | [`src/app/api/geolocation/route.ts#L17`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/app/api/geolocation/route.ts#L17) | Defaults to `"YOUR_TOKEN"`. Note: Local IPs (`127.0.0.1` / `::1`) trigger early return of `{ region: "US" }` ([L19–22](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/app/api/geolocation/route.ts#L19-L22)) | **STATIC DEFECT IDENTIFIED**: For non-local IPs, fallback dummy string `"YOUR_TOKEN"` triggers upstream failure or invalid request. |
+| `NEXT_PUBLIC_TMDB_POSTER_URL` | Public / Client | [`src/lib/utils.ts#L51-L57`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/lib/utils.ts#L51-L57)<br>[`src/feature/home/hero/HeroBackground.tsx#L11`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/feature/home/hero/HeroBackground.tsx#L11)<br>[`src/feature/home/hero/HeroMiniCarousel.tsx#L13`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/feature/home/hero/HeroMiniCarousel.tsx#L13)<br>[`src/feature/media/components/detail/DetailHeaderInfo.tsx#L38`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/feature/media/components/detail/DetailHeaderInfo.tsx#L38)<br>[`src/feature/media/components/detail/MediaDetailAside.tsx#L27`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/feature/media/components/detail/MediaDetailAside.tsx#L27)<br>[`src/feature/media/components/detail/MediaDetailHeader.tsx#L38`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/feature/media/components/detail/MediaDetailHeader.tsx#L38)<br>[`src/feature/media/components/images/ImageCard.tsx#L11`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/feature/media/components/images/ImageCard.tsx#L11)<br>[`src/feature/person/components/PersonBanner.tsx#L16`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/feature/person/components/PersonBanner.tsx#L16) | Some components fallback to `"https://default-image-path.com/"`, others evaluate to `undefined` prefix | **STATIC CODE INCONSISTENCY**: Inconsistent fallback patterns across components. Runtime image rendering not verified. |
+| `NEXT_PUBLIC_IMAGE_BASE_URL` | Public / Client | [`src/feature/media/components/detail/DetailBackBanner.tsx#L21`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/feature/media/components/detail/DetailBackBanner.tsx#L21) | Defaults to `"https://image.tmdb.org/t/p"` | **STATIC DEFAULT PRESENT; RUNTIME NOT VERIFIED**: Has valid inline default, but introduces duplicate configuration pattern alongside `NEXT_PUBLIC_TMDB_POSTER_URL`. |
 
 *Note: No `.env` or `.env.example` files are committed to repository.*
 
@@ -165,9 +167,10 @@ flowchart LR
 - In `src/app/api/geolocation/route.ts`, client IP is extracted from `x-forwarded-for` or `x-real-ip` and forwarded to `https://ipinfo.io/${ip}?token=${token}`.
 
 ### 4.2 State Management & Client Data Fetching
-- Client-side queries utilize `@tanstack/react-query` v5 (`QueryClientProvider` defined in `src/feature/providers/ReactQueryProvider.tsx`).
-- Global UI state is handled via `zustand` (`src/feature/media/store/useMediaStore.ts`).
-- Styling uses Tailwind CSS v4 (`@tailwindcss/postcss` and `@tailwindcss/oxide`), with Lucide React icons and Radix UI primitives.
+- **Server Cache & Client Queries:** Configured in [`src/app/layout.tsx#L8,L49-L68`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/app/layout.tsx#L8), instantiating `QueryClient` via `useMemo` and wrapping the application tree with `QueryClientProvider`.
+- **UI & Filter State:** Filter state is managed through React Context in [`src/feature/media/components/filter/FilterProvider.tsx#L3,L20-L54`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/feature/media/components/filter/FilterProvider.tsx#L3), providing `filters`, `setFilters`, and URL query parameter synchronization.
+- **Dependency Observations vs Implementation Reality:** `zustand` is declared in `package.json`, but source search confirms **no Zustand store is implemented** in `src/`. Unused dependencies should be pruned or standardized in CINE-003.
+- **Theme & UI Primitives:** Theme toggling is provided by `next-themes` via [`src/components/layout/theme-provider.tsx`](https://github.com/KaisAbiyyi/cinemania/blob/a7b93e9b44d56ea50bb877ef47660e8bb021d358/src/components/layout/theme-provider.tsx). Styling uses Tailwind CSS v4 (`@tailwindcss/postcss` and `@tailwindcss/oxide`), with Lucide React icons and Radix UI primitives.
 
 ---
 
@@ -175,11 +178,12 @@ flowchart LR
 
 ### 5.1 Distinguishing Implementor Observations vs Independent Reviewer Findings
 - **Independently confirmed by reviewer:**
-  - `npm ci` failure with `cmdk@1.0.0` peer conflict on Node v24/npm 11.
+  - `npm ci` failure with `cmdk@1.0.0` peer conflict on Node v24/npm 11 in an isolated environment.
   - Stale `package-lock.json` (`next@15.2.1` vs `next@15.2.8`).
   - True file counts: 29 `page.tsx` files, 27 `route.ts` files, 5 `process.env` identifiers.
+  - Absence of Zustand store and actual location of `QueryClientProvider` in `src/app/layout.tsx`.
 - **Implementor's own audit observations:**
-  - Identified the exact lines of code where all 5 `process.env` variables are consumed.
+  - Identified the exact lines of code where all 5 `process.env` variables are consumed and validated all GitHub blob permalinks.
   - Traced data flows across all 27 API routes and client fetchers.
   - Verified zero automated tests exist across all subdirectories.
   - Verified working tree remains completely clean and untouched under pinned SHA `a7b93e9b44d56ea50bb877ef47660e8bb021d358`.
