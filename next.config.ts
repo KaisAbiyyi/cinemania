@@ -4,11 +4,17 @@ const nextConfig: NextConfig = {
   /* config options here */
   trailingSlash: false,
   images: {
-    domains: [
-      'image.tmdb.org',
-      "img.youtube.com"
-    ]
-  }
+    remotePatterns: [
+      {
+        protocol: "https",
+        hostname: "image.tmdb.org",
+      },
+      {
+        protocol: "https",
+        hostname: "img.youtube.com",
+      },
+    ],
+  },
 };
 
 export default nextConfig;
