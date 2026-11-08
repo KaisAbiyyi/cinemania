@@ -19,6 +19,16 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
+
+// Hydration error patterns observed in React / Next.js console logs
+const HYDRATION_ERROR_PATTERNS = [
+  /hydration/i,
+  /hydrating/i,
+  /did not match/i,
+  /Minified React error #(418|421|422|423|425)/i,
+  /server-rendered HTML/i
+];
 
 // Configurable environment variables with repo-relative defaults
 const TARGET_URL = process.env.TARGET_URL || 'http://localhost:3055';
@@ -227,13 +237,16 @@ async function runTestPlan(testPlan) {
               }
             }
 
-            // Live DOM error alert reading without fallback
-            const alertElement = document.querySelector('[role="alert"]') || Array.from(document.querySelectorAll('*')).find(el => el.innerText && el.innerText.includes('Failed to load search results'));
-            const alertText = alertElement ? alertElement.innerText.trim() : null;
+            // Concrete leaf error element selector without grabbing ancestor containers
+            const leafElements = Array.from(document.querySelectorAll('*')).filter(el => {
+              return el.children.length === 0 && (el.textContent || '').includes('Failed to load search results');
+            });
+            const alertLeaf = leafElements[0] || null;
+            const alertText = alertLeaf ? alertLeaf.textContent.trim() : null;
             const hasAlert = alertText !== null;
 
-            // Next.js hydration error marker check
-            const hydrationError = window.__NEXT_HYDRATION_ERROR || null;
+            // Auxiliary custom hydration marker check
+            const customHydrationMarker = window.__NEXT_HYDRATION_ERROR || null;
 
             return {
               title: document.title,
@@ -247,7 +260,7 @@ async function runTestPlan(testPlan) {
               hasAlert,
               alertText,
               hasZeroResultsTab: bodyText.includes('Movies (0)'),
-              hydrationError
+              customHydrationMarker
             };
           })()
         `,
@@ -258,6 +271,12 @@ async function runTestPlan(testPlan) {
       const consoleErrors = [...cdp.consoleErrors];
       const exceptions = [...cdp.exceptions];
 
+      // Inspect browser console specifically for React/Next hydration mismatch signatures
+      const hydrationConsoleErrors = consoleErrors.filter(err => {
+        const text = (err.args || []).join(' ');
+        return HYDRATION_ERROR_PATTERNS.some(regex => regex.test(text));
+      });
+
       console.log(`[runner] ${t.name} page state:`, {
         title: pageState.title,
         cardsFound: pageState.cardsFound,
@@ -267,7 +286,8 @@ async function runTestPlan(testPlan) {
         alertText: pageState.alertText,
         consoleErrors: consoleErrors.length,
         exceptions: exceptions.length,
-        hydrationError: pageState.hydrationError
+        hydrationConsoleErrors: hydrationConsoleErrors.length,
+        customHydrationMarker: pageState.customHydrationMarker
       });
 
       // Screenshot capture & dimension verification
@@ -293,7 +313,8 @@ async function runTestPlan(testPlan) {
         const noPending = pageState.pendingImages === 0;
         const noConsoleErrors = consoleErrors.length === 0;
         const noExceptions = exceptions.length === 0;
-        const noHydration = pageState.hydrationError === null;
+        const noHydrationErrors = hydrationConsoleErrors.length === 0;
+        const noCustomHydrationMarker = pageState.customHydrationMarker === null;
         const dimensionMatch = dimensions?.width === VIEWPORT_WIDTH && dimensions?.height === VIEWPORT_HEIGHT;
 
         if (!hasExpectedCards) failureReasons.push(`Missing expected cards. Expected: ${t.expectedCards}, Found: ${pageState.cardsFound}`);
@@ -303,7 +324,8 @@ async function runTestPlan(testPlan) {
         if (!noPending) failureReasons.push(`Found ${pageState.pendingImages} pending images`);
         if (!noConsoleErrors) failureReasons.push(`Console errors: ${JSON.stringify(consoleErrors)}`);
         if (!noExceptions) failureReasons.push(`Uncaught exceptions: ${JSON.stringify(exceptions)}`);
-        if (!noHydration) failureReasons.push(`Hydration error detected: ${pageState.hydrationError}`);
+        if (!noHydrationErrors) failureReasons.push(`Hydration console errors: ${JSON.stringify(hydrationConsoleErrors)}`);
+        if (!noCustomHydrationMarker) failureReasons.push(`Auxiliary hydration marker detected: ${pageState.customHydrationMarker}`);
         if (!dimensionMatch) failureReasons.push(`Dimension mismatch: expected ${VIEWPORT_WIDTH}x${VIEWPORT_HEIGHT}, got ${dimensions?.width}x${dimensions?.height}`);
 
         isPass = failureReasons.length === 0;
@@ -354,7 +376,8 @@ async function runTestPlan(testPlan) {
           alertText: pageState.alertText,
           consoleErrorsCount: consoleErrors.length,
           exceptionsCount: exceptions.length,
-          hydrationError: pageState.hydrationError
+          hydrationConsoleErrorsCount: hydrationConsoleErrors.length,
+          customHydrationMarker: pageState.customHydrationMarker
         },
         pass: isPass,
         failureReasons
@@ -436,36 +459,60 @@ const selfTestMutationPlan = [
 
 async function main() {
   const isSelfTest = process.argv.includes('--self-test');
+  const isMutation = process.argv.includes('--mutate-failure');
 
   if (isSelfTest) {
-    console.log('[runner] Executing self-test mutation mode (testing negative exit code enforcement)...');
-    const results = await runTestPlan(selfTestMutationPlan);
-    const failedAsExpected = results.every(r => !r.pass);
-    if (failedAsExpected) {
-      console.log('\n[runner] SELF-TEST PASS: Failing predicate successfully detected and marked pass: false.');
-      console.log('[runner] Failure details:', JSON.stringify(results[0].failureReasons, null, 2));
+    console.log('[runner] Self-test invoked: executing subprocess with --mutate-failure to verify nonzero exit code (process.exit(1))...');
+    const scriptPath = fileURLToPath(import.meta.url);
+    const child = spawn(process.execPath, [scriptPath, '--mutate-failure'], {
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', d => { stdout += d.toString(); });
+    child.stderr.on('data', d => { stderr += d.toString(); });
+
+    const exitCode = await new Promise(resolve => {
+      child.on('close', code => resolve(code));
+    });
+
+    console.log(`[runner] Subprocess finished with exit code: ${exitCode}`);
+    if (exitCode === 1) {
+      console.log('\n[runner] SELF-TEST PASS: Subprocess failed as expected with process.exit(1).');
+      console.log('[runner] Captured subprocess stderr excerpt:\n' + stderr.trim());
       process.exit(0);
     } else {
-      console.error('\n[runner] SELF-TEST FAIL: Mutation did not trigger pass: false!');
+      console.error(`\n[runner] SELF-TEST FAIL: Subprocess expected to exit with 1, but exited with ${exitCode}`);
+      console.error('[runner] Subprocess stdout:\n', stdout);
+      console.error('[runner] Subprocess stderr:\n', stderr);
       process.exit(2);
     }
   }
 
-  const results = await runTestPlan(standardTestPlan);
+  const activePlan = isMutation ? selfTestMutationPlan : standardTestPlan;
+  if (isMutation) {
+    console.log('[runner] Running in MUTATION FAILURE mode (intentional negative assertion to test exit code 1)...');
+  }
 
-  console.log('\n================== CAPTURE SUMMARY ==================');
-  console.log(JSON.stringify(results, null, 2));
+  const results = await runTestPlan(activePlan);
 
-  // Persist machine-readable assertion results
-  const resultsPath = path.join(ARTIFACTS_DIR, 'fixtures', 'capture-results.json');
-  fs.writeFileSync(resultsPath, JSON.stringify(results, null, 2));
-  console.log(`[runner] Saved results to ${resultsPath}`);
+  if (!isMutation) {
+    console.log('\n================== CAPTURE SUMMARY ==================');
+    console.log(JSON.stringify(results, null, 2));
+
+    // Persist machine-readable assertion results
+    const resultsPath = path.join(ARTIFACTS_DIR, 'fixtures', 'capture-results.json');
+    fs.writeFileSync(resultsPath, JSON.stringify(results, null, 2));
+    console.log(`[runner] Saved results to ${resultsPath}`);
+  }
 
   // Hard exit code enforcement: fail if ANY assertion failed
   const allPassed = results.length > 0 && results.every(r => r.pass);
   if (!allPassed) {
     const failed = results.filter(r => !r.pass).map(r => `${r.test}: ${r.failureReasons.join('; ')}`);
-    console.error('\n[runner] RUNNER FAILED WITH NONZERO EXIT. Failed assertions:');
+    console.error(`\n[runner] RUNNER FAILED WITH NONZERO EXIT (${isMutation ? 'INTENTIONAL MUTATION TEST' : 'REAL ASSERTION FAILURE'}). Failed assertions:`);
     failed.forEach(f => console.error(` - ${f}`));
     process.exit(1);
   }

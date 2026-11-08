@@ -1,4 +1,4 @@
-# CINE-002 — Pre/Post Upgrade HTTP Responses & Visual Regression Report (Revision 7)
+# CINE-002 — Pre/Post Upgrade HTTP Responses & Visual Regression Report (Revision 8)
 
 - **Task Reference:** CINE-002 · Upgrade to latest stable Next.js 16.x
 - **Issue Reference:** [GitHub Issue #4](https://github.com/KaisAbiyyi/cinemania/issues/4)
@@ -66,31 +66,31 @@ To guarantee full reproducibility without modifying application code:
    - **Configurable Environment Variables:** Parameterizes `TARGET_URL` (default `http://localhost:3055`), `CHROME_PORT` (default `9222`), `VIEWPORT_WIDTH`/`HEIGHT` (`1440x900`), and `OUTPUT_DIR`.
    - **Strict Image Completeness Assertion:** Verifies `loadedImages === totalImages`, `brokenImages === 0`, `pendingImages === 0`, and `totalImages >= minExpectedImages` on all affirmative cases.
    - **Strict Negative Search Assertion:** Checks `mediaCardCount === 0` using strict selectors (`article, [class*="MediaCard"], a[href*="/movie/"], a[href*="/tv/"]`), `totalImages === 0`, tab counter `"Movies (0)"`, and absence of false-positive cards.
-   - **Strict Live DOM Error Assertion:** Directly reads the live error alert element (`[role="alert"]`) without fallback text, asserting that the message contains *"Failed to load search results. Please try again later."* and `mediaCardCount === 0`.
+   - **Concrete Leaf Error Alert Element Assertion:** Directly locates the concrete leaf error message (`children.length === 0 && (textContent || '').includes('Failed to load search results')`), specifically scoping to `CardDescription` leaf text *"Failed to load search results. Please try again later."* without matching ancestor layout containers.
    - **Console & Exception Tracking:** Subscribes to `Runtime.consoleAPICalled` and `Runtime.exceptionThrown`, asserting `consoleErrors === 0` and `exceptions === 0`.
-   - **Hydration Assertion:** Evaluates `window.__NEXT_HYDRATION_ERROR === null`.
-   - **Nonzero Exit Code Enforcement:** Fails immediately with `process.exit(1)` if any test fails its assertion gate.
-   - **Self-Test Mutation Mode:** Run with `--self-test` (`node ./docs/artifacts/cine-002/fixtures/capture_evidence.mjs --self-test`) to deterministically prove that an injected assertion mutation causes the runner to mark `pass: false` and fail.
+   - **Targeted React/Next.js Hydration Inspection:** Scans browser console message streams specifically for React/Next hydration mismatch signatures (`/hydration/i`, `/hydrating/i`, `/did not match/i`, `/Minified React error #(418|421|422|423|425)/i`), asserting `0` hydration mismatch errors across all affirmative routes. Also inspects `window.__NEXT_HYDRATION_ERROR` as an auxiliary diagnostic marker (`null`).
+   - **Hard Nonzero Exit Code Enforcement:** Fails immediately with `process.exit(1)` if any test fails its assertion gate.
+   - **Subprocess Self-Test Mutation Mode:** Run with `--self-test` (`node ./docs/artifacts/cine-002/fixtures/capture_evidence.mjs --self-test`) to spawn a child process executing with `--mutate-failure`. The child runs the failing assertion through the real production exit pipeline and exits with `process.exit(1)`. The parent `--self-test` process captures child stderr, confirms exit code `1`, and exits `0` on verified negative enforcement.
 3. **Committed Request & Assertion Logs:**
    - [`docs/artifacts/cine-002/fixtures/capture-results.json`](./fixtures/capture-results.json): Full machine-readable DOM evaluation summary for all 7 routes.
    - [`docs/artifacts/cine-002/fixtures/request-logs.json`](./fixtures/request-logs.json): Trace of all intercepted HTTP mock calls.
 
 ### 3.2 Loaded-State Screenshots Gallery
 
-| Route | Artifact | Exact Bytes | PNG Dimensions | Rendered Content & Artwork Verification | Image Status | Console / Errors | Verdict |
+| Route | Artifact | Exact Bytes | PNG Dimensions | Rendered Content & Artwork Verification | Image Status | Console / Errors / Hydration | Verdict |
 | :--- | :--- | :---: | :---: | :--- | :---: | :---: | :---: |
-| `/` (Root) | [`screenshot-root.png`](./screenshot-root.png) | 850,261 | 1440x900 | Loaded Hero with *Fight Club* backdrop; Daily Trending; Popular Movies (*Fight Club*, *Interstellar*, *The Dark Knight*, *Inception*); Popular TV Series (*Game of Thrones*, *Breaking Bad*, *Stranger Things*, *Arcane*). | 20/20 loaded (`naturalWidth > 0`, 0 broken, 0 pending) | 0 errors, 0 exceptions, null hydration | **PASS** |
-| `/movie` | [`screenshot-movie.png`](./screenshot-movie.png) | 888,772 | 1440x900 | Filter sidebar + 12 movie cards with loaded poster artwork, release dates, titles, rating badges. | 12/12 loaded (`naturalWidth > 0`, 0 broken, 0 pending) | 0 errors, 0 exceptions, null hydration | **PASS** |
-| `/tv` | [`screenshot-tv.png`](./screenshot-tv.png) | 889,700 | 1440x900 | Filter sidebar + 12 TV show cards displaying genuine TV titles (*Game of Thrones*, *Breaking Bad*, *Stranger Things*, *Arcane*) under pure TV schema (`name`, `first_air_date`). | 12/12 loaded (`naturalWidth > 0`, 0 broken, 0 pending) | 0 errors, 0 exceptions, null hydration | **PASS** |
-| `/trending` | [`screenshot-trending.png`](./screenshot-trending.png) | 574,505 | 1440x900 | Header "Trending Movies & TV Shows" + 4 media cards across grid (*Fight Club*, *Interstellar*, *Game of Thrones*, *Breaking Bad*) with loaded posters. | 4/4 loaded (`naturalWidth > 0`, 0 broken, 0 pending) | 0 errors, 0 exceptions, null hydration | **PASS** |
-| `/search?q=Inception` | [`screenshot-search.png`](./screenshot-search.png) | 338,328 | 1440x900 | Header "Search Results for: Inception", movie card for *Inception* with loaded poster artwork and rating 8.4. | 1/1 loaded (`naturalWidth > 0`, 0 broken, 0 pending) | 0 errors, 0 exceptions, null hydration | **PASS** |
+| `/` (Root) | [`screenshot-root.png`](./screenshot-root.png) | 850,261 | 1440x900 | Loaded Hero with *Fight Club* backdrop; Daily Trending; Popular Movies (*Fight Club*, *Interstellar*, *The Dark Knight*, *Inception*); Popular TV Series (*Game of Thrones*, *Breaking Bad*, *Stranger Things*, *Arcane*). | 20/20 loaded (`naturalWidth > 0`, 0 broken, 0 pending) | 0 console errors, 0 hydration signatures, 0 uncaught exceptions, null marker | **PASS** |
+| `/movie` | [`screenshot-movie.png`](./screenshot-movie.png) | 888,772 | 1440x900 | Filter sidebar + 12 movie cards with loaded poster artwork, release dates, titles, rating badges. | 12/12 loaded (`naturalWidth > 0`, 0 broken, 0 pending) | 0 console errors, 0 hydration signatures, 0 uncaught exceptions, null marker | **PASS** |
+| `/tv` | [`screenshot-tv.png`](./screenshot-tv.png) | 889,700 | 1440x900 | Filter sidebar + 12 TV show cards displaying genuine TV titles (*Game of Thrones*, *Breaking Bad*, *Stranger Things*, *Arcane*) under pure TV schema (`name`, `first_air_date`). | 12/12 loaded (`naturalWidth > 0`, 0 broken, 0 pending) | 0 console errors, 0 hydration signatures, 0 uncaught exceptions, null marker | **PASS** |
+| `/trending` | [`screenshot-trending.png`](./screenshot-trending.png) | 574,505 | 1440x900 | Header "Trending Movies & TV Shows" + 4 media cards across grid (*Fight Club*, *Interstellar*, *Game of Thrones*, *Breaking Bad*) with loaded posters. | 4/4 loaded (`naturalWidth > 0`, 0 broken, 0 pending) | 0 console errors, 0 hydration signatures, 0 uncaught exceptions, null marker | **PASS** |
+| `/search?q=Inception` | [`screenshot-search.png`](./screenshot-search.png) | 338,233 | 1440x900 | Header "Search Results for: Inception", movie card for *Inception* with loaded poster artwork and rating 8.4. | 1/1 loaded (`naturalWidth > 0`, 0 broken, 0 pending) | 0 console errors, 0 hydration signatures, 0 uncaught exceptions, null marker | **PASS** |
 
 ### 3.3 Diagnostic & Negative Control Captures
 
 | Test Case | Route | Artifact | Exact Bytes | PNG Dimensions | Observed Behavior & Assertion | Verdict |
 | :--- | :--- | :--- | :---: | :---: | :--- | :---: |
 | **Genuine Negative Search** | `/search?q=NonExistentQuery` | [`screenshot-search-negative.png`](./screenshot-search-negative.png) | 226,350 | 1440x900 | Heading "Search Results for: NonExistentQuery", tabs show `Movies (0)`, `TV (0)`, `People (0)`, `Keywords (0)`, strict media card selector count = 0, total images = 0. Zero false-positive cards. | **PASS** |
-| **Unauthenticated Error State** | `/search?q=unauthorized_query` | [`screenshot-search-diagnostic-empty.png`](./screenshot-search-diagnostic-empty.png) | 228,874 | 1440x900 | Simulated upstream 401 triggers API 500; React Query retries settle and live DOM renders alert: *"Failed to load search results. Please try again later."* with 0 media cards. | **PASS** |
+| **Unauthenticated Error State** | `/search?q=unauthorized_query` | [`screenshot-search-diagnostic-empty.png`](./screenshot-search-diagnostic-empty.png) | 228,874 | 1440x900 | Simulated upstream 401 triggers API 500; React Query retries settle and concrete leaf element renders alert text: *"Failed to load search results. Please try again later."* with 0 media cards. | **PASS** |
 
 ---
 
@@ -98,7 +98,9 @@ To guarantee full reproducibility without modifying application code:
 
 Automated Chrome CDP evaluations across all 7 routes:
 - **Console Errors Recorded:** 0 (collected via `Runtime.consoleAPICalled`)
+- **React/Next.js Hydration Mismatch Signatures:** 0 (scanned against React 18/19 mismatch patterns: `/hydration/i`, `/hydrating/i`, `/did not match/i`, `/Minified React error #(418|421|422|423|425)/i`)
+- **Auxiliary Hydration Marker (`window.__NEXT_HYDRATION_ERROR`):** `null` (0 detected)
 - **Uncaught Exceptions:** 0 (collected via `Runtime.exceptionThrown`)
 - **Broken Image Tags (`naturalWidth === 0`):** 0 across all affirmative loaded routes
 - **Pending Images (`complete === false`):** 0 across all affirmative loaded routes
-- **Hydration Errors (`window.__NEXT_HYDRATION_ERROR`):** null (0)
+- **Subprocess Self-Test Exit Code Verification:** `process.exit(1)` successfully triggered and verified by parent runner on intentional mutation.

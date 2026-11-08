@@ -36,7 +36,8 @@
       "alertText": null,
       "consoleErrorsCount": 0,
       "exceptionsCount": 0,
-      "hydrationError": null
+      "hydrationConsoleErrorsCount": 0,
+      "customHydrationMarker": null
     },
     "pass": true,
     "failureReasons": []
@@ -74,7 +75,8 @@
       "alertText": null,
       "consoleErrorsCount": 0,
       "exceptionsCount": 0,
-      "hydrationError": null
+      "hydrationConsoleErrorsCount": 0,
+      "customHydrationMarker": null
     },
     "pass": true,
     "failureReasons": []
@@ -112,7 +114,8 @@
       "alertText": null,
       "consoleErrorsCount": 0,
       "exceptionsCount": 0,
-      "hydrationError": null
+      "hydrationConsoleErrorsCount": 0,
+      "customHydrationMarker": null
     },
     "pass": true,
     "failureReasons": []
@@ -147,7 +150,8 @@
       "alertText": null,
       "consoleErrorsCount": 0,
       "exceptionsCount": 0,
-      "hydrationError": null
+      "hydrationConsoleErrorsCount": 0,
+      "customHydrationMarker": null
     },
     "pass": true,
     "failureReasons": []
@@ -156,7 +160,7 @@
     "test": "search",
     "path": "/search?q=Inception",
     "outputFilename": "screenshot-search.png",
-    "bytes": 338328,
+    "bytes": 338233,
     "dimensions": "1440x900",
     "pageState": {
       "title": "Inception | Cinemania",
@@ -176,7 +180,8 @@
       "alertText": null,
       "consoleErrorsCount": 0,
       "exceptionsCount": 0,
-      "hydrationError": null
+      "hydrationConsoleErrorsCount": 0,
+      "customHydrationMarker": null
     },
     "pass": true,
     "failureReasons": []
@@ -202,7 +207,8 @@
       "alertText": null,
       "consoleErrorsCount": 0,
       "exceptionsCount": 0,
-      "hydrationError": null
+      "hydrationConsoleErrorsCount": 0,
+      "customHydrationMarker": null
     },
     "pass": true,
     "failureReasons": []
@@ -225,10 +231,11 @@
       "brokenImages": 0,
       "pendingImages": 0,
       "hasAlert": true,
-      "alertText": "cinemania\nBrowse\nDiscover\nTrending\nMovies\nTV Shows\nToggle Sidebar\nSearch Results for: unauthorized_query\nOops!\nFailed to load search results. Please try again later.\nTry Again\nCinemania\nCinemania is a movie discovery web app inspired by TMDB, allowing users to explore trending and latest movies with details like synopsis, release date, ratings, and cast.\nBrowse\nHome\nMovies\nTV Shows\nAbout\nPersonal\nPortfolio\nResume\nSocial\nGithub\nLinkedIn\nX\nInstagram\nEmail\nThis product uses the TMDB API but is not endorsed or certified by TMDB.\n© 2026 Cinemania. Built by Kais Abiyyi.",
+      "alertText": "Failed to load search results. Please try again later.",
       "consoleErrorsCount": 0,
       "exceptionsCount": 0,
-      "hydrationError": null
+      "hydrationConsoleErrorsCount": 0,
+      "customHydrationMarker": null
     },
     "pass": true,
     "failureReasons": []
