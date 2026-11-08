@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+env:
+  CI: true
+  TMDB_API_RAT: "mock-tmdb-offline-ci-token"
+  NEXT_PUBLIC_TMDB_POSTER_URL: "https://image.tmdb.org/t/p/w500"
+  NEXT_PUBLIC_IMAGE_BASE_URL: "https://image.tmdb.org/t/p"
+  IPINFO_TOKEN: "mock-ipinfo-offline-token"
+
+jobs:
+  lint-and-typecheck:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Install dependencies (reproducible clean)
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript typecheck
+        run: npm run typecheck
+
+  unit-tests:
+    name: Unit Tests (Vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Install dependencies (reproducible clean)
+        run: npm ci
+
+      - name: Run Unit Tests
+        run: npm run test:unit
+
+  integration-tests:
+    name: API Integration Tests (Vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Install dependencies (reproducible clean)
+        run: npm ci
+
+      - name: Run API Integration Tests
+        run: npm run test:integration
+
+  build:
+    name: Next.js Production Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Cache Next.js build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('src/**/*.{js,jsx,ts,tsx}') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-
+
+      - name: Install dependencies (reproducible clean)
+        run: npm ci
+
+      - name: Build Next.js application
+        run: npm run build
+
+  e2e-tests:
+    name: Playwright E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Cache Next.js build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-${{ hashFiles('src/**/*.{js,jsx,ts,tsx}') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ hashFiles('**/package-lock.json') }}-
+
+      - name: Install dependencies (reproducible clean)
+        run: npm ci
+
+      - name: Install Playwright browsers and system dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Build Next.js application
+        run: npm run build
+
+      - name: Run Playwright E2E Tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright Test Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Upload Mock Request Logs Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: request-logs
+          path: tests/fixtures/request-logs.json
+          retention-days: 14

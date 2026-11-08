@@ -1,0 +1,290 @@
+[
+  {
+    "timestamp": "2026-11-08T09:55:29.396Z",
+    "url": "https://api.themoviedb.org/3/discover/movie?sort_by=popularity.desc&release_date.gte=&release_date.lte=&first_air_date.gte=&first_air_date.lte=&air_date.gte=&air_date.lte=&with_genres=&vote_average.gte=0&vote_average.lte=10&vote_count.gte=0&with_runtime.gte=0&with_runtime.lte=360&with_release_type=&without_genres=&with_keywords=&with_original_language=en&watch_region=US&with_watch_providers=&page=1",
+    "pathname": "/3/discover/movie",
+    "query": "?sort_by=popularity.desc&release_date.gte=&release_date.lte=&first_air_date.gte=&first_air_date.lte=&air_date.gte=&air_date.lte=&with_genres=&vote_average.gte=0&vote_average.lte=10&vote_count.gte=0&with_runtime.gte=0&with_runtime.lte=360&with_release_type=&without_genres=&with_keywords=&with_original_language=en&watch_region=US&with_watch_providers=&page=1",
+    "statusCode": 200,
+    "fixtureReturned": "movieList",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.421Z",
+    "url": "https://api.themoviedb.org/3/discover/tv?sort_by=popularity.desc&release_date.gte=&release_date.lte=&first_air_date.gte=&first_air_date.lte=&air_date.gte=&air_date.lte=&with_genres=&vote_average.gte=0&vote_average.lte=10&vote_count.gte=0&with_runtime.gte=0&with_runtime.lte=360&with_release_type=&without_genres=&with_keywords=&with_original_language=en&watch_region=US&with_watch_providers=&page=1",
+    "pathname": "/3/discover/tv",
+    "query": "?sort_by=popularity.desc&release_date.gte=&release_date.lte=&first_air_date.gte=&first_air_date.lte=&air_date.gte=&air_date.lte=&with_genres=&vote_average.gte=0&vote_average.lte=10&vote_count.gte=0&with_runtime.gte=0&with_runtime.lte=360&with_release_type=&without_genres=&with_keywords=&with_original_language=en&watch_region=US&with_watch_providers=&page=1",
+    "statusCode": 200,
+    "fixtureReturned": "tvList",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.455Z",
+    "url": "https://api.themoviedb.org/3/search/movie?query=Inception",
+    "pathname": "/3/search/movie",
+    "query": "?query=Inception",
+    "statusCode": 200,
+    "fixtureReturned": "searchMovieInception",
+    "resultCount": 1
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.472Z",
+    "url": "https://api.themoviedb.org/3/search/keyword?query=Inception",
+    "pathname": "/3/search/keyword",
+    "query": "?query=Inception",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.501Z",
+    "url": "https://api.themoviedb.org/3/search/tv?query=Inception",
+    "pathname": "/3/search/tv",
+    "query": "?query=Inception",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.522Z",
+    "url": "https://api.themoviedb.org/3/search/tv?query=Inception",
+    "pathname": "/3/search/tv",
+    "query": "?query=Inception",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.541Z",
+    "url": "https://api.themoviedb.org/3/trending/all/week?language=en-US",
+    "pathname": "/3/trending/all/week",
+    "query": "?language=en-US",
+    "statusCode": 200,
+    "fixtureReturned": "other",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.562Z",
+    "url": "https://api.themoviedb.org/3/genre/movie/list",
+    "pathname": "/3/genre/movie/list",
+    "query": "",
+    "statusCode": 200,
+    "fixtureReturned": "other",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.578Z",
+    "url": "https://api.themoviedb.org/3/discover/movie?language=en-US&include_adults=false",
+    "pathname": "/3/discover/movie",
+    "query": "?language=en-US&include_adults=false",
+    "statusCode": 200,
+    "fixtureReturned": "movieList",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.597Z",
+    "url": "https://api.themoviedb.org/3/discover/tv?language=en-US&include_adults=false",
+    "pathname": "/3/discover/tv",
+    "query": "?language=en-US&include_adults=false",
+    "statusCode": 200,
+    "fixtureReturned": "tvList",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.618Z",
+    "url": "https://api.themoviedb.org/3/discover/movie?language=en-US&include_adults=false&with_release_type=2%7C3&release_date.gte=2026-10-08T09:55:28.694Z&release_date.lte=2026-11-08T09:55:28.694Z",
+    "pathname": "/3/discover/movie",
+    "query": "?language=en-US&include_adults=false&with_release_type=2%7C3&release_date.gte=2026-10-08T09:55:28.694Z&release_date.lte=2026-11-08T09:55:28.694Z",
+    "statusCode": 200,
+    "fixtureReturned": "movieList",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.642Z",
+    "url": "https://api.themoviedb.org/3/discover/movie?language=en-US&include_adults=false&sort_by=vote_average.desc&without_genres=99,10755&vote_count.gte=350",
+    "pathname": "/3/discover/movie",
+    "query": "?language=en-US&include_adults=false&sort_by=vote_average.desc&without_genres=99,10755&vote_count.gte=350",
+    "statusCode": 200,
+    "fixtureReturned": "movieList",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.661Z",
+    "url": "https://api.themoviedb.org/3/search/movie?query=nonexistent_random_movie_xyz",
+    "pathname": "/3/search/movie",
+    "query": "?query=nonexistent_random_movie_xyz",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.691Z",
+    "url": "https://api.themoviedb.org/3/search/keyword?query=nonexistent_random_movie_xyz",
+    "pathname": "/3/search/keyword",
+    "query": "?query=nonexistent_random_movie_xyz",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.704Z",
+    "url": "https://api.themoviedb.org/3/search/tv?query=nonexistent_random_movie_xyz",
+    "pathname": "/3/search/tv",
+    "query": "?query=nonexistent_random_movie_xyz",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T09:55:29.726Z",
+    "url": "https://api.themoviedb.org/3/search/tv?query=nonexistent_random_movie_xyz",
+    "pathname": "/3/search/tv",
+    "query": "?query=nonexistent_random_movie_xyz",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T10:02:06.785Z",
+    "url": "https://api.themoviedb.org/3/search/movie?query=nonexistent_random_movie_xyz",
+    "pathname": "/3/search/movie",
+    "query": "?query=nonexistent_random_movie_xyz",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T10:02:06.797Z",
+    "url": "https://api.themoviedb.org/3/search/keyword?query=nonexistent_random_movie_xyz",
+    "pathname": "/3/search/keyword",
+    "query": "?query=nonexistent_random_movie_xyz",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T10:02:06.807Z",
+    "url": "https://api.themoviedb.org/3/search/tv?query=nonexistent_random_movie_xyz",
+    "pathname": "/3/search/tv",
+    "query": "?query=nonexistent_random_movie_xyz",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T10:02:06.827Z",
+    "url": "https://api.themoviedb.org/3/search/tv?query=nonexistent_random_movie_xyz",
+    "pathname": "/3/search/tv",
+    "query": "?query=nonexistent_random_movie_xyz",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T10:02:06.854Z",
+    "url": "https://api.themoviedb.org/3/search/movie?query=Inception",
+    "pathname": "/3/search/movie",
+    "query": "?query=Inception",
+    "statusCode": 200,
+    "fixtureReturned": "searchMovieInception",
+    "resultCount": 1
+  },
+  {
+    "timestamp": "2026-11-08T10:02:06.878Z",
+    "url": "https://api.themoviedb.org/3/search/keyword?query=Inception",
+    "pathname": "/3/search/keyword",
+    "query": "?query=Inception",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T10:02:06.914Z",
+    "url": "https://api.themoviedb.org/3/search/tv?query=Inception",
+    "pathname": "/3/search/tv",
+    "query": "?query=Inception",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T10:02:06.952Z",
+    "url": "https://api.themoviedb.org/3/trending/all/week?language=en-US",
+    "pathname": "/3/trending/all/week",
+    "query": "?language=en-US",
+    "statusCode": 200,
+    "fixtureReturned": "other",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T10:02:06.979Z",
+    "url": "https://api.themoviedb.org/3/search/tv?query=Inception",
+    "pathname": "/3/search/tv",
+    "query": "?query=Inception",
+    "statusCode": 200,
+    "fixtureReturned": "searchEmpty",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T10:02:07.020Z",
+    "url": "https://api.themoviedb.org/3/genre/movie/list",
+    "pathname": "/3/genre/movie/list",
+    "query": "",
+    "statusCode": 200,
+    "fixtureReturned": "other",
+    "resultCount": 0
+  },
+  {
+    "timestamp": "2026-11-08T10:02:07.056Z",
+    "url": "https://api.themoviedb.org/3/discover/movie?language=en-US&include_adults=false",
+    "pathname": "/3/discover/movie",
+    "query": "?language=en-US&include_adults=false",
+    "statusCode": 200,
+    "fixtureReturned": "movieList",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T10:02:07.084Z",
+    "url": "https://api.themoviedb.org/3/discover/tv?language=en-US&include_adults=false",
+    "pathname": "/3/discover/tv",
+    "query": "?language=en-US&include_adults=false",
+    "statusCode": 200,
+    "fixtureReturned": "tvList",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T10:02:07.104Z",
+    "url": "https://api.themoviedb.org/3/discover/movie?language=en-US&include_adults=false&with_release_type=2%7C3&release_date.gte=2026-10-08T10:02:06.471Z&release_date.lte=2026-11-08T10:02:06.471Z",
+    "pathname": "/3/discover/movie",
+    "query": "?language=en-US&include_adults=false&with_release_type=2%7C3&release_date.gte=2026-10-08T10:02:06.471Z&release_date.lte=2026-11-08T10:02:06.471Z",
+    "statusCode": 200,
+    "fixtureReturned": "movieList",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T10:02:07.124Z",
+    "url": "https://api.themoviedb.org/3/discover/movie?language=en-US&include_adults=false&sort_by=vote_average.desc&without_genres=99,10755&vote_count.gte=350",
+    "pathname": "/3/discover/movie",
+    "query": "?language=en-US&include_adults=false&sort_by=vote_average.desc&without_genres=99,10755&vote_count.gte=350",
+    "statusCode": 200,
+    "fixtureReturned": "movieList",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T10:02:07.157Z",
+    "url": "https://api.themoviedb.org/3/discover/tv?sort_by=popularity.desc&release_date.gte=&release_date.lte=&first_air_date.gte=&first_air_date.lte=&air_date.gte=&air_date.lte=&with_genres=&vote_average.gte=0&vote_average.lte=10&vote_count.gte=0&with_runtime.gte=0&with_runtime.lte=360&with_release_type=&without_genres=&with_keywords=&with_original_language=en&watch_region=US&with_watch_providers=&page=1",
+    "pathname": "/3/discover/tv",
+    "query": "?sort_by=popularity.desc&release_date.gte=&release_date.lte=&first_air_date.gte=&first_air_date.lte=&air_date.gte=&air_date.lte=&with_genres=&vote_average.gte=0&vote_average.lte=10&vote_count.gte=0&with_runtime.gte=0&with_runtime.lte=360&with_release_type=&without_genres=&with_keywords=&with_original_language=en&watch_region=US&with_watch_providers=&page=1",
+    "statusCode": 200,
+    "fixtureReturned": "tvList",
+    "resultCount": 4
+  },
+  {
+    "timestamp": "2026-11-08T10:02:07.187Z",
+    "url": "https://api.themoviedb.org/3/discover/movie?sort_by=popularity.desc&release_date.gte=&release_date.lte=&first_air_date.gte=&first_air_date.lte=&air_date.gte=&air_date.lte=&with_genres=&vote_average.gte=0&vote_average.lte=10&vote_count.gte=0&with_runtime.gte=0&with_runtime.lte=360&with_release_type=&without_genres=&with_keywords=&with_original_language=en&watch_region=US&with_watch_providers=&page=1",
+    "pathname": "/3/discover/movie",
+    "query": "?sort_by=popularity.desc&release_date.gte=&release_date.lte=&first_air_date.gte=&first_air_date.lte=&air_date.gte=&air_date.lte=&with_genres=&vote_average.gte=0&vote_average.lte=10&vote_count.gte=0&with_runtime.gte=0&with_runtime.lte=360&with_release_type=&without_genres=&with_keywords=&with_original_language=en&watch_region=US&with_watch_providers=&page=1",
+    "statusCode": 200,
+    "fixtureReturned": "movieList",
+    "resultCount": 4
+  }
+]
