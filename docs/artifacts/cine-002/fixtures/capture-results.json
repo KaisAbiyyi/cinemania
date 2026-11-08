@@ -27,13 +27,19 @@
         "Stranger Things",
         "Arcane"
       ],
+      "mediaCardCount": 33,
       "totalImages": 20,
       "loadedImages": 20,
       "brokenImages": 0,
+      "pendingImages": 0,
       "hasAlert": false,
-      "alertText": null
+      "alertText": null,
+      "consoleErrorsCount": 0,
+      "exceptionsCount": 0,
+      "hydrationError": null
     },
-    "pass": true
+    "pass": true,
+    "failureReasons": []
   },
   {
     "test": "movie",
@@ -59,13 +65,19 @@
         "The Dark Knight",
         "Inception"
       ],
+      "mediaCardCount": 27,
       "totalImages": 12,
       "loadedImages": 12,
       "brokenImages": 0,
+      "pendingImages": 0,
       "hasAlert": false,
-      "alertText": null
+      "alertText": null,
+      "consoleErrorsCount": 0,
+      "exceptionsCount": 0,
+      "hydrationError": null
     },
-    "pass": true
+    "pass": true,
+    "failureReasons": []
   },
   {
     "test": "tv",
@@ -91,13 +103,19 @@
         "Stranger Things",
         "Arcane"
       ],
+      "mediaCardCount": 27,
       "totalImages": 12,
       "loadedImages": 12,
       "brokenImages": 0,
+      "pendingImages": 0,
       "hasAlert": false,
-      "alertText": null
+      "alertText": null,
+      "consoleErrorsCount": 0,
+      "exceptionsCount": 0,
+      "hydrationError": null
     },
-    "pass": true
+    "pass": true,
+    "failureReasons": []
   },
   {
     "test": "trending",
@@ -120,13 +138,19 @@
         "Game of Thrones",
         "Breaking Bad"
       ],
+      "mediaCardCount": 4,
       "totalImages": 4,
       "loadedImages": 4,
       "brokenImages": 0,
+      "pendingImages": 0,
       "hasAlert": false,
-      "alertText": null
+      "alertText": null,
+      "consoleErrorsCount": 0,
+      "exceptionsCount": 0,
+      "hydrationError": null
     },
-    "pass": true
+    "pass": true,
+    "failureReasons": []
   },
   {
     "test": "search",
@@ -143,13 +167,19 @@
       "cardsFound": [
         "Inception"
       ],
+      "mediaCardCount": 2,
       "totalImages": 1,
       "loadedImages": 1,
       "brokenImages": 0,
+      "pendingImages": 0,
       "hasAlert": false,
-      "alertText": null
+      "alertText": null,
+      "consoleErrorsCount": 0,
+      "exceptionsCount": 0,
+      "hydrationError": null
     },
-    "pass": true
+    "pass": true,
+    "failureReasons": []
   },
   {
     "test": "search-negative",
@@ -163,13 +193,19 @@
         "Search Results for: NonExistentQuery"
       ],
       "cardsFound": [],
+      "mediaCardCount": 0,
       "totalImages": 0,
       "loadedImages": 0,
       "brokenImages": 0,
+      "pendingImages": 0,
       "hasAlert": false,
-      "alertText": null
+      "alertText": null,
+      "consoleErrorsCount": 0,
+      "exceptionsCount": 0,
+      "hydrationError": null
     },
-    "pass": true
+    "pass": true,
+    "failureReasons": []
   },
   {
     "test": "search-diagnostic-empty",
@@ -183,12 +219,18 @@
         "Search Results for: unauthorized_query"
       ],
       "cardsFound": [],
+      "mediaCardCount": 0,
       "totalImages": 0,
       "loadedImages": 0,
       "brokenImages": 0,
+      "pendingImages": 0,
       "hasAlert": true,
-      "alertText": "Failed to load search results. Please try again later."
+      "alertText": "cinemania\nBrowse\nDiscover\nTrending\nMovies\nTV Shows\nToggle Sidebar\nSearch Results for: unauthorized_query\nOops!\nFailed to load search results. Please try again later.\nTry Again\nCinemania\nCinemania is a movie discovery web app inspired by TMDB, allowing users to explore trending and latest movies with details like synopsis, release date, ratings, and cast.\nBrowse\nHome\nMovies\nTV Shows\nAbout\nPersonal\nPortfolio\nResume\nSocial\nGithub\nLinkedIn\nX\nInstagram\nEmail\nThis product uses the TMDB API but is not endorsed or certified by TMDB.\n© 2026 Cinemania. Built by Kais Abiyyi.",
+      "consoleErrorsCount": 0,
+      "exceptionsCount": 0,
+      "hydrationError": null
     },
-    "pass": true
+    "pass": true,
+    "failureReasons": []
   }
 ]

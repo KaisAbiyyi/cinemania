@@ -144,12 +144,11 @@ const fixtures = {
       {
         id: 1399,
         name: "Game of Thrones",
-        title: "Game of Thrones",
+        original_name: "Game of Thrones",
         overview: "Seven noble families fight for control of the mythical land of Westeros.",
         poster_path: "/1XS1oqL89opfnbLl8WnZY1O1uJx.jpg",
         backdrop_path: "/2OMB0ynKlyIenMJWI2Dy9IWT4c.jpg",
         first_air_date: "2011-04-17",
-        release_date: "2011-04-17",
         vote_average: 8.4,
         vote_count: 23000,
         genre_ids: [18, 10765, 10759]
@@ -157,12 +156,11 @@ const fixtures = {
       {
         id: 1396,
         name: "Breaking Bad",
-        title: "Breaking Bad",
+        original_name: "Breaking Bad",
         overview: "A chemistry teacher diagnosed with inoperable lung cancer turns to manufacturing methamphetamine.",
         poster_path: "/ggFHVNu6YYI5L9pCfOacjizRGt.jpg",
         backdrop_path: "/2OMB0ynKlyIenMJWI2Dy9IWT4c.jpg",
         first_air_date: "2008-01-20",
-        release_date: "2008-01-20",
         vote_average: 8.9,
         vote_count: 14000,
         genre_ids: [18, 80]
@@ -170,12 +168,11 @@ const fixtures = {
       {
         id: 66732,
         name: "Stranger Things",
-        title: "Stranger Things",
+        original_name: "Stranger Things",
         overview: "When a young boy vanishes, a small town uncovers a mystery involving secret experiments and terrifying supernatural forces.",
         poster_path: "/49WJfeN0moxb9IPfGn8AIqMGskD.jpg",
         backdrop_path: "/56v2KjBlU4XaOv9rVYEQypROD7P.jpg",
         first_air_date: "2016-07-15",
-        release_date: "2016-07-15",
         vote_average: 8.6,
         vote_count: 17000,
         genre_ids: [18, 10765, 9648]
@@ -183,12 +180,11 @@ const fixtures = {
       {
         id: 94605,
         name: "Arcane",
-        title: "Arcane",
+        original_name: "Arcane",
         overview: "Set in the utopian region of Piltover and the oppressed underground of Zaun, two iconic League champions clash.",
         poster_path: "/fqldf2t8ztc9aiwn3k6mlX3tvRT.jpg",
         backdrop_path: "/56v2KjBlU4XaOv9rVYEQypROD7P.jpg",
         first_air_date: "2021-11-06",
-        release_date: "2021-11-06",
         vote_average: 8.7,
         vote_count: 4000,
         genre_ids: [16, 10765, 18]
