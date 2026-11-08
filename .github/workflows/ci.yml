@@ -2,13 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, "feat/*", "test/*"]
   pull_request:
 
 env:
   CI: true
   TMDB_API_RAT: "mock-tmdb-offline-ci-token"
-  NEXT_PUBLIC_TMDB_POSTER_URL: "https://image.tmdb.org/t/p/w500"
+  NEXT_PUBLIC_TMDB_POSTER_URL: "https://image.tmdb.org/t/p"
   NEXT_PUBLIC_IMAGE_BASE_URL: "https://image.tmdb.org/t/p"
   IPINFO_TOKEN: "mock-ipinfo-offline-token"
 

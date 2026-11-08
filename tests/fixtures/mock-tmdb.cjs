@@ -1,13 +1,15 @@
 /* eslint-disable */
 /**
- * Replayable deterministic TMDB API mock interceptor for Next.js server and E2E testing.
- * Intercepts outgoing HTTPS requests to api.themoviedb.org without modifying application code.
+ * Replayable deterministic TMDB API & Image CDN mock interceptor for Next.js server and E2E testing.
+ * Intercepts outgoing HTTPS requests to api.themoviedb.org and image.tmdb.org without modifying application code.
+ * Enforces 100% offline determinism and blocks unmocked external network traffic.
  *
  * Usage:
  *   NODE_OPTIONS="--require ./tests/fixtures/mock-tmdb.cjs" next start -p 3055
  */
 
 const https = require('https');
+const http = require('http');
 const { PassThrough } = require('stream');
 const fs = require('fs');
 const path = require('path');
@@ -30,6 +32,12 @@ function recordRequest(entry) {
     fs.writeFileSync(logPath, JSON.stringify(existing, null, 2));
   } catch (_) {}
 }
+
+// 70-byte valid 1x1 transparent PNG buffer (header: 89504e47)
+const transparentPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+  'base64'
+);
 
 const fixtures = {
   genres: {
@@ -264,7 +272,7 @@ function getFixture(urlObj) {
   return fixtures.movieList;
 }
 
-const originalRequest = https.request;
+const originalHttpsRequest = https.request;
 https.request = function(...args) {
   let urlObj;
   let cb;
@@ -275,13 +283,16 @@ https.request = function(...args) {
   } else if (typeof args[0] === 'object') {
     const host = args[0].hostname || args[0].host;
     const path = args[0].path || '/';
-    if (host === 'api.themoviedb.org') {
+    if (host) {
       urlObj = new URL(`https://${host}${path}`);
     }
     if (typeof args[1] === 'function') cb = args[1];
   }
 
-  if (urlObj && urlObj.hostname === 'api.themoviedb.org') {
+  const hostname = urlObj ? urlObj.hostname : '';
+
+  // Intercept TMDB API requests
+  if (hostname === 'api.themoviedb.org') {
     const fixtureResult = getFixture(urlObj);
     const isError = fixtureResult.errorStatus !== undefined;
     const statusCode = isError ? fixtureResult.errorStatus : 200;
@@ -333,7 +344,63 @@ https.request = function(...args) {
     return clientReq;
   }
 
-  return originalRequest.apply(this, args);
+  // Intercept TMDB Image CDN requests (100% offline deterministic 1x1 PNG fixture)
+  if (hostname === 'image.tmdb.org') {
+    recordRequest({
+      timestamp: new Date().toISOString(),
+      url: urlObj.href,
+      pathname: urlObj.pathname,
+      query: urlObj.search,
+      statusCode: 200,
+      fixtureReturned: 'fixtureImagePng',
+      resultCount: 1
+    });
+
+    const clientReq = new PassThrough();
+    clientReq.setHeader = () => {};
+    clientReq.getHeader = () => {};
+    clientReq.removeHeader = () => {};
+    clientReq.abort = () => {};
+    clientReq.destroy = () => {};
+    clientReq.setTimeout = () => {};
+
+    const clientRes = new PassThrough();
+    clientRes.statusCode = 200;
+    clientRes.headers = {
+      'content-type': 'image/png',
+      'content-length': String(transparentPng.length),
+      'cache-control': 'public, max-age=31536000, immutable'
+    };
+
+    clientReq.on('finish', () => {
+      process.nextTick(() => {
+        if (cb) cb(clientRes);
+        clientRes.end(transparentPng);
+      });
+    });
+
+    return clientReq;
+  }
+
+  // Guard: Block all unexpected outbound external traffic
+  const isAllowedLocal = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '';
+  if (!isAllowedLocal) {
+    const errorMsg = `[mock_tmdb] BLOCKED unexpected outbound external request to ${hostname}: offline determinism enforced`;
+    console.error(errorMsg);
+    const clientReq = new PassThrough();
+    clientReq.setHeader = () => {};
+    clientReq.getHeader = () => {};
+    clientReq.removeHeader = () => {};
+    clientReq.abort = () => {};
+    clientReq.destroy = () => {};
+    clientReq.setTimeout = () => {};
+    process.nextTick(() => {
+      clientReq.emit('error', new Error(errorMsg));
+    });
+    return clientReq;
+  }
+
+  return originalHttpsRequest.apply(this, args);
 };
 
 https.get = function(...args) {
@@ -367,4 +434,4 @@ process.on('exit', () => {
   } catch (_) {}
 });
 
-console.log('[mock_tmdb] TMDB API deterministic interceptor active for api.themoviedb.org');
+console.log('[mock_tmdb] TMDB API & Image CDN deterministic interceptor active');

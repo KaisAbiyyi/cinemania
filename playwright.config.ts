@@ -26,7 +26,7 @@ export default defineConfig({
     env: {
       NODE_OPTIONS: "--require ./tests/fixtures/mock-tmdb.cjs",
       TMDB_API_RAT: "mock-tmdb-offline-rat-token",
-      NEXT_PUBLIC_TMDB_POSTER_URL: "https://image.tmdb.org/t/p/w500",
+      NEXT_PUBLIC_TMDB_POSTER_URL: "https://image.tmdb.org/t/p",
       NEXT_PUBLIC_IMAGE_BASE_URL: "https://image.tmdb.org/t/p",
       PORT: "3055",
     },
