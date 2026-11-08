@@ -3,7 +3,7 @@
     "test": "root",
     "path": "/",
     "outputFilename": "screenshot-root.png",
-    "bytes": 850261,
+    "bytes": 850146,
     "dimensions": "1440x900",
     "pageState": {
       "title": "Cinemania - Explore Movies & TV Shows",
@@ -35,8 +35,9 @@
       "hasAlert": false,
       "alertText": null,
       "consoleErrorsCount": 0,
+      "consoleWarningsCount": 0,
       "exceptionsCount": 0,
-      "hydrationConsoleErrorsCount": 0,
+      "hydrationConsoleSignaturesCount": 0,
       "customHydrationMarker": null
     },
     "pass": true,
@@ -46,7 +47,7 @@
     "test": "movie",
     "path": "/movie",
     "outputFilename": "screenshot-movie.png",
-    "bytes": 888772,
+    "bytes": 888791,
     "dimensions": "1440x900",
     "pageState": {
       "title": "Movies | Cinemania",
@@ -74,8 +75,9 @@
       "hasAlert": false,
       "alertText": null,
       "consoleErrorsCount": 0,
+      "consoleWarningsCount": 0,
       "exceptionsCount": 0,
-      "hydrationConsoleErrorsCount": 0,
+      "hydrationConsoleSignaturesCount": 0,
       "customHydrationMarker": null
     },
     "pass": true,
@@ -113,8 +115,9 @@
       "hasAlert": false,
       "alertText": null,
       "consoleErrorsCount": 0,
+      "consoleWarningsCount": 0,
       "exceptionsCount": 0,
-      "hydrationConsoleErrorsCount": 0,
+      "hydrationConsoleSignaturesCount": 0,
       "customHydrationMarker": null
     },
     "pass": true,
@@ -124,7 +127,7 @@
     "test": "trending",
     "path": "/trending",
     "outputFilename": "screenshot-trending.png",
-    "bytes": 574505,
+    "bytes": 574277,
     "dimensions": "1440x900",
     "pageState": {
       "title": "Trending Movies & TV Shows | Cinemania",
@@ -149,8 +152,9 @@
       "hasAlert": false,
       "alertText": null,
       "consoleErrorsCount": 0,
+      "consoleWarningsCount": 0,
       "exceptionsCount": 0,
-      "hydrationConsoleErrorsCount": 0,
+      "hydrationConsoleSignaturesCount": 0,
       "customHydrationMarker": null
     },
     "pass": true,
@@ -160,7 +164,7 @@
     "test": "search",
     "path": "/search?q=Inception",
     "outputFilename": "screenshot-search.png",
-    "bytes": 338233,
+    "bytes": 338328,
     "dimensions": "1440x900",
     "pageState": {
       "title": "Inception | Cinemania",
@@ -179,8 +183,9 @@
       "hasAlert": false,
       "alertText": null,
       "consoleErrorsCount": 0,
+      "consoleWarningsCount": 0,
       "exceptionsCount": 0,
-      "hydrationConsoleErrorsCount": 0,
+      "hydrationConsoleSignaturesCount": 0,
       "customHydrationMarker": null
     },
     "pass": true,
@@ -206,8 +211,9 @@
       "hasAlert": false,
       "alertText": null,
       "consoleErrorsCount": 0,
+      "consoleWarningsCount": 0,
       "exceptionsCount": 0,
-      "hydrationConsoleErrorsCount": 0,
+      "hydrationConsoleSignaturesCount": 0,
       "customHydrationMarker": null
     },
     "pass": true,
@@ -233,8 +239,9 @@
       "hasAlert": true,
       "alertText": "Failed to load search results. Please try again later.",
       "consoleErrorsCount": 0,
+      "consoleWarningsCount": 0,
       "exceptionsCount": 0,
-      "hydrationConsoleErrorsCount": 0,
+      "hydrationConsoleSignaturesCount": 0,
       "customHydrationMarker": null
     },
     "pass": true,

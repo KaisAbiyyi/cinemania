@@ -85,6 +85,7 @@ class CDPClient {
     this.callbacks = new Map();
     this.eventListeners = new Map();
     this.consoleErrors = [];
+    this.consoleWarnings = [];
     this.exceptions = [];
   }
 
@@ -105,6 +106,11 @@ class CDPClient {
             const params = msg.params;
             if (params.type === 'error' || params.type === 'assert') {
               this.consoleErrors.push({
+                type: params.type,
+                args: params.args?.map(a => a.value || a.description || '')
+              });
+            } else if (params.type === 'warning' || params.type === 'warn') {
+              this.consoleWarnings.push({
                 type: params.type,
                 args: params.args?.map(a => a.value || a.description || '')
               });
@@ -135,6 +141,7 @@ class CDPClient {
 
   resetDiagnostics() {
     this.consoleErrors = [];
+    this.consoleWarnings = [];
     this.exceptions = [];
   }
 
@@ -197,7 +204,10 @@ async function runTestPlan(testPlan) {
       cdp.resetDiagnostics();
       const targetUrl = `${TARGET_URL}${t.path}`;
       console.log(`\n[runner] Navigating to ${targetUrl}...`);
-      await cdp.send('Page.navigate', { url: targetUrl });
+      const navRes = await cdp.send('Page.navigate', { url: targetUrl });
+      if (navRes && navRes.errorText) {
+        throw new Error(`Page.navigate failed for ${targetUrl}: ${navRes.errorText}`);
+      }
 
       const waitMs = t.name === 'search-diagnostic-empty' ? 10000 : 4000;
       await new Promise(res => setTimeout(res, waitMs));
@@ -205,6 +215,9 @@ async function runTestPlan(testPlan) {
       const evalRes = await cdp.send('Runtime.evaluate', {
         expression: `
           (() => {
+            if (window.location.protocol === 'chrome-error:' || window.location.href.startsWith('chrome-error:')) {
+              throw new Error('Navigation reached internal browser error page: ' + window.location.href);
+            }
             const bodyText = document.body ? document.body.innerText : '';
             const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4')).map(h => h.innerText.trim()).filter(Boolean);
             const allImages = Array.from(document.querySelectorAll('img'));
@@ -267,13 +280,23 @@ async function runTestPlan(testPlan) {
         returnByValue: true
       });
 
+      if (evalRes.exceptionDetails) {
+        const desc = evalRes.exceptionDetails.exception?.description || evalRes.exceptionDetails.text;
+        throw new Error(`Page execution failed for ${targetUrl}: ${desc}`);
+      }
+      if (!evalRes.result || !evalRes.result.value) {
+        throw new Error(`Page evaluation returned empty result for ${targetUrl}`);
+      }
+
       const pageState = evalRes.result.value;
       const consoleErrors = [...cdp.consoleErrors];
+      const consoleWarnings = [...cdp.consoleWarnings];
       const exceptions = [...cdp.exceptions];
 
-      // Inspect browser console specifically for React/Next hydration mismatch signatures
-      const hydrationConsoleErrors = consoleErrors.filter(err => {
-        const text = (err.args || []).join(' ');
+      // Inspect browser console specifically for React/Next hydration mismatch signatures across errors, asserts, and warnings
+      const allConsoleMessages = [...consoleErrors, ...consoleWarnings];
+      const hydrationConsoleSignatures = allConsoleMessages.filter(evt => {
+        const text = (evt.args || []).join(' ');
         return HYDRATION_ERROR_PATTERNS.some(regex => regex.test(text));
       });
 
@@ -285,8 +308,9 @@ async function runTestPlan(testPlan) {
         hasAlert: pageState.hasAlert,
         alertText: pageState.alertText,
         consoleErrors: consoleErrors.length,
+        consoleWarnings: consoleWarnings.length,
         exceptions: exceptions.length,
-        hydrationConsoleErrors: hydrationConsoleErrors.length,
+        hydrationConsoleSignatures: hydrationConsoleSignatures.length,
         customHydrationMarker: pageState.customHydrationMarker
       });
 
@@ -313,7 +337,7 @@ async function runTestPlan(testPlan) {
         const noPending = pageState.pendingImages === 0;
         const noConsoleErrors = consoleErrors.length === 0;
         const noExceptions = exceptions.length === 0;
-        const noHydrationErrors = hydrationConsoleErrors.length === 0;
+        const noHydrationErrors = hydrationConsoleSignatures.length === 0;
         const noCustomHydrationMarker = pageState.customHydrationMarker === null;
         const dimensionMatch = dimensions?.width === VIEWPORT_WIDTH && dimensions?.height === VIEWPORT_HEIGHT;
 
@@ -324,7 +348,7 @@ async function runTestPlan(testPlan) {
         if (!noPending) failureReasons.push(`Found ${pageState.pendingImages} pending images`);
         if (!noConsoleErrors) failureReasons.push(`Console errors: ${JSON.stringify(consoleErrors)}`);
         if (!noExceptions) failureReasons.push(`Uncaught exceptions: ${JSON.stringify(exceptions)}`);
-        if (!noHydrationErrors) failureReasons.push(`Hydration console errors: ${JSON.stringify(hydrationConsoleErrors)}`);
+        if (!noHydrationErrors) failureReasons.push(`Hydration console signatures: ${JSON.stringify(hydrationConsoleSignatures)}`);
         if (!noCustomHydrationMarker) failureReasons.push(`Auxiliary hydration marker detected: ${pageState.customHydrationMarker}`);
         if (!dimensionMatch) failureReasons.push(`Dimension mismatch: expected ${VIEWPORT_WIDTH}x${VIEWPORT_HEIGHT}, got ${dimensions?.width}x${dimensions?.height}`);
 
@@ -375,8 +399,9 @@ async function runTestPlan(testPlan) {
           hasAlert: pageState.hasAlert,
           alertText: pageState.alertText,
           consoleErrorsCount: consoleErrors.length,
+          consoleWarningsCount: consoleWarnings.length,
           exceptionsCount: exceptions.length,
-          hydrationConsoleErrorsCount: hydrationConsoleErrors.length,
+          hydrationConsoleSignaturesCount: hydrationConsoleSignatures.length,
           customHydrationMarker: pageState.customHydrationMarker
         },
         pass: isPass,
@@ -462,33 +487,65 @@ async function main() {
   const isMutation = process.argv.includes('--mutate-failure');
 
   if (isSelfTest) {
-    console.log('[runner] Self-test invoked: executing subprocess with --mutate-failure to verify nonzero exit code (process.exit(1))...');
+    console.log('[runner] Self-test Stage 1: Verifying intentional assertion failure handling...');
     const scriptPath = fileURLToPath(import.meta.url);
-    const child = spawn(process.execPath, [scriptPath, '--mutate-failure'], {
-      env: { ...process.env },
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
 
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', d => { stdout += d.toString(); });
-    child.stderr.on('data', d => { stderr += d.toString(); });
+    async function runChild(args, extraEnv = {}) {
+      const child = spawn(process.execPath, [scriptPath, ...args], {
+        env: { ...process.env, ...extraEnv },
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', d => { stdout += d.toString(); });
+      child.stderr.on('data', d => { stderr += d.toString(); });
+      const exitCode = await new Promise(resolve => child.on('close', code => resolve(code)));
+      return { exitCode, stdout, stderr };
+    }
 
-    const exitCode = await new Promise(resolve => {
-      child.on('close', code => resolve(code));
-    });
+    // Stage 1: Intentional mutation test
+    const stage1 = await runChild(['--mutate-failure']);
+    console.log(`[runner] Stage 1 child exited with code: ${stage1.exitCode}`);
 
-    console.log(`[runner] Subprocess finished with exit code: ${exitCode}`);
-    if (exitCode === 1) {
-      console.log('\n[runner] SELF-TEST PASS: Subprocess failed as expected with process.exit(1).');
-      console.log('[runner] Captured subprocess stderr excerpt:\n' + stderr.trim());
-      process.exit(0);
-    } else {
-      console.error(`\n[runner] SELF-TEST FAIL: Subprocess expected to exit with 1, but exited with ${exitCode}`);
-      console.error('[runner] Subprocess stdout:\n', stdout);
-      console.error('[runner] Subprocess stderr:\n', stderr);
+    const sentinelMatch = stage1.stdout.match(/__MUTATION_SENTINEL__:(.*)/);
+    let sentinel = null;
+    if (sentinelMatch) {
+      try { sentinel = JSON.parse(sentinelMatch[1]); } catch (_) {}
+    }
+
+    const stage1Passed =
+      stage1.exitCode === 1 &&
+      sentinel !== null &&
+      sentinel.sentinel === 'MUTATION_ASSERTION_FAILED' &&
+      sentinel.test === 'intentional-failure-missing-card' &&
+      Array.isArray(sentinel.failureReasons) &&
+      sentinel.failureReasons.some(r => r.includes('Missing expected cards')) &&
+      !stage1.stderr.includes('Fatal error');
+
+    if (!stage1Passed) {
+      console.error('[runner] SELF-TEST FAIL: Stage 1 did not produce expected mutation sentinel or failed with fatal error!');
+      console.error('Child stdout:\n', stage1.stdout);
+      console.error('Child stderr:\n', stage1.stderr);
       process.exit(2);
     }
+    console.log('[runner] Stage 1 PASS: Intentional mutation accurately emitted MUTATION_ASSERTION_FAILED sentinel with expected failure reason.');
+
+    // Stage 2: Infrastructure crash discrimination test (verifies that an infrastructure crash is NOT accepted as a passing assertion test)
+    console.log('\n[runner] Self-test Stage 2: Verifying infrastructure crash discrimination (bad TARGET_URL)...');
+    const stage2 = await runChild(['--mutate-failure'], { TARGET_URL: 'http://127.0.0.1:59999' });
+    console.log(`[runner] Stage 2 child exited with code: ${stage2.exitCode}`);
+
+    const stage2HasSentinel = stage2.stdout.includes('__MUTATION_SENTINEL__');
+    const stage2Discriminated = !stage2HasSentinel;
+
+    if (!stage2Discriminated) {
+      console.error('[runner] SELF-TEST FAIL: Stage 2 incorrectly emitted assertion sentinel under infrastructure failure!');
+      process.exit(2);
+    }
+    console.log('[runner] Stage 2 PASS: Infrastructure crash correctly rejected (no MUTATION_ASSERTION_FAILED sentinel emitted).');
+
+    console.log('\n[runner] ALL SELF-TEST STAGES PASSED (1: Assertion failure verified via sentinel; 2: Infrastructure crash discriminated).');
+    process.exit(0);
   }
 
   const activePlan = isMutation ? selfTestMutationPlan : standardTestPlan;
@@ -506,6 +563,34 @@ async function main() {
     const resultsPath = path.join(ARTIFACTS_DIR, 'fixtures', 'capture-results.json');
     fs.writeFileSync(resultsPath, JSON.stringify(results, null, 2));
     console.log(`[runner] Saved results to ${resultsPath}`);
+
+    // Request logs audit guard: verify non-empty trace and required test queries
+    const requestLogsPath = path.join(ARTIFACTS_DIR, 'fixtures', 'request-logs.json');
+    if (!fs.existsSync(requestLogsPath)) {
+      console.error(`[runner] RUNNER FAILED: request-logs.json not found at ${requestLogsPath}`);
+      process.exit(1);
+    }
+    let requestLogs = [];
+    try {
+      requestLogs = JSON.parse(fs.readFileSync(requestLogsPath, 'utf8'));
+    } catch (err) {
+      console.error(`[runner] RUNNER FAILED: Cannot parse request-logs.json:`, err);
+      process.exit(1);
+    }
+    if (!Array.isArray(requestLogs) || requestLogs.length === 0) {
+      console.error(`[runner] RUNNER FAILED: request-logs.json is empty (length: ${requestLogs.length})`);
+      process.exit(1);
+    }
+
+    const hasPositiveSearch = requestLogs.some(r => (r.url || '').includes('Inception') || (r.pathname || '').includes('search'));
+    const hasNegativeSearch = requestLogs.some(r => (r.url || '').includes('NonExistentQuery'));
+    const hasUnauthorizedQuery = requestLogs.some(r => r.statusCode === 401 || (r.fixtureReturned && r.fixtureReturned.includes('401')));
+
+    if (!hasPositiveSearch || !hasNegativeSearch || !hasUnauthorizedQuery) {
+      console.error(`[runner] RUNNER FAILED: request-logs.json missing required test cases (positive=${hasPositiveSearch}, negative=${hasNegativeSearch}, unauth401=${hasUnauthorizedQuery})`);
+      process.exit(1);
+    }
+    console.log(`[runner] REQUEST LOGS GUARD PASS: Verified ${requestLogs.length} intercepted calls (positive, negative, and 401 cases confirmed).`);
   }
 
   // Hard exit code enforcement: fail if ANY assertion failed
@@ -514,6 +599,16 @@ async function main() {
     const failed = results.filter(r => !r.pass).map(r => `${r.test}: ${r.failureReasons.join('; ')}`);
     console.error(`\n[runner] RUNNER FAILED WITH NONZERO EXIT (${isMutation ? 'INTENTIONAL MUTATION TEST' : 'REAL ASSERTION FAILURE'}). Failed assertions:`);
     failed.forEach(f => console.error(` - ${f}`));
+
+    if (isMutation) {
+      const sentinelPayload = {
+        sentinel: 'MUTATION_ASSERTION_FAILED',
+        test: results[0]?.test,
+        failureReasons: results[0]?.failureReasons || []
+      };
+      console.log('\n__MUTATION_SENTINEL__:' + JSON.stringify(sentinelPayload));
+    }
+
     process.exit(1);
   }
 

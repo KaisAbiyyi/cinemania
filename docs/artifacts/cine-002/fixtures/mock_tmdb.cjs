@@ -8,8 +8,27 @@
 
 const https = require('https');
 const { PassThrough } = require('stream');
+const fs = require('fs');
+const path = require('path');
+const logPath = path.resolve(__dirname, 'request-logs.json');
 
 const requestLog = [];
+
+function recordRequest(entry) {
+  requestLog.push(entry);
+  try {
+    let existing = [];
+    if (fs.existsSync(logPath)) {
+      try {
+        const content = fs.readFileSync(logPath, 'utf8');
+        existing = JSON.parse(content);
+        if (!Array.isArray(existing)) existing = [];
+      } catch (_) {}
+    }
+    existing.push(entry);
+    fs.writeFileSync(logPath, JSON.stringify(existing, null, 2));
+  } catch (_) {}
+}
 
 const fixtures = {
   genres: {
@@ -278,11 +297,16 @@ https.request = function(...args) {
     const bodyObj = isError ? fixtureResult.errorBody : fixtureResult;
     const bodyStr = JSON.stringify(bodyObj);
 
-    requestLog.push({
+    const sanitizedUrl = new URL(urlObj.href);
+    if (sanitizedUrl.searchParams.has('api_key')) {
+      sanitizedUrl.searchParams.set('api_key', '[REDACTED]');
+    }
+
+    recordRequest({
       timestamp: new Date().toISOString(),
-      url: urlObj.href,
-      pathname: urlObj.pathname,
-      query: urlObj.search,
+      url: sanitizedUrl.href,
+      pathname: sanitizedUrl.pathname,
+      query: sanitizedUrl.search,
       statusCode,
       fixtureReturned: isError ? 'error_401' :
                        fixtureResult === fixtures.tvList ? 'tvList' :
@@ -327,13 +351,29 @@ https.get = function(...args) {
   return req;
 };
 
-// Periodic or exit export of logs
+// Safe exit hook: NEVER overwrite non-empty logs with an empty array
 process.on('exit', () => {
+  if (requestLog.length === 0) return;
   try {
-    const fs = require('fs');
-    const path = require('path');
-    const logPath = path.resolve(__dirname, 'request-logs.json');
-    fs.writeFileSync(logPath, JSON.stringify(requestLog, null, 2));
+    let existing = [];
+    if (fs.existsSync(logPath)) {
+      try {
+        const content = fs.readFileSync(logPath, 'utf8');
+        existing = JSON.parse(content);
+        if (!Array.isArray(existing)) existing = [];
+      } catch (_) {}
+    }
+    const existingTimes = new Set(existing.map(e => e.timestamp + e.url));
+    let added = false;
+    for (const r of requestLog) {
+      if (!existingTimes.has(r.timestamp + r.url)) {
+        existing.push(r);
+        added = true;
+      }
+    }
+    if (added || existing.length > 0) {
+      fs.writeFileSync(logPath, JSON.stringify(existing, null, 2));
+    }
   } catch (_) {}
 });
 
