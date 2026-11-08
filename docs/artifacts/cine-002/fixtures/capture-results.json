@@ -1,0 +1,194 @@
+[
+  {
+    "test": "root",
+    "path": "/",
+    "outputFilename": "screenshot-root.png",
+    "bytes": 850261,
+    "dimensions": "1440x900",
+    "pageState": {
+      "title": "Cinemania - Explore Movies & TV Shows",
+      "headings": [
+        "DAILY TRENDING",
+        "Fight Club",
+        "Popular Movies",
+        "Fight Club",
+        "Interstellar",
+        "The Dark Knight",
+        "Inception",
+        "Popular TV Series"
+      ],
+      "cardsFound": [
+        "Fight Club",
+        "Interstellar",
+        "The Dark Knight",
+        "Inception",
+        "Game of Thrones",
+        "Breaking Bad",
+        "Stranger Things",
+        "Arcane"
+      ],
+      "totalImages": 20,
+      "loadedImages": 20,
+      "brokenImages": 0,
+      "hasAlert": false,
+      "alertText": null
+    },
+    "pass": true
+  },
+  {
+    "test": "movie",
+    "path": "/movie",
+    "outputFilename": "screenshot-movie.png",
+    "bytes": 888772,
+    "dimensions": "1440x900",
+    "pageState": {
+      "title": "Movies | Cinemania",
+      "headings": [
+        "Movies",
+        "Filter",
+        "Fight Club",
+        "Interstellar",
+        "The Dark Knight",
+        "Inception",
+        "Fight Club",
+        "Interstellar"
+      ],
+      "cardsFound": [
+        "Fight Club",
+        "Interstellar",
+        "The Dark Knight",
+        "Inception"
+      ],
+      "totalImages": 12,
+      "loadedImages": 12,
+      "brokenImages": 0,
+      "hasAlert": false,
+      "alertText": null
+    },
+    "pass": true
+  },
+  {
+    "test": "tv",
+    "path": "/tv",
+    "outputFilename": "screenshot-tv.png",
+    "bytes": 889700,
+    "dimensions": "1440x900",
+    "pageState": {
+      "title": "TV Shows | Cinemania",
+      "headings": [
+        "TV Shows",
+        "Filter",
+        "Game of Thrones",
+        "Breaking Bad",
+        "Stranger Things",
+        "Arcane",
+        "Game of Thrones",
+        "Breaking Bad"
+      ],
+      "cardsFound": [
+        "Game of Thrones",
+        "Breaking Bad",
+        "Stranger Things",
+        "Arcane"
+      ],
+      "totalImages": 12,
+      "loadedImages": 12,
+      "brokenImages": 0,
+      "hasAlert": false,
+      "alertText": null
+    },
+    "pass": true
+  },
+  {
+    "test": "trending",
+    "path": "/trending",
+    "outputFilename": "screenshot-trending.png",
+    "bytes": 574505,
+    "dimensions": "1440x900",
+    "pageState": {
+      "title": "Trending Movies & TV Shows | Cinemania",
+      "headings": [
+        "Trending Movies & TV Shows",
+        "Fight Club",
+        "Interstellar",
+        "Game of Thrones",
+        "Breaking Bad"
+      ],
+      "cardsFound": [
+        "Fight Club",
+        "Interstellar",
+        "Game of Thrones",
+        "Breaking Bad"
+      ],
+      "totalImages": 4,
+      "loadedImages": 4,
+      "brokenImages": 0,
+      "hasAlert": false,
+      "alertText": null
+    },
+    "pass": true
+  },
+  {
+    "test": "search",
+    "path": "/search?q=Inception",
+    "outputFilename": "screenshot-search.png",
+    "bytes": 338328,
+    "dimensions": "1440x900",
+    "pageState": {
+      "title": "Inception | Cinemania",
+      "headings": [
+        "Search Results for: Inception",
+        "Inception"
+      ],
+      "cardsFound": [
+        "Inception"
+      ],
+      "totalImages": 1,
+      "loadedImages": 1,
+      "brokenImages": 0,
+      "hasAlert": false,
+      "alertText": null
+    },
+    "pass": true
+  },
+  {
+    "test": "search-negative",
+    "path": "/search?q=NonExistentQuery",
+    "outputFilename": "screenshot-search-negative.png",
+    "bytes": 226350,
+    "dimensions": "1440x900",
+    "pageState": {
+      "title": "NonExistentQuery | Cinemania",
+      "headings": [
+        "Search Results for: NonExistentQuery"
+      ],
+      "cardsFound": [],
+      "totalImages": 0,
+      "loadedImages": 0,
+      "brokenImages": 0,
+      "hasAlert": false,
+      "alertText": null
+    },
+    "pass": true
+  },
+  {
+    "test": "search-diagnostic-empty",
+    "path": "/search?q=unauthorized_query",
+    "outputFilename": "screenshot-search-diagnostic-empty.png",
+    "bytes": 228874,
+    "dimensions": "1440x900",
+    "pageState": {
+      "title": "unauthorized_query | Cinemania",
+      "headings": [
+        "Search Results for: unauthorized_query"
+      ],
+      "cardsFound": [],
+      "totalImages": 0,
+      "loadedImages": 0,
+      "brokenImages": 0,
+      "hasAlert": true,
+      "alertText": "Failed to load search results. Please try again later."
+    },
+    "pass": true
+  }
+]
