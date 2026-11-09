@@ -16,7 +16,8 @@
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
     "test:e2e": "playwright test",
-    "test:mutation": "vitest run tests/unit/mutation.test.ts"
+    "test:mutation": "vitest run tests/unit/mutation.test.ts",
+    "test:bundle-secrets": "vitest run tests/integration/bundle-secret-scan.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.7",

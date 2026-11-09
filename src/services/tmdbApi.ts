@@ -54,15 +54,21 @@ export function isTmdbError(error: unknown): error is TmdbApiError {
 }
 
 /**
- * Validates that any request URL targets the allowlisted upstream TMDB host and uses HTTPS.
+ * Validates that any request URL targets the allowlisted upstream TMDB host,
+ * enforces HTTPS protocol, and rejects protocol-relative or SSRF override vectors.
  */
 export function validateUpstreamUrl(url?: string, baseURL?: string): void {
   if (!url) return;
 
-  // Check if URL specifies scheme/host (e.g., https://, http://, ftp://, //)
-  if (/^([a-zA-Z][a-zA-Z0-9+.-]*:)?\/\//i.test(url)) {
+  // Disallow protocol-relative URLs (e.g. //evil.com or //api.themoviedb.org)
+  if (url.startsWith("//")) {
+    throw new TmdbHostValidationError("Protocol-relative URLs are not permitted.");
+  }
+
+  // If full URL with scheme (e.g. https://..., http://..., ftp://...)
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//i.test(url)) {
     try {
-      const parsed = new URL(url, TMDB_BASE_URL);
+      const parsed = new URL(url);
       if (parsed.protocol !== "https:") {
         throw new TmdbHostValidationError(
           `Insecure protocol "${parsed.protocol}" rejected. Only HTTPS is allowed.`
@@ -78,16 +84,17 @@ export function validateUpstreamUrl(url?: string, baseURL?: string): void {
       throw new TmdbHostValidationError(`Invalid upstream URL: ${url}`);
     }
   } else if (baseURL) {
+    // Relative URL with baseURL: validate that resolved target stays strictly on allowlisted host
     try {
-      const parsed = new URL(baseURL);
-      if (parsed.protocol !== "https:") {
+      const resolved = new URL(url, baseURL);
+      if (resolved.protocol !== "https:") {
         throw new TmdbHostValidationError(
-          `Insecure baseURL protocol "${parsed.protocol}" rejected. Only HTTPS is allowed.`
+          `Resolved protocol "${resolved.protocol}" rejected. Only HTTPS is allowed.`
         );
       }
-      if (!ALLOWED_TMDB_HOSTS.has(parsed.hostname.toLowerCase())) {
+      if (!ALLOWED_TMDB_HOSTS.has(resolved.hostname.toLowerCase())) {
         throw new TmdbHostValidationError(
-          `Base URL host "${parsed.hostname}" rejected. Allowed hosts: ${Array.from(ALLOWED_TMDB_HOSTS).join(", ")}`
+          `Resolved upstream host "${resolved.hostname}" rejected. Allowed hosts: ${Array.from(ALLOWED_TMDB_HOSTS).join(", ")}`
         );
       }
     } catch (e) {
@@ -113,6 +120,11 @@ export function sanitizeAndMapError(error: unknown): Error {
     }
 
     const status = error.response?.status;
+
+    // Handle redirected response when redirects are blocked
+    if (status && (status === 301 || status === 302 || status === 307 || status === 308)) {
+      return new TmdbApiError(status, "TMDB_REDIRECT_BLOCKED", "Upstream HTTP redirect was blocked by security policy");
+    }
 
     if (error.code === "ECONNABORTED" || (typeof error.message === "string" && error.message.includes("timeout"))) {
       return new TmdbApiError(504, "TMDB_TIMEOUT", "Upstream TMDB request timed out");
@@ -151,34 +163,49 @@ const tmdbApi: AxiosInstance = axios.create({
     Accept: "application/json",
   },
   timeout: 10000, // 10 detik timeout
+  maxRedirects: 0, // Disallow automatic redirects to enforce final destination validation
 });
 
-// Dynamic Authorization getter on defaults for backward compatibility and test inspectability
+// Read-only Authorization getter for backwards compatibility with test inspection.
+// Does NOT permit mutation of process.env.TMDB_API_RAT through defaults header assignment.
 Object.defineProperty(tmdbApi.defaults.headers, "Authorization", {
   get() {
     const token = process.env.TMDB_API_RAT?.trim();
     return token ? `Bearer ${token}` : undefined;
   },
-  set(val: string | undefined) {
-    if (val && val.startsWith("Bearer ")) {
-      process.env.TMDB_API_RAT = val.replace("Bearer ", "").trim();
-    }
+  set() {
+    // Deliberately no-op: server credentials cannot be mutated through Axios defaults
   },
   enumerable: true,
   configurable: true,
 });
 
-// Request interceptor: dynamic token resolution, missing token guard, and upstream host validation
+// Request interceptor: authoritative server token resolution, missing token guard,
+// baseURL pinning, and upstream host validation.
 tmdbApi.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = process.env.TMDB_API_RAT?.trim();
   if (!token) {
     throw new TmdbConfigurationError("TMDB_API_RAT is missing or empty. Server request aborted.");
   }
 
+  // Force baseURL to official TMDB_BASE_URL; reject any attempted override
+  if (config.baseURL && config.baseURL !== TMDB_BASE_URL) {
+    throw new TmdbHostValidationError(
+      `baseURL override rejected: "${config.baseURL}". Only ${TMDB_BASE_URL} is allowed.`
+    );
+  }
+  config.baseURL = TMDB_BASE_URL;
+
+  // Validate the request URL
   validateUpstreamUrl(config.url, config.baseURL);
 
+  // Pin maxRedirects: 0 on every request config
+  config.maxRedirects = 0;
+
+  // Authoritatively set Authorization header from process.env; caller writes cannot replace it
   config.headers = config.headers || {};
   config.headers.Authorization = `Bearer ${token}`;
+
   return config;
 });
 

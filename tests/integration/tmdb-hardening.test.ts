@@ -6,8 +6,6 @@ import tmdbApi, {
 } from "@/services/tmdbApi";
 import { AxiosError, type InternalAxiosRequestConfig } from "axios";
 import nextConfig from "../../next.config";
-import fs from "fs";
-import path from "path";
 
 describe("CINE-006: TMDB integration hardening & security verification", () => {
   const originalEnv = process.env.TMDB_API_RAT;
@@ -70,6 +68,76 @@ describe("CINE-006: TMDB integration hardening & security verification", () => {
       }
     });
 
+    it("safely handles upstream 429 Rate Limit with sanitized stable error shape", async () => {
+      const originalAdapter = tmdbApi.defaults.adapter;
+
+      tmdbApi.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+        const error = new AxiosError(
+          "Request failed with status code 429",
+          "ERR_BAD_REQUEST",
+          config,
+          {},
+          {
+            status: 429,
+            statusText: "Too Many Requests",
+            data: { status_message: "Rate limit reached" },
+            headers: {},
+            config,
+          } as never
+        );
+        throw error;
+      };
+
+      try {
+        await tmdbApi.get("/movie/top_rated");
+        expect.unreachable("Should have thrown 429");
+      } catch (err) {
+        expect(isTmdbError(err)).toBe(true);
+        if (isTmdbError(err)) {
+          expect(err.status).toBe(429);
+          expect(err.code).toBe("TMDB_RATE_LIMIT");
+          expect(err.message).toContain("rate limit exceeded");
+        }
+      } finally {
+        tmdbApi.defaults.adapter = originalAdapter;
+      }
+    });
+
+    it("safely handles upstream 503 Service Unavailable with sanitized stable error shape", async () => {
+      const originalAdapter = tmdbApi.defaults.adapter;
+
+      tmdbApi.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+        const error = new AxiosError(
+          "Request failed with status code 503",
+          "ERR_BAD_RESPONSE",
+          config,
+          {},
+          {
+            status: 503,
+            statusText: "Service Unavailable",
+            data: {},
+            headers: {},
+            config,
+          } as never
+        );
+        throw error;
+      };
+
+      try {
+        await tmdbApi.get("/movie/popular");
+        expect.unreachable("Should have thrown 503");
+      } catch (err) {
+        expect(isTmdbError(err)).toBe(true);
+        if (isTmdbError(err)) {
+          expect(err.status).toBe(503);
+          expect(err.code).toBe("TMDB_UPSTREAM_ERROR");
+          expect(err.message).toContain("HTTP 503");
+        }
+      } finally {
+        tmdbApi.defaults.adapter = originalAdapter;
+      }
+    });
+
     it("fails safely and immediately when TMDB_API_RAT is unset", async () => {
       delete process.env.TMDB_API_RAT;
 
@@ -79,13 +147,51 @@ describe("CINE-006: TMDB integration hardening & security verification", () => {
       );
     });
 
-    it("rejects SSRF attempts with non-allowlisted target URLs", async () => {
+    it("rejects SSRF attempts with non-allowlisted target URLs and protocol-relative paths", async () => {
       await expect(tmdbApi.get("https://evil-server.attacker.com/steal")).rejects.toThrow(
         TmdbHostValidationError
       );
       await expect(tmdbApi.get("http://localhost:8080/internal")).rejects.toThrow(
         TmdbHostValidationError
       );
+      await expect(tmdbApi.get("//malicious.com/api")).rejects.toThrow(
+        TmdbHostValidationError
+      );
+    });
+
+    it("blocks and rejects HTTP 301/302 redirects with maxRedirects: 0", async () => {
+      const originalAdapter = tmdbApi.defaults.adapter;
+
+      tmdbApi.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+        const error = new AxiosError(
+          "Max redirects exceeded",
+          "ERR_BAD_RESPONSE",
+          config,
+          {},
+          {
+            status: 301,
+            statusText: "Moved Permanently",
+            headers: { location: "https://evil.com/redirect" },
+            data: {},
+            config,
+          } as never
+        );
+        throw error;
+      };
+
+      try {
+        await tmdbApi.get("/movie/550");
+        expect.unreachable("Should have thrown redirect error");
+      } catch (err) {
+        expect(isTmdbError(err)).toBe(true);
+        if (isTmdbError(err)) {
+          expect(err.status).toBe(301);
+          expect(err.code).toBe("TMDB_REDIRECT_BLOCKED");
+          expect(err.message).toContain("redirect was blocked");
+        }
+      } finally {
+        tmdbApi.defaults.adapter = originalAdapter;
+      }
     });
   });
 
@@ -102,49 +208,6 @@ describe("CINE-006: TMDB integration hardening & security verification", () => {
       expect(tmdbPattern?.protocol).toBe("https");
       expect(tmdbPattern?.hostname).toBe("image.tmdb.org");
       expect(tmdbPattern?.pathname).toBe("/t/p/**");
-    });
-  });
-
-  describe("Client Bundle Secret Leak Prevention", () => {
-    it("verifies static client bundles do not contain TMDB_API_RAT or private secrets", () => {
-      const staticDir = path.join(process.cwd(), ".next", "static");
-
-      if (!fs.existsSync(staticDir)) {
-        // Build artifact not generated yet, skip gracefully or note
-        return;
-      }
-
-      function scanDir(dir: string): string[] {
-        let files: string[] = [];
-        for (const item of fs.readdirSync(dir)) {
-          const fullPath = path.join(dir, item);
-          if (fs.statSync(fullPath).isDirectory()) {
-            files = files.concat(scanDir(fullPath));
-          } else if (item.endsWith(".js")) {
-            files.push(fullPath);
-          }
-        }
-        return files;
-      }
-
-      const clientJsFiles = scanDir(staticDir);
-      expect(clientJsFiles.length).toBeGreaterThan(0);
-
-      // Search all client JS chunks for secret identifiers
-      const forbiddenTokens = [
-        "TMDB_API_RAT",
-        "mock-tmdb-offline-rat-token",
-        "mock-secret-token-12345",
-      ];
-
-      for (const filePath of clientJsFiles) {
-        const content = fs.readFileSync(filePath, "utf-8");
-        for (const token of forbiddenTokens) {
-          // Token must never appear as an exposed value in client bundles
-          expect(content).not.toContain(`"${token}"`);
-          expect(content).not.toContain(`'${token}'`);
-        }
-      }
     });
   });
 });

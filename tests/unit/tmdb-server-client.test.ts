@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import tmdbApi, {
   TMDB_BASE_URL,
   ALLOWED_TMDB_HOSTS,
@@ -20,12 +20,14 @@ describe("CINE-006: TMDB server-only client and credentials hardening unit tests
 
   afterEach(() => {
     process.env.TMDB_API_RAT = originalEnv;
+    vi.restoreAllMocks();
   });
 
   describe("Configuration & Environment", () => {
-    it("has the strict base URL and timeout defaults", () => {
+    it("has the strict base URL, timeout, and maxRedirects defaults", () => {
       expect(tmdbApi.defaults.baseURL).toBe("https://api.themoviedb.org/3");
       expect(tmdbApi.defaults.timeout).toBe(10000);
+      expect(tmdbApi.defaults.maxRedirects).toBe(0);
       expect(tmdbApi.defaults.headers.Accept).toBe("application/json");
       expect(ALLOWED_TMDB_HOSTS.has("api.themoviedb.org")).toBe(true);
       expect(ALLOWED_TMDB_HOSTS.size).toBe(1);
@@ -34,13 +36,11 @@ describe("CINE-006: TMDB server-only client and credentials hardening unit tests
     it("throws TmdbConfigurationError if TMDB_API_RAT is missing or empty", async () => {
       delete process.env.TMDB_API_RAT;
 
-      // Create a test Axios instance or test interceptor logic
       const config: InternalAxiosRequestConfig = {
         headers: {} as never,
         url: "/movie/popular",
       } as InternalAxiosRequestConfig;
 
-      // Execute request interceptors or invoke helper
       const requestHandlers = (tmdbApi.interceptors.request as unknown as {
         handlers: Array<{ fulfilled: (c: InternalAxiosRequestConfig) => InternalAxiosRequestConfig }>;
       }).handlers;
@@ -69,9 +69,39 @@ describe("CINE-006: TMDB server-only client and credentials hardening unit tests
 
       expect(updatedConfig.headers.Authorization).toBe("Bearer valid-test-token-xyz");
     });
+
+    it("does not mutate process.env.TMDB_API_RAT through defaults setter", () => {
+      const original = process.env.TMDB_API_RAT;
+      // Attempt to mutate through defaults header setter
+      (tmdbApi.defaults.headers as Record<string, unknown>).Authorization = "Bearer malicious-token-override";
+      expect(process.env.TMDB_API_RAT).toBe(original);
+      expect(tmdbApi.defaults.headers.Authorization).toBe(`Bearer ${original}`);
+    });
+
+    it("authoritatively overwrites caller-supplied Authorization headers in request options", () => {
+      process.env.TMDB_API_RAT = "server-authoritative-token";
+
+      const config: InternalAxiosRequestConfig = {
+        headers: {
+          Authorization: "Bearer caller-spoofed-token",
+        } as never,
+        url: "/movie/now_playing",
+      } as InternalAxiosRequestConfig;
+
+      const requestHandlers = (tmdbApi.interceptors.request as unknown as {
+        handlers: Array<{ fulfilled: (c: InternalAxiosRequestConfig) => InternalAxiosRequestConfig }>;
+      }).handlers;
+
+      const interceptor = requestHandlers[0].fulfilled;
+      const updatedConfig = interceptor(config);
+
+      // Caller spoofed token must be replaced by authoritative server token
+      expect(updatedConfig.headers.Authorization).toBe("Bearer server-authoritative-token");
+      expect(updatedConfig.headers.Authorization).not.toBe("Bearer caller-spoofed-token");
+    });
   });
 
-  describe("Host allowlisting and URL validation", () => {
+  describe("Host allowlisting, URL validation, and Destination Pinning", () => {
     it("allows relative endpoint paths", () => {
       expect(() => validateUpstreamUrl("/genre/movie/list", TMDB_BASE_URL)).not.toThrow();
       expect(() => validateUpstreamUrl("/movie/550", TMDB_BASE_URL)).not.toThrow();
@@ -80,6 +110,11 @@ describe("CINE-006: TMDB server-only client and credentials hardening unit tests
 
     it("allows absolute URLs that match api.themoviedb.org", () => {
       expect(() => validateUpstreamUrl("https://api.themoviedb.org/3/movie/top_rated")).not.toThrow();
+    });
+
+    it("strictly rejects protocol-relative URLs", () => {
+      expect(() => validateUpstreamUrl("//evil.com/steal")).toThrow(TmdbHostValidationError);
+      expect(() => validateUpstreamUrl("//api.themoviedb.org/movie")).toThrow(TmdbHostValidationError);
     });
 
     it("strictly rejects arbitrary upstream URLs", () => {
@@ -93,6 +128,22 @@ describe("CINE-006: TMDB server-only client and credentials hardening unit tests
       expect(() => validateUpstreamUrl("/movie/popular", "https://unauthorized-domain.com")).toThrow(
         TmdbHostValidationError
       );
+    });
+
+    it("rejects caller attempts to override baseURL in request config", () => {
+      const config: InternalAxiosRequestConfig = {
+        headers: {} as never,
+        url: "/movie/popular",
+        baseURL: "https://attacker.org/override",
+      } as InternalAxiosRequestConfig;
+
+      const requestHandlers = (tmdbApi.interceptors.request as unknown as {
+        handlers: Array<{ fulfilled: (c: InternalAxiosRequestConfig) => InternalAxiosRequestConfig }>;
+      }).handlers;
+
+      const interceptor = requestHandlers[0].fulfilled;
+      expect(() => interceptor(config)).toThrow(TmdbHostValidationError);
+      expect(() => interceptor(config)).toThrow("baseURL override rejected");
     });
   });
 
@@ -170,6 +221,7 @@ describe("CINE-006: TMDB server-only client and credentials hardening unit tests
 
         const mapped = sanitizeAndMapError(axiosError);
 
+        expect(mapped).toBeInstanceOf(TmdbApiError);
         expect(isTmdbError(mapped)).toBe(true);
         if (isTmdbError(mapped)) {
           expect(mapped.status).toBe(status);
@@ -212,11 +264,70 @@ describe("CINE-006: TMDB server-only client and credentials hardening unit tests
 
       const mapped = sanitizeAndMapError(axiosError);
 
-      expect(mapped).toBeInstanceOf(TmdbApiError);
       expect(isTmdbError(mapped)).toBe(true);
       if (isTmdbError(mapped)) {
         expect(mapped.status).toBe(502);
         expect(mapped.code).toBe("TMDB_NETWORK_ERROR");
+      }
+    });
+
+    it("maps blocked HTTP 301/302 redirects to TMDB_REDIRECT_BLOCKED", () => {
+      const axiosError = new AxiosError(
+        "Max redirects exceeded",
+        "ERR_BAD_RESPONSE",
+        {} as InternalAxiosRequestConfig,
+        {},
+        {
+          status: 301,
+          statusText: "Moved Permanently",
+          headers: { location: "https://evil.com/redirect" },
+          data: {},
+        } as unknown as AxiosResponse
+      );
+
+      const mapped = sanitizeAndMapError(axiosError);
+
+      expect(mapped).toBeInstanceOf(TmdbApiError);
+      if (isTmdbError(mapped)) {
+        expect(mapped.status).toBe(301);
+        expect(mapped.code).toBe("TMDB_REDIRECT_BLOCKED");
+        expect(mapped.message).toContain("redirect was blocked");
+      }
+    });
+  });
+
+  describe("Mocked Axios Adapter Outgoing Dispatch Verification", () => {
+    it("asserts actual outgoing dispatch carries Bearer token and maxRedirects: 0", async () => {
+      process.env.TMDB_API_RAT = "adapter-sentinel-test-token";
+
+      const originalAdapter = tmdbApi.defaults.adapter;
+      let capturedConfig: InternalAxiosRequestConfig | null = null;
+
+      tmdbApi.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+        capturedConfig = config;
+        return {
+          data: { success: true },
+          status: 200,
+          statusText: "OK",
+          headers: {},
+          config,
+        };
+      };
+
+      try {
+        await tmdbApi.get("/genre/movie/list", {
+          headers: {
+            Authorization: "Bearer attacker-spoof",
+          } as never,
+        });
+
+        expect(capturedConfig).not.toBeNull();
+        const finalConfig = capturedConfig as unknown as InternalAxiosRequestConfig;
+        expect(finalConfig.headers?.Authorization).toBe("Bearer adapter-sentinel-test-token");
+        expect(finalConfig.baseURL).toBe("https://api.themoviedb.org/3");
+        expect(finalConfig.maxRedirects).toBe(0);
+      } finally {
+        tmdbApi.defaults.adapter = originalAdapter;
       }
     });
   });
