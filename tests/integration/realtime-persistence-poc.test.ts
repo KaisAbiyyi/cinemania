@@ -9,20 +9,21 @@ import path from "node:path";
  * CINE-011: Architecture Decision Record Proof of Concept (POC)
  * 
  * Validates:
- * 1. Cryptographic capability token signing, signature tampering rejection, expiration, and participant roster authorization.
+ * 1. Cryptographic capability token signing, signature tampering rejection, expiration, and participant roster authorization (matching CINE-013 guest participantId design).
  * 2. Supabase Realtime Authorization topic policy simulation (realtime.topic() and room_participants membership).
  * 3. Multi-worker real relational database concurrency (Node 24 node:sqlite WAL mode across 2 isolated worker threads).
  * 4. Deterministic subscribe-first, version-reconciled reconnect protocol with zero-loss outbox recovery.
  * 5. Local model execution latency profiling.
  * 
  * Declared Environment: Local Node v24.21.0 on Windows 11.
- * Note: External cloud-hosted Supabase acceptance is explicitly marked BLOCKED pending infrastructure provisioning in CINE-012/CINE-018.
+ * Note: External multi-instance PostgreSQL row locking (SELECT ... FOR UPDATE) and live Supabase Realtime acceptance
+ * are explicitly marked BLOCKED & OUTSTANDING pending cloud infrastructure provisioning in CINE-012/CINE-018.
  */
 
 const TEST_JWT_SECRET = "cine-match-poc-hmac-sha256-test-secret-key-min-32-chars!";
 
 export interface RoomTokenClaims {
-  sub: string; // participantId
+  sub: string; // participantId (CINE-013 anonymous guest identity)
   room_id: string; // roomId
   role: "authenticated";
   iat: number;
@@ -523,6 +524,13 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
           state_version INT NOT NULL,
           matched_movie_id INT
         );
+        CREATE TABLE room_participants (
+          room_id TEXT NOT NULL,
+          participant_id TEXT NOT NULL,
+          role TEXT NOT NULL,
+          joined_at INT NOT NULL,
+          PRIMARY KEY (room_id, participant_id)
+        );
         CREATE TABLE votes (
           room_id TEXT NOT NULL,
           participant_id TEXT NOT NULL,
@@ -538,6 +546,8 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
           payload TEXT NOT NULL
         );
         INSERT INTO rooms VALUES ('room-WAL01', 'VOTING', 1, NULL);
+        INSERT INTO room_participants VALUES ('room-WAL01', 'user-alpha', 'HOST', 1000);
+        INSERT INTO room_participants VALUES ('room-WAL01', 'user-beta', 'MEMBER', 1001);
       `);
       db.close();
     });
@@ -562,6 +572,13 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
 
         const db = new DatabaseSync(dbPath);
         db.exec('PRAGMA busy_timeout = 5000;');
+
+        // Verify participant roster membership (CINE-013 guest design)
+        const member = db.prepare('SELECT 1 FROM room_participants WHERE room_id = ? AND participant_id = ?')
+          .get('room-WAL01', participantId);
+        if (!member) {
+          throw new Error('Participant not in room roster');
+        }
 
         // Begin transaction with immediate write lock
         db.exec('BEGIN IMMEDIATE');
@@ -631,6 +648,9 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       expect(finalRoom.matched_movie_id).toBe(550);
       expect(finalRoom.state_version).toBe(2);
 
+      const participants = verifyDb.prepare("SELECT * FROM room_participants WHERE room_id = ?").all("room-WAL01");
+      expect(participants.length).toBe(2);
+
       const votes = verifyDb.prepare("SELECT * FROM votes WHERE room_id = ?").all("room-WAL01");
       expect(votes.length).toBe(2);
 
@@ -653,43 +673,32 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       const room = workerA.createRoom("REC003", "host-user", [101, 102, 103]);
       workerB.joinRoom(room.id, "guest-user");
       workerA.startRound(room.id, "host-user");
-      // Current stateVersion: 1 (create) + 1 (join) + 1 (start) = 3
 
       const guestToken = createCryptographicRoomToken("guest-user", room.id);
 
-      // 1. Guest drops connection. Last known version by guest is 3.
       const lastKnownGuestVersion = 3;
 
-      // 2. While guest is disconnected, host casts two votes on Worker A:
-      // State versions increment to 4 and 5
       await workerA.submitVote(room.id, "host-user", 101, "SKIP"); // v4
       await workerA.submitVote(room.id, "host-user", 102, "LIKE"); // v5
 
-      // 3. Guest reconnects: SUBSCRIBE FIRST to buffer incoming live events
       const liveEventBuffer: OutboxEvent[] = [];
       workerB.subscribeToRoom(`room:${room.id}`, room.id, guestToken, (event) => {
         liveEventBuffer.push(event);
       });
 
-      // 4. While socket connection is open, another event occurs live:
       await workerA.submitVote(room.id, "host-user", 103, "SKIP"); // v6
       expect(liveEventBuffer.length).toBe(1);
       expect(liveEventBuffer[0].version).toBe(6);
 
-      // 5. Guest queries authoritative snapshot via HTTP
       const snapshot = workerB.getRoomSnapshot(room.id, guestToken);
       expect(snapshot.stateVersion).toBe(6);
 
-      // 6. Guest checks outbox catch-up for any missed events between lastKnownGuestVersion (3) and snapshot (6)
       const missedEvents = workerB.getEventsSince(room.id, guestToken, lastKnownGuestVersion);
       expect(missedEvents.map((e) => e.version)).toEqual([4, 5, 6]);
 
-      // 7. Client reconciles buffered events with snapshot:
-      // Discard any buffered events with version <= snapshot.stateVersion (v6 is deduplicated)
       const unappliedBuffered = liveEventBuffer.filter((e) => e.version > snapshot.stateVersion);
       expect(unappliedBuffered.length).toBe(0);
 
-      // Deterministic total recovered events sequence:
       const recoveredVersions = missedEvents.map((e) => e.version);
       expect(recoveredVersions).toEqual([4, 5, 6]);
       expect(snapshot.status).toBe("VOTING");
@@ -710,7 +719,6 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
         "DB_TRANSIENT_CONNECTION_ERROR"
       );
 
-      // State remains uncorrupted
       const snapshot = workerB.getRoomSnapshot(room.id, token1);
       expect(snapshot.status).toBe("VOTING");
       expect(snapshot.userVotes.length).toBe(0);

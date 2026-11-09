@@ -92,7 +92,7 @@ In serverless execution environments, compute functions are **stateless, ephemer
 ### 4.2 Room Access Isolation & Channel Authorization
 1. **Cryptographically Signed Realtime Capability Token:**
    - When a guest joins or re-authenticates, the server issues a signed, short-lived HMAC-SHA256 JWT scoped strictly to that room:
-     `{ sub: participantId, room_id: roomId, role: 'authenticated', iat: <timestamp>, exp: <timestamp> }`.
+     `{ sub: participant_id, room_id: room_id, role: 'authenticated', iat: <timestamp>, exp: <timestamp> }`.
 2. **Channel Authorization & Row-Level Security (Supabase Realtime Private Channels):**
    - Realtime channel topic is strictly formatted: `room:${room_id}`.
    - Channel connections require the capability JWT. Supabase Realtime Authorization evaluates Row-Level Security policies on `realtime.messages` using `realtime.topic()`:
@@ -105,11 +105,11 @@ In serverless execution environments, compute functions are **stateless, ephemer
      USING (
        -- Compare channel topic to authorized room ID claim in JWT
        realtime.topic() = ('room:' || (auth.jwt() ->> 'room_id'))
-       -- Authorize only registered participants in the room roster
+       -- Authorize only registered participants in the room roster (CINE-013 guest participant_id)
        AND EXISTS (
          SELECT 1 FROM room_participants
          WHERE room_id = (auth.jwt() ->> 'room_id')::uuid
-           AND user_id = (auth.jwt() ->> 'sub')::uuid
+           AND participant_id = (auth.jwt() ->> 'sub')::uuid
        )
      );
 
@@ -123,11 +123,28 @@ In serverless execution environments, compute functions are **stateless, ephemer
        AND EXISTS (
          SELECT 1 FROM room_participants
          WHERE room_id = (auth.jwt() ->> 'room_id')::uuid
-           AND user_id = (auth.jwt() ->> 'sub')::uuid
+           AND participant_id = (auth.jwt() ->> 'sub')::uuid
        )
      );
      ```
    - Non-members, expired tokens, tampered signatures, or attempts to subscribe to another room's channel topic are rejected with `403 Forbidden`.
+
+### 4.2.1 Anonymous Guest Identity & RLS Reconciliation (CINE-013 & CINE-018)
+In CineMatch, users participate as anonymous guests without registering email/password accounts or having rows in Supabase Auth's `auth.users` table:
+1. **Guest Identity Generation:** The server generates a cryptographic UUIDv4 `participant_id` for each guest, sealed in an `HttpOnly, Secure, SameSite=Lax` cookie (`cinematch_guest_token`).
+2. **Room Membership Table:** When a guest joins a room, a row is persisted in `room_participants (room_id, participant_id, role, joined_at)`.
+3. **Realtime Capability JWT Claims:** To connect to Supabase Realtime private channels, the server issues a scoped JWT signed with the project's Supabase JWT secret:
+   ```json
+   {
+     "sub": "<participant_id_uuid>",
+     "room_id": "<room_id_uuid>",
+     "role": "authenticated",
+     "iat": 1700000000,
+     "exp": 1700003600
+   }
+   ```
+4. **Channel Authorization Enforcement:** Supabase Realtime Authorization evaluates `realtime.topic()` against `room:${room_id}` and executes the RLS subquery against `room_participants` matching `participant_id = (auth.jwt() ->> 'sub')::uuid`. Non-members cannot subscribe or publish to the room's channel.
+5. **Outstanding Live Cloud Qualification Gate:** While this policy and token contract are simulated and validated locally in `tests/integration/realtime-persistence-poc.test.ts`, live configuration and end-to-end testing against a real Supabase project (private channels extension, live RLS evaluation, WebSocket token handshake) remain **BLOCKED and OUTSTANDING** until Supabase infrastructure is provisioned in CINE-012/CINE-018.
 
 ### 4.3 Subscribe-First & Version-Reconciled Reconnect Protocol
 To prevent the reconnect race condition (where events are lost between snapshot retrieval and socket connection):
@@ -172,6 +189,10 @@ sequenceDiagram
 - External managed service dependency (Supabase / PostgreSQL connection pooler).
 - Free tier limit of 200 concurrent Realtime connections provides capacity for ~40 simultaneous 5-player rooms during MVP. Growth beyond this threshold requires upgrading to paid usage tiers.
 
+### Concurrency Verification Scope & Cloud Deployment Caveat
+- **Relational Concurrency Model vs Production Cloud Behavior:** The local POC in `tests/integration/realtime-persistence-poc.test.ts` validates relational ACID transaction serialization, exclusive transaction locking (`BEGIN IMMEDIATE`), and single guarded transitions across isolated worker threads. However, SQLite file locking differs from PostgreSQL row-level locks (`SELECT ... FOR UPDATE`), and worker threads do not simulate multi-process serverless network latency, connection pooling (PgBouncer), or failover.
+- Therefore, the relational model serves as algorithmic and architectural proof of concept; full multi-instance PostgreSQL row-level locking and Supabase Realtime verification remain **OUTSTANDING** and must be qualified on live cloud infrastructure during CINE-012 (PostgreSQL schema & migrations) and CINE-018 (Realtime broadcaster).
+
 ---
 
 ## 6. Implementation Roadmap
@@ -184,9 +205,9 @@ sequenceDiagram
 
 ## 7. Verification & Acceptance Status
 
-- **Cryptographic Capability Token Signing & Tamper Verification:** Verified in `tests/integration/realtime-persistence-poc.test.ts`.
-- **Channel Access Isolation & Topic Authorization:** Verified via Supabase Realtime topic RLS specification.
+- **Cryptographic Capability Token Signing & Tamper Verification:** Verified in `tests/integration/realtime-persistence-poc.test.ts` (HMAC-SHA256, timingSafeEqual, expiration, roster membership).
+- **Channel Access Isolation & Topic Authorization:** Verified via local topic and roster simulation.
 - **Relational Multi-Worker Concurrency & ACID Isolation:** Verified via Node 24 `node:sqlite` WAL mode across two isolated worker threads.
 - **Subscribe-First Reconnect & Exact Monotonic Outbox Replay:** Verified with deterministic version recovery `[4, 5, 6]`.
 - **Local Latency Percentiles:** Verified with p50 < 25ms, p95 < 50ms, p99 < 75ms.
-- **External Cloud Infrastructure:** Explicitly marked **BLOCKED / NOT VERIFIED** pending external Supabase provisioning in CINE-012/CINE-018.
+- **External Multi-Instance PostgreSQL & Live Supabase Cloud Infrastructure:** Explicitly marked **OUTSTANDING & BLOCKED** pending cloud infrastructure provisioning in CINE-012/CINE-018.
