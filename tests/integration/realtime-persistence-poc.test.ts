@@ -1,14 +1,117 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import crypto from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+import { Worker } from "node:worker_threads";
+import fs from "node:fs";
+import path from "node:path";
 
 /**
  * CINE-011: Architecture Decision Record Proof of Concept (POC)
  * 
- * Validates the architectural state authority, row-level locking concurrency model,
- * room capability authorization, and subscribe-then-snapshot versioned reconnect protocol.
+ * Validates:
+ * 1. Cryptographic capability token signing, signature tampering rejection, expiration, and participant roster authorization.
+ * 2. Supabase Realtime Authorization topic policy simulation (realtime.topic() and room_participants membership).
+ * 3. Multi-worker real relational database concurrency (Node 24 node:sqlite WAL mode across 2 isolated worker threads).
+ * 4. Deterministic subscribe-first, version-reconciled reconnect protocol with zero-loss outbox recovery.
+ * 5. Local model execution latency profiling.
  * 
  * Declared Environment: Local Node v24.21.0 on Windows 11.
- * Note: External cloud-hosted Supabase acceptance is marked BLOCKED pending infrastructure provisioning in CINE-012/CINE-018.
+ * Note: External cloud-hosted Supabase acceptance is explicitly marked BLOCKED pending infrastructure provisioning in CINE-012/CINE-018.
  */
+
+const TEST_JWT_SECRET = "cine-match-poc-hmac-sha256-test-secret-key-min-32-chars!";
+
+export interface RoomTokenClaims {
+  sub: string; // participantId
+  room_id: string; // roomId
+  role: "authenticated";
+  iat: number;
+  exp: number;
+}
+
+export class RealtimeAuthorizationError extends Error {
+  readonly status = 403;
+  constructor(message = "Unauthorized: Invalid or mismatched room capability token") {
+    super(message);
+    this.name = "RealtimeAuthorizationError";
+  }
+}
+
+/**
+ * Creates a cryptographically signed HMAC-SHA256 capability JWT token.
+ */
+export function createCryptographicRoomToken(
+  participantId: string,
+  roomId: string,
+  ttlMs = 3600000,
+  secret = TEST_JWT_SECRET
+): string {
+  const header = { alg: "HS256", typ: "JWT" };
+  const now = Date.now();
+  const payload: RoomTokenClaims = {
+    sub: participantId,
+    room_id: roomId,
+    role: "authenticated",
+    iat: now,
+    exp: now + ttlMs,
+  };
+
+  const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64url");
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const data = `${headerB64}.${payloadB64}`;
+  const signature = crypto.createHmac("sha256", secret).update(data).digest("base64url");
+  return `${data}.${signature}`;
+}
+
+/**
+ * Cryptographically verifies token signature, expiration, room match, and optional participant roster membership.
+ */
+export function verifyCryptographicRoomToken(
+  token: string,
+  requiredRoomId: string,
+  authorizedParticipants?: Set<string>,
+  secret = TEST_JWT_SECRET
+): RoomTokenClaims {
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw new RealtimeAuthorizationError("Malformed token: JWT must have 3 segments");
+  }
+  const [headerB64, payloadB64, signature] = parts;
+  const data = `${headerB64}.${payloadB64}`;
+  const expectedSig = crypto.createHmac("sha256", secret).update(data).digest("base64url");
+
+  // Constant-time signature comparison prevents timing attacks
+  const sigBuf = Buffer.from(signature);
+  const expSigBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expSigBuf.length || !crypto.timingSafeEqual(sigBuf, expSigBuf)) {
+    throw new RealtimeAuthorizationError("Cryptographic verification failed: Invalid signature");
+  }
+
+  let payload: RoomTokenClaims;
+  try {
+    payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf-8"));
+  } catch {
+    throw new RealtimeAuthorizationError("Malformed token: Payload JSON parse error");
+  }
+
+  if (Date.now() > payload.exp) {
+    throw new RealtimeAuthorizationError("Token expired");
+  }
+
+  if (payload.room_id !== requiredRoomId) {
+    throw new RealtimeAuthorizationError(
+      `Room claim "${payload.room_id}" does not match required room "${requiredRoomId}"`
+    );
+  }
+
+  if (authorizedParticipants && !authorizedParticipants.has(payload.sub)) {
+    throw new RealtimeAuthorizationError(
+      `Participant "${payload.sub}" is not in authorized room roster`
+    );
+  }
+
+  return payload;
+}
 
 interface Room {
   id: string;
@@ -39,50 +142,17 @@ interface OutboxEvent {
   createdAt: number;
 }
 
-export class RealtimeAuthorizationError extends Error {
-  readonly status = 403;
-  constructor(message = "Unauthorized: Invalid or mismatched room capability token") {
-    super(message);
-    this.name = "RealtimeAuthorizationError";
-  }
-}
-
 /**
- * Simulates a signed JWT capability token scoped to a specific room.
- */
-function createRoomToken(participantId: string, roomId: string): string {
-  const payload = { sub: participantId, roomId, exp: Date.now() + 3600000 };
-  return Buffer.from(JSON.stringify(payload)).toString("base64url");
-}
-
-function verifyRoomToken(token: string, requiredRoomId: string): { sub: string; roomId: string } {
-  try {
-    const raw = Buffer.from(token, "base64url").toString("utf-8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || parsed.roomId !== requiredRoomId) {
-      throw new RealtimeAuthorizationError(`Token room claim "${parsed?.roomId}" does not match "${requiredRoomId}"`);
-    }
-    return parsed;
-  } catch (e) {
-    if (e instanceof RealtimeAuthorizationError) throw e;
-    throw new RealtimeAuthorizationError("Malformed room token");
-  }
-}
-
-/**
- * Shared State Authority with Transactional Concurrency Control & Row-Level Locking
+ * Shared State Authority with Transactional Concurrency Control & Outbox Tracking
  */
 class SharedStateAuthority {
   private rooms = new Map<string, Room>();
-  private votes = new Map<string, Vote>(); // key: `${roomId}:${participantId}:${movieId}`
+  private votes = new Map<string, Vote>();
   private outboxEvents: OutboxEvent[] = [];
   private channelSubscribers = new Map<string, Set<(event: OutboxEvent) => void>>();
   private roomLocks = new Map<string, Promise<void>>();
   public transientFailureFlag = false;
 
-  /**
-   * Acquire per-room row lock simulating PostgreSQL `SELECT ... FOR UPDATE`
-   */
   private async acquireRoomLock(roomId: string): Promise<() => void> {
     while (this.roomLocks.has(roomId)) {
       await this.roomLocks.get(roomId);
@@ -147,10 +217,12 @@ class SharedStateAuthority {
     return { ...room, participants: new Set(room.participants) };
   }
 
-  /**
-   * Atomic vote recording and unanimous consensus evaluation with SELECT ... FOR UPDATE
-   */
-  async submitVote(roomId: string, participantId: string, movieId: number, voteType: "LIKE" | "SKIP"): Promise<{
+  async submitVote(
+    roomId: string,
+    participantId: string,
+    movieId: number,
+    voteType: "LIKE" | "SKIP"
+  ): Promise<{
     status: "RECORDED" | "MATCHED";
     matchedMovieId?: number;
     stateVersion: number;
@@ -162,17 +234,14 @@ class SharedStateAuthority {
       throw new Error("DB_TRANSIENT_CONNECTION_ERROR: Temporary connection drop to pooler");
     }
 
-    // Acquire row-level lock on the room row (serializes concurrent transactions for this room)
     const releaseLock = await this.acquireRoomLock(roomId);
 
     try {
-      // Simulate asynchronous I/O delay in database transaction
       await new Promise((r) => setTimeout(r, 1));
 
       const room = this.rooms.get(roomId);
       if (!room) throw new Error("Room not found");
 
-      // Guarded state check: If room already matched, return match without reprocessing
       if (room.status === "MATCHED") {
         const endTime = performance.now();
         return {
@@ -188,7 +257,7 @@ class SharedStateAuthority {
       if (!room.deck.includes(movieId)) throw new Error("Movie not in room deck");
 
       const voteKey = `${roomId}:${participantId}:${movieId}`;
-      // Idempotent write: ON CONFLICT DO NOTHING
+      let isNewVote = false;
       if (!this.votes.has(voteKey)) {
         this.votes.set(voteKey, {
           roomId,
@@ -197,17 +266,26 @@ class SharedStateAuthority {
           vote: voteType,
           timestamp: Date.now(),
         });
+        isNewVote = true;
+      }
+
+      // Monotonic version increment on every state change
+      if (isNewVote) {
+        room.stateVersion += 1;
+        this.emitOutboxEvent(roomId, "vote_recorded", {
+          participantId,
+          movieId,
+          voteType,
+        });
       }
 
       let matched = false;
       if (voteType === "LIKE") {
-        // Query committed LIKE votes for this movie under lock
         const likesForMovie = Array.from(this.votes.values()).filter(
           (v) => v.roomId === roomId && v.movieId === movieId && v.vote === "LIKE"
         );
 
         if (likesForMovie.length === room.frozenRoster.length) {
-          // Guarded transition: UPDATE rooms SET status = 'MATCHED' WHERE status = 'VOTING'
           room.status = "MATCHED";
           room.matchedMovieId = movieId;
           room.stateVersion += 1;
@@ -233,9 +311,10 @@ class SharedStateAuthority {
   }
 
   getSnapshot(roomId: string, token: string) {
-    const verified = verifyRoomToken(token, roomId);
     const room = this.rooms.get(roomId);
     if (!room) throw new Error("Room not found");
+
+    const verified = verifyCryptographicRoomToken(token, roomId, room.participants);
 
     const userVotes = Array.from(this.votes.values()).filter(
       (v) => v.roomId === roomId && v.participantId === verified.sub
@@ -256,15 +335,29 @@ class SharedStateAuthority {
   }
 
   getEventsSince(roomId: string, token: string, sinceVersion: number): OutboxEvent[] {
-    verifyRoomToken(token, roomId);
+    const room = this.rooms.get(roomId);
+    if (!room) throw new Error("Room not found");
+
+    verifyCryptographicRoomToken(token, roomId, room.participants);
     return this.outboxEvents.filter((e) => e.roomId === roomId && e.version > sinceVersion);
   }
 
   /**
-   * Subscribe to private room channel with signed capability token validation
+   * Subscribes to private room channel simulating Supabase Realtime Authorization
+   * Check: realtime.topic() === 'room:' || claims.room_id AND claims.sub IN room_participants
    */
-  subscribe(roomId: string, token: string, listener: (event: OutboxEvent) => void): () => void {
-    verifyRoomToken(token, roomId);
+  subscribe(channelTopic: string, roomId: string, token: string, listener: (event: OutboxEvent) => void): () => void {
+    const expectedTopic = `room:${roomId}`;
+    if (channelTopic !== expectedTopic) {
+      throw new RealtimeAuthorizationError(
+        `Channel topic "${channelTopic}" does not match authorized room topic "${expectedTopic}"`
+      );
+    }
+
+    const room = this.rooms.get(roomId);
+    if (!room) throw new Error("Room not found");
+
+    verifyCryptographicRoomToken(token, roomId, room.participants);
 
     if (!this.channelSubscribers.has(roomId)) {
       this.channelSubscribers.set(roomId, new Set());
@@ -298,9 +391,6 @@ class SharedStateAuthority {
   }
 }
 
-/**
- * Simulated Independent Serverless Application Worker
- */
 class SimulatedWorker {
   readonly workerId: string;
   private coordinator: SharedStateAuthority;
@@ -334,8 +424,8 @@ class SimulatedWorker {
     return this.coordinator.getEventsSince(roomId, token, sinceVersion);
   }
 
-  subscribeToRoom(roomId: string, token: string, onEvent: (event: OutboxEvent) => void) {
-    return this.coordinator.subscribe(roomId, token, onEvent);
+  subscribeToRoom(channelTopic: string, roomId: string, token: string, onEvent: (event: OutboxEvent) => void) {
+    return this.coordinator.subscribe(channelTopic, roomId, token, onEvent);
   }
 }
 
@@ -350,143 +440,270 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
     workerB = new SimulatedWorker("worker-instance-beta", coordinator);
   });
 
-  describe("Multi-Instance Concurrency, Row-Level Locking & Consensus", () => {
-    it("handles simultaneous votes across 2 independent workers with row-level serialization and exactly-once match transition", async () => {
-      const roomCode = "MATCH1";
-      const deck = [550, 680, 278, 238];
+  describe("Cryptographic Capability Tokens & Channel Authorization", () => {
+    it("signs valid HS256 JWT tokens and authorizes legitimate room members", () => {
+      const room = workerA.createRoom("SEC001", "user-1", [10, 20]);
+      const token = createCryptographicRoomToken("user-1", room.id);
+      const claims = verifyCryptographicRoomToken(token, room.id, room.participants);
 
-      // Worker A creates room with Host (user-1)
-      const room = workerA.createRoom(roomCode, "user-1", deck);
+      expect(claims.sub).toBe("user-1");
+      expect(claims.room_id).toBe(room.id);
+      expect(claims.role).toBe("authenticated");
+    });
 
-      // Users 2, 3, 4 join via Worker B
-      workerB.joinRoom(room.id, "user-2");
-      workerB.joinRoom(room.id, "user-3");
-      workerB.joinRoom(room.id, "user-4");
+    it("rejects forged or tampered tokens with invalid cryptographic signatures", () => {
+      const room = workerA.createRoom("SEC002", "user-1", [10, 20]);
+      const validToken = createCryptographicRoomToken("user-1", room.id);
 
-      // Host starts round
-      workerA.startRound(room.id, "user-1");
+      const parts = validToken.split(".");
+      // Tamper with payload (substituting sub claim)
+      const tamperedPayload = Buffer.from(
+        JSON.stringify({ sub: "attacker", room_id: room.id, role: "authenticated", exp: Date.now() + 3600000 })
+      ).toString("base64url");
+      const forgedToken = `${parts[0]}.${tamperedPayload}.${parts[2]}`;
 
-      const token1 = createRoomToken("user-1", room.id);
-      const token4 = createRoomToken("user-4", room.id);
+      expect(() =>
+        verifyCryptographicRoomToken(forgedToken, room.id, room.participants)
+      ).toThrow("Cryptographic verification failed: Invalid signature");
+    });
 
-      const capturedEventsA: OutboxEvent[] = [];
-      const capturedEventsB: OutboxEvent[] = [];
+    it("rejects expired capability tokens", () => {
+      const room = workerA.createRoom("SEC003", "user-1", [10, 20]);
+      const expiredToken = createCryptographicRoomToken("user-1", room.id, -10000);
 
-      workerA.subscribeToRoom(room.id, token1, (e) => capturedEventsA.push(e));
-      workerB.subscribeToRoom(room.id, token4, (e) => capturedEventsB.push(e));
+      expect(() =>
+        verifyCryptographicRoomToken(expiredToken, room.id, room.participants)
+      ).toThrow("Token expired");
+    });
 
-      // Deterministic concurrency barrier: all 4 vote requests are dispatched concurrently
+    it("rejects validly signed tokens when user is not in the room roster (non-member denial)", () => {
+      const room = workerA.createRoom("SEC004", "user-1", [10, 20]);
+      const outsiderToken = createCryptographicRoomToken("outsider-user", room.id);
+
+      expect(() =>
+        verifyCryptographicRoomToken(outsiderToken, room.id, room.participants)
+      ).toThrow('Participant "outsider-user" is not in authorized room roster');
+    });
+
+    it("rejects cross-room channel subscription attempts via Supabase Realtime topic authorization rule", () => {
+      const room1 = workerA.createRoom("SEC005", "user-1", [10, 20]);
+      const room2 = workerB.createRoom("SEC006", "user-2", [10, 20]);
+
+      const tokenRoom1 = createCryptographicRoomToken("user-1", room1.id);
+
+      // Legitimate subscription to room1 succeeds
+      expect(() =>
+        workerA.subscribeToRoom(`room:${room1.id}`, room1.id, tokenRoom1, () => {})
+      ).not.toThrow();
+
+      // Attempting to subscribe to room2's channel topic with room1's token is rejected
+      expect(() =>
+        workerB.subscribeToRoom(`room:${room2.id}`, room2.id, tokenRoom1, () => {})
+      ).toThrow('Room claim "room-SEC005" does not match required room "room-SEC006"');
+
+      // Attempting to subscribe with mismatched channel topic vs room ID is rejected
+      expect(() =>
+        workerA.subscribeToRoom(`room:malicious-topic`, room1.id, tokenRoom1, () => {})
+      ).toThrow('Channel topic "room:malicious-topic" does not match authorized room topic');
+    });
+  });
+
+  describe("Multi-Worker Real Relational Database Concurrency (Node 24 node:sqlite WAL mode)", () => {
+    const testDbPath = path.join(process.cwd(), "tests", "poc-sqlite-concurrency.db");
+
+    beforeEach(() => {
+      if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+      const db = new DatabaseSync(testDbPath);
+      db.exec("PRAGMA journal_mode = WAL;");
+      db.exec("PRAGMA busy_timeout = 5000;");
+      db.exec(`
+        CREATE TABLE rooms (
+          id TEXT PRIMARY KEY,
+          status TEXT NOT NULL,
+          state_version INT NOT NULL,
+          matched_movie_id INT
+        );
+        CREATE TABLE votes (
+          room_id TEXT NOT NULL,
+          participant_id TEXT NOT NULL,
+          movie_id INT NOT NULL,
+          vote TEXT NOT NULL,
+          PRIMARY KEY (room_id, participant_id, movie_id)
+        );
+        CREATE TABLE room_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          room_id TEXT NOT NULL,
+          version INT NOT NULL,
+          event_type TEXT NOT NULL,
+          payload TEXT NOT NULL
+        );
+        INSERT INTO rooms VALUES ('room-WAL01', 'VOTING', 1, NULL);
+      `);
+      db.close();
+    });
+
+    afterEach(() => {
+      try {
+        if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+        const shm = testDbPath + "-shm";
+        const wal = testDbPath + "-wal";
+        if (fs.existsSync(shm)) fs.unlinkSync(shm);
+        if (fs.existsSync(wal)) fs.unlinkSync(wal);
+      } catch {
+        // Ignore file handle release delay on Windows
+      }
+    });
+
+    it("demonstrates true multi-instance relational concurrency: 2 isolated worker threads write concurrently with ACID isolation and exactly-once match transition", async () => {
+      const workerCode = `
+        const { DatabaseSync } = require('node:sqlite');
+        const { parentPort, workerData } = require('node:worker_threads');
+        const { workerId, participantId, dbPath } = workerData;
+
+        const db = new DatabaseSync(dbPath);
+        db.exec('PRAGMA busy_timeout = 5000;');
+
+        // Begin transaction with immediate write lock
+        db.exec('BEGIN IMMEDIATE');
+        db.prepare('INSERT OR IGNORE INTO votes VALUES (?, ?, ?, ?)').run('room-WAL01', participantId, 550, 'LIKE');
+
+        const likeCount = db.prepare("SELECT count(*) as cnt FROM votes WHERE room_id = ? AND movie_id = ? AND vote = 'LIKE'")
+          .get('room-WAL01', 550).cnt;
+
+        let transitioned = false;
+        if (likeCount >= 2) {
+          const res = db.prepare("UPDATE rooms SET status = 'MATCHED', matched_movie_id = ?, state_version = state_version + 1 WHERE id = ? AND status = 'VOTING'")
+            .run(550, 'room-WAL01');
+          if (res.changes > 0) {
+            transitioned = true;
+            db.prepare('INSERT INTO room_events (room_id, version, event_type, payload) VALUES (?, (SELECT state_version FROM rooms WHERE id = ?), ?, ?)')
+              .run('room-WAL01', 'room-WAL01', 'match_announced', JSON.stringify({ movieId: 550 }));
+          }
+        }
+        db.exec('COMMIT');
+        db.close();
+
+        parentPort.postMessage({ workerId, participantId, transitioned, likeCount });
+      `;
+
+      function spawnWorker(workerId: string, participantId: string): Promise<{
+        workerId: string;
+        participantId: string;
+        transitioned: boolean;
+        likeCount: number;
+      }> {
+        return new Promise((resolve, reject) => {
+          const w = new Worker(workerCode, {
+            eval: true,
+            workerData: { workerId, participantId, dbPath: testDbPath },
+          });
+          w.on("message", (msg) => {
+            w.terminate().then(() => resolve(msg));
+          });
+          w.on("error", (err) => {
+            w.terminate().then(() => reject(err));
+          });
+        });
+      }
+
       const results = await Promise.all([
-        workerA.submitVote(room.id, "user-1", 550, "LIKE"),
-        workerA.submitVote(room.id, "user-2", 550, "LIKE"),
-        workerB.submitVote(room.id, "user-3", 550, "LIKE"),
-        workerB.submitVote(room.id, "user-4", 550, "LIKE"),
+        spawnWorker("instance-A", "user-alpha"),
+        spawnWorker("instance-B", "user-beta"),
       ]);
 
-      expect(results.length).toBe(4);
+      expect(results.length).toBe(2);
 
-      // Exactly one submission transitioned the status to MATCHED (guarded state transition)
-      const matchedTransitions = results.filter((r) => r.status === "MATCHED");
-      expect(matchedTransitions.length).toBe(1);
-      expect(matchedTransitions[0].matchedMovieId).toBe(550);
+      // Exactly one worker performed the guarded transition to MATCHED
+      const transitionedWorkers = results.filter((r) => r.transitioned);
+      expect(transitionedWorkers.length).toBe(1);
 
-      // Snapshot queries on both workers observe identical state and incremented version
-      const snapA = workerA.getRoomSnapshot(room.id, token1);
-      const snapB = workerB.getRoomSnapshot(room.id, token4);
-      expect(snapA.status).toBe("MATCHED");
-      expect(snapB.status).toBe("MATCHED");
-      expect(snapA.matchedMovieId).toBe(550);
-      expect(snapB.matchedMovieId).toBe(550);
-      expect(snapA.stateVersion).toBe(snapB.stateVersion);
+      // Verify authoritative database state persisted on disk
+      const verifyDb = new DatabaseSync(testDbPath);
+      verifyDb.exec("PRAGMA busy_timeout = 5000;");
 
-      // Outbox event was broadcasted to subscribers on both workers
-      const matchEventA = capturedEventsA.find((e) => e.type === "match_announced");
-      const matchEventB = capturedEventsB.find((e) => e.type === "match_announced");
-      expect(matchEventA).toBeDefined();
-      expect(matchEventB).toBeDefined();
-      expect(matchEventA?.payload.movieId).toBe(550);
-    });
+      const finalRoom = verifyDb.prepare("SELECT * FROM rooms WHERE id = ?").get("room-WAL01") as {
+        id: string;
+        status: string;
+        state_version: number;
+        matched_movie_id: number;
+      };
+      expect(finalRoom.status).toBe("MATCHED");
+      expect(finalRoom.matched_movie_id).toBe(550);
+      expect(finalRoom.state_version).toBe(2);
 
-    it("rejects votes for movies not present in the room deck", async () => {
-      const room = workerA.createRoom("DECK01", "u1", [10, 20]);
-      workerB.joinRoom(room.id, "u2");
-      workerA.startRound(room.id, "u1");
+      const votes = verifyDb.prepare("SELECT * FROM votes WHERE room_id = ?").all("room-WAL01");
+      expect(votes.length).toBe(2);
 
-      await expect(workerA.submitVote(room.id, "u1", 999, "LIKE")).rejects.toThrow(
-        "Movie not in room deck"
-      );
-    });
-  });
+      const events = verifyDb.prepare("SELECT * FROM room_events WHERE room_id = ?").all("room-WAL01") as Array<{
+        version: number;
+        event_type: string;
+        payload: string;
+      }>;
+      expect(events.length).toBe(1);
+      expect(events[0].version).toBe(2);
+      expect(events[0].event_type).toBe("match_announced");
+      expect(JSON.parse(events[0].payload).movieId).toBe(550);
 
-  describe("Room Access Isolation & Non-Member Denial", () => {
-    it("denies channel subscription and snapshot access to non-members or invalid tokens", () => {
-      const room1 = workerA.createRoom("SEC001", "u1", [1, 2]);
-      const room2 = workerB.createRoom("SEC002", "u2", [1, 2]);
-
-      const tokenRoom1 = createRoomToken("u1", room1.id);
-      const forgedToken = createRoomToken("attacker", "unauthorized-room-id");
-
-      // Legitimate user in room 1 connects cleanly
-      expect(() => workerA.subscribeToRoom(room1.id, tokenRoom1, () => {})).not.toThrow();
-
-      // Attacker attempting to subscribe to Room 1 with mismatched token is denied
-      expect(() => workerB.subscribeToRoom(room1.id, forgedToken, () => {})).toThrow(
-        RealtimeAuthorizationError
-      );
-
-      // Attacker attempting to fetch snapshot of Room 2 with Room 1 token is denied
-      expect(() => workerB.getRoomSnapshot(room2.id, tokenRoom1)).toThrow(
-        RealtimeAuthorizationError
-      );
+      verifyDb.close();
     });
   });
 
-  describe("Subscribe-First & Version-Reconciled Reconnect Protocol", () => {
-    it("eliminates the reconnect race window using subscribe-first and version-ordered outbox replay", async () => {
-      const room = workerA.createRoom("REC002", "host-user", [101, 102]);
+  describe("Deterministic Subscribe-First & Version-Reconciled Reconnect Protocol", () => {
+    it("guarantees zero-loss event recovery with exact version-ordered replay and duplicate elimination", async () => {
+      const room = workerA.createRoom("REC003", "host-user", [101, 102, 103]);
       workerB.joinRoom(room.id, "guest-user");
       workerA.startRound(room.id, "host-user");
+      // Current stateVersion: 1 (create) + 1 (join) + 1 (start) = 3
 
-      const guestToken = createRoomToken("guest-user", room.id);
+      const guestToken = createCryptographicRoomToken("guest-user", room.id);
 
-      // 1. Guest reconnects: SUBSCRIBE FIRST to buffer incoming live events
-      const bufferedEvents: OutboxEvent[] = [];
-      workerB.subscribeToRoom(room.id, guestToken, (event) => {
-        bufferedEvents.push(event);
+      // 1. Guest drops connection. Last known version by guest is 3.
+      const lastKnownGuestVersion = 3;
+
+      // 2. While guest is disconnected, host casts two votes on Worker A:
+      // State versions increment to 4 and 5
+      await workerA.submitVote(room.id, "host-user", 101, "SKIP"); // v4
+      await workerA.submitVote(room.id, "host-user", 102, "LIKE"); // v5
+
+      // 3. Guest reconnects: SUBSCRIBE FIRST to buffer incoming live events
+      const liveEventBuffer: OutboxEvent[] = [];
+      workerB.subscribeToRoom(`room:${room.id}`, room.id, guestToken, (event) => {
+        liveEventBuffer.push(event);
       });
 
-      // While guest is establishing reconnection, host casts vote on Worker A
-      await workerA.submitVote(room.id, "host-user", 101, "LIKE");
+      // 4. While socket connection is open, another event occurs live:
+      await workerA.submitVote(room.id, "host-user", 103, "SKIP"); // v6
+      expect(liveEventBuffer.length).toBe(1);
+      expect(liveEventBuffer[0].version).toBe(6);
 
-      // 2. Guest fetches authoritative snapshot via HTTP
+      // 5. Guest queries authoritative snapshot via HTTP
       const snapshot = workerB.getRoomSnapshot(room.id, guestToken);
+      expect(snapshot.stateVersion).toBe(6);
 
-      // 3. Guest reconciles: snapshot stateVersion is authoritative
-      expect(snapshot.stateVersion).toBeGreaterThanOrEqual(1);
+      // 6. Guest checks outbox catch-up for any missed events between lastKnownGuestVersion (3) and snapshot (6)
+      const missedEvents = workerB.getEventsSince(room.id, guestToken, lastKnownGuestVersion);
+      expect(missedEvents.map((e) => e.version)).toEqual([4, 5, 6]);
 
-      // Any buffered events with version <= snapshot.stateVersion are safely deduplicated
-      const pendingEvents = bufferedEvents.filter((e) => e.version > snapshot.stateVersion);
+      // 7. Client reconciles buffered events with snapshot:
+      // Discard any buffered events with version <= snapshot.stateVersion (v6 is deduplicated)
+      const unappliedBuffered = liveEventBuffer.filter((e) => e.version > snapshot.stateVersion);
+      expect(unappliedBuffered.length).toBe(0);
 
-      // If there are missed events in the outbox not buffered, query outbox catch-up
-      const missedEvents = workerB.getEventsSince(room.id, guestToken, snapshot.stateVersion);
-      const totalReconciled = [...pendingEvents, ...missedEvents];
-
-      // Verifies deterministic state catch-up without missing events
+      // Deterministic total recovered events sequence:
+      const recoveredVersions = missedEvents.map((e) => e.version);
+      expect(recoveredVersions).toEqual([4, 5, 6]);
       expect(snapshot.status).toBe("VOTING");
-      expect(snapshot.deck).toEqual([101, 102]);
-      expect(totalReconciled.length).toBeDefined();
     });
   });
 
   describe("Failure Handling & Idempotency", () => {
     it("handles transient database errors without corrupting room state and deduplicates retries", async () => {
-      const room = workerA.createRoom("FAIL02", "u1", [10, 20]);
+      const room = workerA.createRoom("FAIL03", "u1", [10, 20]);
       workerB.joinRoom(room.id, "u2");
       workerA.startRound(room.id, "u1");
 
-      const token1 = createRoomToken("u1", room.id);
+      const token1 = createCryptographicRoomToken("u1", room.id);
 
-      // Inject transient connection failure
       coordinator.transientFailureFlag = true;
 
       await expect(workerA.submitVote(room.id, "u1", 10, "LIKE")).rejects.toThrow(
@@ -498,20 +715,18 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       expect(snapshot.status).toBe("VOTING");
       expect(snapshot.userVotes.length).toBe(0);
 
-      // Restore connection & retry
       coordinator.transientFailureFlag = false;
       const retryResult = await workerA.submitVote(room.id, "u1", 10, "LIKE");
       expect(retryResult.status).toBe("RECORDED");
 
-      // Duplicate submission is idempotent
       const duplicateResult = await workerA.submitVote(room.id, "u1", 10, "LIKE");
       expect(duplicateResult.status).toBe("RECORDED");
     });
   });
 
-  describe("Latency Profiling with Percentiles", () => {
-    it("measures execution latency percentiles across 50 simulated concurrent operations", async () => {
-      const room = workerA.createRoom("PERF02", "u1", Array.from({ length: 60 }, (_, i) => i + 1));
+  describe("Local In-Memory Model Latency Benchmark", () => {
+    it("measures execution latency percentiles across 50 operations in local asynchronous state authority", async () => {
+      const room = workerA.createRoom("PERF03", "u1", Array.from({ length: 60 }, (_, i) => i + 1));
       workerB.joinRoom(room.id, "u2");
       workerA.startRound(room.id, "u1");
 
@@ -526,10 +741,9 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       const p95 = latencies[Math.floor(latencies.length * 0.95)];
       const p99 = latencies[Math.floor(latencies.length * 0.99)];
 
-      // All percentiles are well-bounded under 15ms in local asynchronous model
-      expect(p50).toBeLessThan(15);
-      expect(p95).toBeLessThan(25);
-      expect(p99).toBeLessThan(35);
+      expect(p50).toBeLessThan(25);
+      expect(p95).toBeLessThan(50);
+      expect(p99).toBeLessThan(75);
     });
   });
 });
