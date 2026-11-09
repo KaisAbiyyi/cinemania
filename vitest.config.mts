@@ -9,6 +9,6 @@ export default defineConfig({
     environment: "happy-dom",
     setupFiles: ["./tests/setup.ts"],
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
-    exclude: ["node_modules", ".next", "docs/**"],
+    exclude: ["**/node_modules/**", "**/.next/**", "**/docs/**", "**/tests/build/**"],
   },
 });

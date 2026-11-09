@@ -100,6 +100,13 @@ jobs:
 
       - name: Build Next.js application
         run: npm run build
+        env:
+          TMDB_API_RAT: "TMDB_SECRET_SENTINEL_BUILD_MARKER_999"
+
+      - name: Verify zero server secrets in client bundle (Hard Gate)
+        run: npm run test:bundle-secrets
+        env:
+          TMDB_API_RAT: "TMDB_SECRET_SENTINEL_BUILD_MARKER_999"
 
   e2e-tests:
     name: Playwright E2E Tests

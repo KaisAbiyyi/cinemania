@@ -16,7 +16,8 @@
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
     "test:e2e": "playwright test",
-    "test:mutation": "vitest run tests/unit/mutation.test.ts"
+    "test:mutation": "vitest run tests/unit/mutation.test.ts",
+    "test:bundle-secrets": "vitest run tests/build/bundle-secret-scan.test.ts --config vitest.build.config.mts"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.7",
@@ -48,6 +49,7 @@
     "react-day-picker": "^9.14.0",
     "react-dom": "^19.0.0",
     "react-use-draggable-scroll": "^0.4.7",
+    "server-only": "^0.0.1",
     "tailwind-merge": "^3.0.2",
     "tailwindcss-animate": "^1.0.7",
     "zod": "^3.24.2",
