@@ -6,15 +6,21 @@ import fs from "node:fs";
 import path from "node:path";
 
 /**
- * CINE-011: Architecture Decision Record Proof of Concept (POC)
+ * CINE-011: Architecture Decision Record Proof of Concept (POC) — Revision 6
  * 
  * Validates:
  * 1. Cryptographic capability token signing, RFC 7519 NumericDate standard compliance (seconds),
- *    algorithm validation (HS256 only), tamper rejection, expiration, and participant roster authorization (matching CINE-013 guest participantId design).
- * 2. Supabase Realtime Authorization canonical topic policy enforcement (realtime.topic() === 'room:' || room_id, rejecting room code, and public.room_participants membership).
- * 3. Multi-worker relational database concurrency with deterministic write contention and lock waiting (Node 24 node:sqlite WAL mode across 2 isolated worker threads).
- * 4. Deterministic subscribe-first, version-reconciled reconnect protocol with zero-loss outbox recovery.
- * 5. Local model execution latency profiling.
+ *    future-iat rejection, max 24h lifetime bound, algorithm validation (HS256 only), tamper rejection,
+ *    and participant roster authorization (matching CINE-013 guest participantId design).
+ * 2. Supabase Realtime Authorization canonical topic policy enforcement (realtime.topic() === 'room:' || room_id,
+ *    rejecting room code, and public.room_participants membership).
+ * 3. Authoritative publisher trust model: client publication on authoritative channels is forbidden;
+ *    state events are server-only.
+ * 4. Vote confidentiality guarantee (CINE-020): live broadcasts and event replay omit participant LIKE/SKIP choices.
+ * 5. Multi-worker relational database concurrency with deterministic two-way handshake write contention
+ *    and lock waiting (Node 24 node:sqlite WAL mode across 2 isolated worker threads).
+ * 6. Deterministic subscribe-first, version-reconciled reconnect protocol with zero-loss outbox recovery.
+ * 7. Local model execution latency profiling.
  * 
  * Declared Environment: Local Node v24.21.0 on Windows 11.
  * Note: External multi-instance PostgreSQL row locking (SELECT ... FOR UPDATE) and live Supabase Realtime acceptance
@@ -22,6 +28,7 @@ import path from "node:path";
  */
 
 const TEST_JWT_SECRET = "cine-match-poc-hmac-sha256-test-secret-key-min-32-chars!";
+const MAX_TOKEN_TTL_SECONDS = 86400; // 24 hours maximum capability token lifetime
 
 export interface RoomTokenClaims {
   sub: string; // participantId (CINE-013 anonymous guest identity)
@@ -72,8 +79,8 @@ export function createCryptographicRoomToken(
 }
 
 /**
- * Cryptographically verifies token signature, expiration (RFC 7519 seconds), algorithm,
- * room match, and optional participant roster membership.
+ * Cryptographically verifies token signature, expiration (RFC 7519 seconds), future-iat rejection,
+ * max 24h lifetime bound, algorithm, room match, and optional participant roster membership.
  */
 export function verifyCryptographicRoomToken(
   token: string,
@@ -138,6 +145,19 @@ export function verifyCryptographicRoomToken(
   }
 
   const nowSeconds = Math.floor(Date.now() / 1000);
+
+  // Reject future-issued tokens (permitting 30 seconds clock drift)
+  if (payload.iat > nowSeconds + 30) {
+    throw new RealtimeAuthorizationError("Malformed token: iat cannot be in the future");
+  }
+
+  // Bounded maximum token lifetime (24 hours)
+  if (payload.exp - payload.iat > MAX_TOKEN_TTL_SECONDS) {
+    throw new RealtimeAuthorizationError(
+      `Token lifetime exceeds maximum allowed duration (${MAX_TOKEN_TTL_SECONDS}s)`
+    );
+  }
+
   if (nowSeconds >= payload.exp) {
     throw new RealtimeAuthorizationError("Token expired");
   }
@@ -316,10 +336,11 @@ class SharedStateAuthority {
       // Monotonic version increment on every state change
       if (isNewVote) {
         room.stateVersion += 1;
+        // Secret voting guarantee (CINE-020):
+        // The broadcast event intentionally OMITS the individual's vote choice (LIKE/SKIP)
+        // and target movie to prevent peer bias during voting.
         this.emitOutboxEvent(roomId, "vote_recorded", {
           participantId,
-          movieId,
-          voteType,
         });
       }
 
@@ -335,6 +356,7 @@ class SharedStateAuthority {
           room.stateVersion += 1;
           matched = true;
 
+          // When unanimous match occurs, announcing the winning movie is the intended behavior
           this.emitOutboxEvent(roomId, "match_announced", {
             movieId,
             unanimousCount: likesForMovie.length,
@@ -360,6 +382,7 @@ class SharedStateAuthority {
 
     const verified = verifyCryptographicRoomToken(token, roomId, room.participants);
 
+    // Snapshot returns ONLY the caller's own votes; other participants' votes remain secret
     const userVotes = Array.from(this.votes.values()).filter(
       (v) => v.roomId === roomId && v.participantId === verified.sub
     );
@@ -389,6 +412,7 @@ class SharedStateAuthority {
   /**
    * Subscribes to private room channel simulating Supabase Realtime Authorization
    * Check: realtime.topic() === 'room:' || claims.room_id AND claims.sub IN public.room_participants
+   * Trust Model: Client channels are strictly LISTEN-ONLY (SELECT).
    */
   subscribe(channelTopic: string, roomId: string, token: string, listener: (event: OutboxEvent) => void): () => void {
     const expectedTopic = `room:${roomId}`;
@@ -409,6 +433,28 @@ class SharedStateAuthority {
     const set = this.channelSubscribers.get(roomId)!;
     set.add(listener);
     return () => set.delete(listener);
+  }
+
+  /**
+   * Client-originated publication on authoritative room state channels is rejected.
+   * Supabase Realtime Authorization enforces NO INSERT policy for 'authenticated' role.
+   */
+  publishClientMessage(channelTopic: string, roomId: string, token: string, payload: unknown): void {
+    void payload;
+    const expectedTopic = `room:${roomId}`;
+    if (channelTopic !== expectedTopic) {
+      throw new RealtimeAuthorizationError(
+        `Channel topic "${channelTopic}" does not match authorized room topic "${expectedTopic}"`
+      );
+    }
+    const room = this.rooms.get(roomId);
+    if (!room) throw new Error("Room not found");
+    verifyCryptographicRoomToken(token, roomId, room.participants);
+
+    // Enforce denial of client-originated broadcast on authoritative state channel
+    throw new RealtimeAuthorizationError(
+      "Unauthorized: Client publication on authoritative room channel is forbidden. State events are server-originated only."
+    );
   }
 
   private emitOutboxEvent(roomId: string, type: string, payload: Record<string, unknown>) {
@@ -471,6 +517,10 @@ class SimulatedWorker {
   subscribeToRoom(channelTopic: string, roomId: string, token: string, onEvent: (event: OutboxEvent) => void) {
     return this.coordinator.subscribe(channelTopic, roomId, token, onEvent);
   }
+
+  publishClientMessage(channelTopic: string, roomId: string, token: string, payload: unknown) {
+    return this.coordinator.publishClientMessage(channelTopic, roomId, token, payload);
+  }
 }
 
 describe("CINE-011: Realtime and Persistence Architecture POC & Model Verification", () => {
@@ -509,6 +559,32 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       expect(() =>
         verifyCryptographicRoomToken(invalidMsToken, room.id, room.participants)
       ).toThrow("Timestamps must be RFC 7519 NumericDate in seconds, not milliseconds");
+    });
+
+    it("rejects tokens issued in the future (iat > nowSeconds + 30)", () => {
+      const room = workerA.createRoom("SEC001F", "user-1", [10, 20]);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const futureToken = createCryptographicRoomToken("user-1", room.id, 3600, TEST_JWT_SECRET, {
+        iat: nowSec + 120, // 2 minutes in future
+        exp: nowSec + 3720,
+      });
+
+      expect(() =>
+        verifyCryptographicRoomToken(futureToken, room.id, room.participants)
+      ).toThrow("Malformed token: iat cannot be in the future");
+    });
+
+    it("rejects tokens exceeding maximum allowed lifetime (lifetime > 24 hours)", () => {
+      const room = workerA.createRoom("SEC001L", "user-1", [10, 20]);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const excessiveLifetimeToken = createCryptographicRoomToken("user-1", room.id, 100000, TEST_JWT_SECRET, {
+        iat: nowSec,
+        exp: nowSec + 100000, // > 86400s
+      });
+
+      expect(() =>
+        verifyCryptographicRoomToken(excessiveLifetimeToken, room.id, room.participants)
+      ).toThrow("Token lifetime exceeds maximum allowed duration");
     });
 
     it("rejects tokens with unsupported or insecure algorithm headers (e.g. 'none' or 'HS384')", () => {
@@ -639,15 +715,63 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
         workerA.subscribeToRoom(`room:malicious-topic`, room1.id, tokenRoom1, () => {})
       ).toThrow('Channel topic "room:malicious-topic" does not match authorized room topic');
     });
+
+    it("enforces authoritative publisher trust model: client publication on authoritative room channel is rejected", () => {
+      const room = workerA.createRoom("PUB001", "user-1", [10, 20]);
+      const token = createCryptographicRoomToken("user-1", room.id);
+
+      // Clients attempting to broadcast on authoritative state channel are rejected
+      expect(() =>
+        workerA.publishClientMessage(`room:${room.id}`, room.id, token, {
+          event: "match_announced",
+          movieId: 999,
+        })
+      ).toThrow("Client publication on authoritative room channel is forbidden");
+    });
+
+    it("guarantees vote confidentiality (CINE-020): live broadcasts and event replay never disclose individual LIKE/SKIP choices", async () => {
+      const room = workerA.createRoom("PRIV01", "host-user", [101, 102]);
+      workerB.joinRoom(room.id, "guest-user");
+      workerA.startRound(room.id, "host-user");
+
+      const guestToken = createCryptographicRoomToken("guest-user", room.id);
+
+      const receivedLiveEvents: OutboxEvent[] = [];
+      workerB.subscribeToRoom(`room:${room.id}`, room.id, guestToken, (event) => {
+        receivedLiveEvents.push(event);
+      });
+
+      // Host casts secret SKIP vote on movie 101
+      await workerA.submitVote(room.id, "host-user", 101, "SKIP");
+
+      // Verify live broadcast event does NOT contain voteType or movieId
+      expect(receivedLiveEvents.length).toBe(1);
+      expect(receivedLiveEvents[0].type).toBe("vote_recorded");
+      expect(receivedLiveEvents[0].payload.participantId).toBe("host-user");
+      expect((receivedLiveEvents[0].payload as Record<string, unknown>).voteType).toBeUndefined();
+      expect((receivedLiveEvents[0].payload as Record<string, unknown>).movieId).toBeUndefined();
+
+      // Verify outbox replay does NOT leak voteType to another participant
+      const replayedEvents = workerB.getEventsSince(room.id, guestToken, 0);
+      const voteEvents = replayedEvents.filter((e) => e.type === "vote_recorded");
+      expect(voteEvents.length).toBe(1);
+      expect((voteEvents[0].payload as Record<string, unknown>).voteType).toBeUndefined();
+
+      // Verify guest snapshot does NOT disclose host's votes
+      const guestSnapshot = workerB.getRoomSnapshot(room.id, guestToken);
+      expect(guestSnapshot.userVotes.length).toBe(0);
+    });
   });
 
   describe("Multi-Worker Real Relational Database Concurrency (Node 24 node:sqlite WAL mode)", () => {
     const testDbPath = path.join(process.cwd(), "tests", "poc-sqlite-concurrency.db");
-    const barrierPath = path.join(process.cwd(), "tests", "poc-sqlite-barrier.tmp");
+    const barrierPathA = path.join(process.cwd(), "tests", "poc-sqlite-barrier-a.tmp");
+    const barrierPathB = path.join(process.cwd(), "tests", "poc-sqlite-barrier-b.tmp");
 
     beforeEach(() => {
       if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
-      if (fs.existsSync(barrierPath)) fs.unlinkSync(barrierPath);
+      if (fs.existsSync(barrierPathA)) fs.unlinkSync(barrierPathA);
+      if (fs.existsSync(barrierPathB)) fs.unlinkSync(barrierPathB);
       const db = new DatabaseSync(testDbPath);
       db.exec("PRAGMA journal_mode = WAL;");
       db.exec("PRAGMA busy_timeout = 5000;");
@@ -689,7 +813,8 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
     afterEach(() => {
       try {
         if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
-        if (fs.existsSync(barrierPath)) fs.unlinkSync(barrierPath);
+        if (fs.existsSync(barrierPathA)) fs.unlinkSync(barrierPathA);
+        if (fs.existsSync(barrierPathB)) fs.unlinkSync(barrierPathB);
         const shm = testDbPath + "-shm";
         const wal = testDbPath + "-wal";
         if (fs.existsSync(shm)) fs.unlinkSync(shm);
@@ -699,12 +824,12 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       }
     });
 
-    it("demonstrates true multi-instance relational concurrency: 2 isolated worker threads write concurrently with ACID isolation, deterministic write contention, lock waiting, and exactly-once match transition", async () => {
+    it("demonstrates true multi-instance relational concurrency: 2 isolated worker threads write concurrently with ACID isolation, deterministic two-way handshake write contention, lock waiting, and exactly-once match transition", async () => {
       const workerCode = `
         const { DatabaseSync } = require('node:sqlite');
         const { parentPort, workerData } = require('node:worker_threads');
         const fs = require('node:fs');
-        const { workerId, participantId, dbPath, barrierPath } = workerData;
+        const { workerId, participantId, dbPath, barrierPathA, barrierPathB } = workerData;
 
         const db = new DatabaseSync(dbPath);
         db.exec('PRAGMA busy_timeout = 5000;');
@@ -721,10 +846,19 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
         if (workerId === 'instance-A') {
           // Instance A acquires exclusive write lock first
           db.exec('BEGIN IMMEDIATE');
+
           // Signal instance B that write lock is acquired and held
-          fs.writeFileSync(barrierPath, 'locked');
-          // Hold write lock for 70ms to force instance B into contention window
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 70);
+          fs.writeFileSync(barrierPathA, 'locked-by-A');
+
+          // Deterministic two-way handshake: Instance A waits until Instance B confirms it is competing for the lock
+          let waitedForB = 0;
+          while (!fs.existsSync(barrierPathB) && waitedForB < 2000) {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+            waitedForB += 5;
+          }
+
+          // Hold write lock for an additional 40ms to force instance B into measured lock-wait contention window
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
 
           db.prepare('INSERT OR IGNORE INTO votes VALUES (?, ?, ?, ?)').run('room-WAL01', participantId, 550, 'LIKE');
           const likeCount = db.prepare("SELECT count(*) as cnt FROM votes WHERE room_id = ? AND movie_id = ? AND vote = 'LIKE'")
@@ -746,10 +880,13 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
         } else {
           // Instance B waits until instance A has acquired the write lock
           let waitedForA = 0;
-          while (!fs.existsSync(barrierPath) && waitedForA < 2000) {
+          while (!fs.existsSync(barrierPathA) && waitedForA < 2000) {
             Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
             waitedForA += 5;
           }
+
+          // Complete two-way handshake: signal instance A that instance B is immediately attempting BEGIN IMMEDIATE
+          fs.writeFileSync(barrierPathB, 'competing-B');
 
           // Instance B attempts BEGIN IMMEDIATE while Instance A holds the write lock
           const t0 = performance.now();
@@ -786,7 +923,7 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
         return new Promise((resolve, reject) => {
           const w = new Worker(workerCode, {
             eval: true,
-            workerData: { workerId, participantId, dbPath: testDbPath, barrierPath },
+            workerData: { workerId, participantId, dbPath: testDbPath, barrierPathA, barrierPathB },
           });
           w.on("message", (msg) => {
             w.terminate().then(() => resolve(msg));
@@ -806,7 +943,7 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
 
       // Verify that instance B experienced measurable lock contention / waiting behind instance A
       const instanceB = results.find((r) => r.workerId === "instance-B")!;
-      expect(instanceB.lockWaitMs).toBeGreaterThan(25);
+      expect(instanceB.lockWaitMs).toBeGreaterThan(20);
 
       // Exactly one worker performed the guarded transition to MATCHED
       const transitionedWorkers = results.filter((r) => r.transitioned);

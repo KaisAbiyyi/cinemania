@@ -2,8 +2,8 @@
 
 - **Status:** Proposed (Under Review)
 - **Deciders:** CineMatch Architecture Team (Owner Approval Pending)
-- **Date:** 2026-11-09 (Revised 2026-11-10)
-- **Task References:** [CINE-011](https://github.com/KaisAbiyyi/cinemania/issues/13), [CINE-012](https://github.com/KaisAbiyyi/cinemania/issues/14), [CINE-013](https://github.com/KaisAbiyyi/cinemania/issues/15), [CINE-014](https://github.com/KaisAbiyyi/cinemania/issues/16), [CINE-017](https://github.com/KaisAbiyyi/cinemania/issues/19), [CINE-018](https://github.com/KaisAbiyyi/cinemania/issues/20), [CINE-019](https://github.com/KaisAbiyyi/cinemania/issues/21)
+- **Date:** 2026-11-09 (Revised 2026-11-10, Revision 6)
+- **Task References:** [CINE-011](https://github.com/KaisAbiyyi/cinemania/issues/13), [CINE-012](https://github.com/KaisAbiyyi/cinemania/issues/14), [CINE-013](https://github.com/KaisAbiyyi/cinemania/issues/15), [CINE-014](https://github.com/KaisAbiyyi/cinemania/issues/16), [CINE-017](https://github.com/KaisAbiyyi/cinemania/issues/19), [CINE-018](https://github.com/KaisAbiyyi/cinemania/issues/20), [CINE-019](https://github.com/KaisAbiyyi/cinemania/issues/21), [CINE-020](https://github.com/KaisAbiyyi/cinemania/issues/22)
 - **Predecessor Dependencies:** [CINE-001 (Audit)](https://github.com/KaisAbiyyi/cinemania/issues/3), [CINE-004 (CI)](https://github.com/KaisAbiyyi/cinemania/issues/6), [ADR-002 (Product Contract)](https://github.com/KaisAbiyyi/cinemania/pull/37)
 
 ---
@@ -16,7 +16,7 @@ In serverless execution environments, compute functions are **stateless, ephemer
 1. **Absence of Native Long-Lived Sockets:** Serverless runtimes cannot hold persistent in-memory room state or terminate bi-directional stateful WebSockets directly without incurring connection termination, state fragmentation, or prohibitive function execution duration billing.
 2. **Atomic Voting Consensus & Phantom Reads:** Votes are immutable and require unanimous agreement across the frozen roster. Concurrent votes submitted by multiple participants at the same millisecond under standard Read Committed isolation can lead to phantom reads: if Transaction 1 and Transaction 2 both count votes before either commits, both can observe incomplete totals and fail to transition the room to `MATCHED`.
 3. **Session Reconnection & Event Gaps:** Participants on mobile devices experience transient network drops, lock-screen suspension, and browser reloads. Subscribing to an ephemeral broadcast channel after fetching a snapshot introduces a race window where events occurring between the snapshot read and WebSocket subscription establishment are lost.
-4. **Security & Zero Leaks:** Database connection strings, service credentials, and TMDB tokens must never leak to the client browser. Client access must be restricted to signed guest capability tokens and scoped, authorized channel subscriptions.
+4. **Security, Zero Leaks & Secret Voting:** Database connection strings, service credentials, and TMDB tokens must never leak to the client browser. Individual participant voting decisions (`LIKE` vs `SKIP`) must remain strictly confidential and never be disclosed via real-time broadcasts or replay feeds to prevent peer bias (CINE-020 requirement). Only the final unanimous match may reveal the winning title.
 
 ---
 
@@ -24,6 +24,8 @@ In serverless execution environments, compute functions are **stateless, ephemer
 
 - **Serverless & Multi-Instance Compatibility:** Architecture must operate natively on multi-instance serverless deployments without requiring self-hosted stateful server processes.
 - **Strict State Authority & Concurrency Control:** State mutations (roster freeze, vote recording, unanimous match transitions) must be atomic and server-authoritative, serialized by database row-level locking (`SELECT ... FOR UPDATE`) and guarded transitions.
+- **Vote Confidentiality & Anti-Bias (CINE-020):** Voting choices are secret until unanimous match; broadcast events and replay feeds must never expose individual members' LIKE/SKIP choices.
+- **Authoritative Channel Protection:** Clients must be strictly read-only listeners on authoritative state channels; clients cannot forge or spoof server state events.
 - **Low-Latency Event Fan-out:** Room event propagation (lobby joins, votes cast, match found) should reach room participants in <100ms under normal cloud network conditions.
 - **Cost & Free Tier Limits:** Must provide a sustainable free tier for development/MVP and predictable scale-to-zero cost.
 - **Resilient Reconnection:** Version/sequence-based event ordering and transactional outbox persistence to prevent event gap races.
@@ -39,7 +41,7 @@ In serverless execution environments, compute functions are **stateless, ephemer
 | **Vercel / Serverless Parity** | **High compatibility.** Clients connect directly to managed Realtime endpoint; serverless functions mutate DB over connection pooler. | **Limited.** Vercel function duration limits (15s–300s) make long-lived SSE connections fragile and costly. | **External.** Requires deploying and managing separate edge infrastructure outside Vercel. | **Moderate.** Requires maintaining connection pools or HTTP polling proxies. |
 | **State Authority & Concurrency** | **Strict.** PostgreSQL row-level locks (`SELECT ... FOR UPDATE`) and guarded `UPDATE rooms SET status = 'MATCHED'`. | **Strict.** Full PostgreSQL transaction isolation. | **Actor-isolated.** Single-threaded execution per room actor prevents internal race conditions. | **Conditional.** Redis Lua scripts provide atomic script execution, but lack relational constraints. |
 | **Reconnection & Catch-Up** | Monotonic `state_version` + Transactional Outbox table (`room_events`) queryable via REST. | Snapshot query + SSE `Last-Event-ID` or manual polling. | Client re-attaches to durable actor; in-memory replay buffer. | Redis Stream `XREAD` with offset tracking. |
-| **Cost & Free Tier Limits** | 500 MB DB, 200 concurrent Realtime connections, 2M Realtime messages/mo. | Generous storage and compute hours; no built-in WebSocket broker. | Free tier for hobby; per-request / per-room actor charges at scale. | 10k commands/day free; $0.20 per 100k commands thereafter. |
+| **Cost & Free Tier Limits** | 500 MB DB, 200 concurrent Realtime connections, 2M Realtime messages/mo (MVP assumptions; usage limits apply). | Generous storage and compute hours; no built-in WebSocket broker. | Free tier for hobby; per-request / per-room actor charges at scale. | 10k commands/day free; $0.20 per 100k commands thereafter. |
 
 ---
 
@@ -81,24 +83,28 @@ In serverless execution environments, compute functions are **stateless, ephemer
      ```
    - Exactly one concurrent transaction succeeds in transitioning the status; other concurrent transactions read the committed `MATCHED` status and return the match immediately without duplicate transitions.
 
-4. **Transactional Outbox for Event Ordering:**
-   - In the same database transaction, insert an event into `room_events`:
+4. **Transactional Outbox for Event Ordering & Vote Confidentiality:**
+   - In the same database transaction, insert a public event into `room_events`:
      ```sql
      INSERT INTO room_events (room_id, version, event_type, payload, created_at)
      VALUES ($1, $new_version, $event_type, $payload, NOW());
      ```
+   - **Secret Vote Guarantee (CINE-020):** For event `vote_recorded`, the broadcast payload is strictly `{ "participantId": "<uuid>" }`. Individual vote choices (`voteType: "LIKE" | "SKIP"`) and movie IDs are **NEVER** placed into public broadcast events or shared outbox replay feeds. They remain confidential inside the server's private `votes` table.
+   - Only when unanimous agreement occurs is `match_announced` broadcast with `{ "movieId": 550, "unanimousCount": 5 }`.
    - Events have strictly ordered, monotonic `version` integers.
 
-### 4.2 Room Access Isolation & Channel Authorization
+### 4.2 Room Access Isolation, Channel Authorization & Publisher Trust Model
 1. **Cryptographically Signed Realtime Capability Token:**
    - When a guest joins or re-authenticates, the server issues a signed, short-lived HMAC-SHA256 JWT scoped strictly to that room:
      `{ sub: participant_id, room_id: room_id, role: 'authenticated', iat: <seconds>, exp: <seconds> }`.
    - Token timestamps conform strictly to RFC 7519 `NumericDate` (integer seconds since Unix epoch).
+   - Verifiers enforce `iat <= nowSeconds + 30` (rejecting future-issued tokens), maximum token TTL of 24 hours (`exp - iat <= 86400`), algorithm whitelist (`HS256` only), and roster membership validation.
+
 2. **Channel Authorization & Row-Level Security (Supabase Realtime Private Channels):**
    - **Canonical Topic Standard:** Realtime channel topic is strictly and exclusively formatted as `room:${room_id}` where `room_id` is the opaque room UUIDv4 (never the user-facing 6-character room code).
-   - Channel connections require the capability JWT. Supabase Realtime Authorization evaluates Row-Level Security policies on `realtime.messages` using `realtime.topic()`:
+   - **Listen-Only Client Access (SELECT Policy):** Channel connections require the capability JWT. Supabase Realtime Authorization evaluates Row-Level Security policies on `realtime.messages` using `realtime.topic()`:
      ```sql
-     -- 1. Authorize private channel subscription (listen)
+     -- 1. Authorize private channel subscription (listen only)
      CREATE POLICY "Authorize room channel subscription"
      ON realtime.messages
      FOR SELECT
@@ -113,23 +119,17 @@ In serverless execution environments, compute functions are **stateless, ephemer
            AND participant_id = (auth.jwt() ->> 'sub')::uuid
        )
      );
-
-     -- 2. Authorize private channel publication (broadcast)
-     CREATE POLICY "Authorize room broadcast publication"
-     ON realtime.messages
-     FOR INSERT
-     TO authenticated
-     WITH CHECK (
-       realtime.topic() = ('room:' || (auth.jwt() ->> 'room_id'))
-       AND EXISTS (
-         SELECT 1 FROM public.room_participants
-         WHERE room_id = (auth.jwt() ->> 'room_id')::uuid
-           AND participant_id = (auth.jwt() ->> 'sub')::uuid
-       )
-     );
      ```
-   - **Permission Grants & Service Key Lifecycle:** The PostgreSQL `authenticated` role requires `SELECT` permissions on `public.room_participants` (or via a SECURITY DEFINER authorization function). The Supabase service-role secret is strictly server-only and never exposed to client browsers or mobile devices.
-   - Non-members, expired tokens, tampered signatures, or attempts to subscribe to another room's channel topic or subscribe using the room code (e.g. `room:ABC123`) are rejected with `403 Forbidden`.
+   - **Denial of Client Publication on Authoritative Channels (No INSERT Policy for Clients):**
+     - Clients are **strictly prohibited from publishing directly to `room:${room_id}`**. There is NO `INSERT` policy granted to `authenticated` for authoritative room state channels.
+     - Authoritative state events (`roster_frozen`, `vote_recorded`, `match_announced`) are published **exclusively by backend serverless route handlers** using the server-side service-role key (which bypasses RLS).
+     - Any client attempt to forge or spoof a broadcast on the authoritative room channel is rejected with `403 Forbidden`.
+     - Client UI components treat WebSocket events as reactive notifications and reconcile against the authoritative snapshot via HTTP `GET /api/room/[code]`.
+     - If future milestones introduce peer-to-peer ephemeral signals (such as typing indicators or cursor positions), they must be segregated into an unauthoritative subtopic (e.g. `room:${room_id}:presence`) where client `INSERT` is permitted, fully isolated from game state.
+
+3. **Permission Grants & Service Key Lifecycle:**
+   - The PostgreSQL `authenticated` role requires `SELECT` permissions on `public.room_participants` (or via a `SECURITY DEFINER` authorization function).
+   - The Supabase service-role secret is strictly server-only, never exposed to client browsers or mobile devices.
 
 ### 4.2.1 Anonymous Guest Identity & RLS Reconciliation (CINE-013 & CINE-018)
 In CineMatch, users participate as anonymous guests without registering email/password accounts or having rows in Supabase Auth's `auth.users` table:
@@ -145,14 +145,14 @@ In CineMatch, users participate as anonymous guests without registering email/pa
      "exp": 1700003600
    }
    ```
-   Note: `iat` and `exp` are integer seconds (RFC 7519 `NumericDate`), strictly bounded and validated.
-4. **Channel Authorization Enforcement:** Supabase Realtime Authorization evaluates `realtime.topic()` against `room:${room_id}` and executes the RLS subquery against `public.room_participants` matching `participant_id = (auth.jwt() ->> 'sub')::uuid`. Non-members cannot subscribe or publish to the room's channel.
+   Note: `iat` and `exp` are integer seconds (RFC 7519 `NumericDate`), strictly bounded (max 24h lifetime) and validated.
+4. **Channel Authorization Enforcement:** Supabase Realtime Authorization evaluates `realtime.topic()` against `room:${room_id}` and executes the RLS subquery against `public.room_participants` matching `participant_id = (auth.jwt() ->> 'sub')::uuid`. Non-members cannot subscribe. Clients cannot publish.
 5. **Outstanding Live Cloud Qualification Gate:** While this policy and token contract are simulated and validated locally in `tests/integration/realtime-persistence-poc.test.ts`, live configuration and end-to-end testing against a real Supabase project (private channels extension, live RLS evaluation, WebSocket token handshake) remain **BLOCKED and OUTSTANDING** until Supabase infrastructure is provisioned in CINE-012/CINE-018.
 
 ### 4.3 Subscribe-First & Version-Reconciled Reconnect Protocol
 To prevent the reconnect race condition (where events are lost between snapshot retrieval and socket connection):
 1. **Subscribe First:** The reconnecting client establishes its WebSocket connection and subscribes to the canonical private channel topic `room:${room_id}` (where `room_id` is the opaque UUID obtained from session state or prior join, never the shareable 6-character room code), buffering incoming real-time events locally.
-2. **Fetch Snapshot:** The client requests the authoritative snapshot via HTTP `GET /api/room/[code]`, which returns the current room state along with its `id` (the opaque UUID) and `state_version`.
+2. **Fetch Snapshot:** The client requests the authoritative snapshot via HTTP `GET /api/room/[code]`, which returns the current room state along with its `id` (the opaque UUID), its `state_version`, and only the caller's own votes (`userVotes`).
 3. **Reconcile Buffer:**
    - The client hydrates UI state from the snapshot.
    - The client filters buffered events: any event with `version <= snapshot.state_version` is discarded as already incorporated.
@@ -173,7 +173,7 @@ sequenceDiagram
     RT-->>Player: Subscription Confirmed
     Player->>Server: 2. GET /api/room/ABC123 (Auth Cookie)
     Server->>DB: Query Room Snapshot & state_version
-    DB-->>Server: Snapshot { id: '<room_uuid>', status: 'VOTING', state_version: 5, deck, votes }
+    DB-->>Server: Snapshot { id: '<room_uuid>', status: 'VOTING', state_version: 5, deck, userVotes }
     Server-->>Player: Return Snapshot (id: '<room_uuid>', version: 5)
     Note over Player: 3. Hydrate UI with snapshot.<br/>Replay buffered events where version > 5.<br/>Discard events where version <= 5.
 ```
@@ -184,6 +184,8 @@ sequenceDiagram
 
 ### Positive
 - **Serverless Alignment:** Next.js API routes scale to zero on Vercel; compute does not hold stateful socket connections in memory.
+- **Vote Privacy Guarantee:** Broadcast events and outbox replay omit individual voting decisions (`LIKE`/`SKIP`), preventing peer bias and satisfying CINE-020.
+- **Publisher Integrity:** Clients have listen-only access on authoritative topics; clients cannot forge state transitions or match events.
 - **Concurrency Safety:** Explicit PostgreSQL `SELECT ... FOR UPDATE` row locks guarantee serialization of concurrent votes across distinct serverless instances, eliminating double-matches and phantom reads.
 - **Durability & Catch-Up:** Monotonic `state_version` and transactional outbox eliminate the snapshot-then-subscribe race window.
 - **Tenant Isolation:** Private channels authorized via signed room-scoped JWTs ensure zero cross-room event leakage.
@@ -193,24 +195,26 @@ sequenceDiagram
 - Free tier limit of 200 concurrent Realtime connections provides capacity for ~40 simultaneous 5-player rooms during MVP. Growth beyond this threshold requires upgrading to paid usage tiers.
 
 ### Concurrency Verification Scope & Cloud Deployment Caveat
-- **Relational Concurrency Model vs Production Cloud Behavior:** The local POC in `tests/integration/realtime-persistence-poc.test.ts` validates relational ACID transaction serialization, exclusive transaction locking (`BEGIN IMMEDIATE`), and single guarded transitions across isolated worker threads with deterministic write contention and lock waiting. However, SQLite file locking differs from PostgreSQL row-level locks (`SELECT ... FOR UPDATE`), and worker threads do not simulate multi-process serverless network latency, connection pooling (PgBouncer), or failover.
+- **Relational Concurrency Model vs Production Cloud Behavior:** The local POC in `tests/integration/realtime-persistence-poc.test.ts` validates relational ACID transaction serialization, exclusive transaction locking (`BEGIN IMMEDIATE`), and single guarded transitions across isolated worker threads with deterministic write contention, two-way acknowledgment handshakes, and lock waiting. However, SQLite file locking differs from PostgreSQL row-level locks (`SELECT ... FOR UPDATE`), and worker threads do not simulate multi-process serverless network latency, connection pooling (PgBouncer), or failover.
 - Therefore, the relational model serves as algorithmic and architectural proof of concept; full multi-instance PostgreSQL row-level locking and Supabase Realtime verification remain **OUTSTANDING** and must be qualified on live cloud infrastructure during CINE-012 (PostgreSQL schema & migrations) and CINE-018 (Realtime broadcaster).
 
 ---
 
 ## 6. Implementation Roadmap
-- **CINE-012:** Authoritative PostgreSQL schema (`rooms`, `room_participants`, `room_deck`, `votes`, `room_events`), migrations, and row-level locking stored procedure.
-- **CINE-013:** Anonymous guest identity, cryptographically signed capability tokens, and cookie handling.
+- **CINE-012:** Authoritative PostgreSQL schema (`rooms`, `public.room_participants`, `room_deck`, `votes`, `room_events`), migrations, and row-level locking stored procedure.
+- **CINE-013:** Anonymous guest identity, cryptographically signed capability tokens (RFC 7519 NumericDate), and cookie handling.
 - **CINE-014:** Room creation, 6-character room code generation, and capacity enforcement.
-- **CINE-018:** Realtime event publication, private channel authorization, and outbox subscriber.
+- **CINE-018:** Server-only realtime event publication, listen-only private channel authorization, and outbox subscriber.
 
 ---
 
 ## 7. Verification & Acceptance Status
 
-- **Cryptographic Capability Token Signing & Tamper Verification:** Verified in `tests/integration/realtime-persistence-poc.test.ts` (RFC 7519 NumericDate seconds, HMAC-SHA256, timingSafeEqual, expiration, roster membership, alg header validation).
+- **Cryptographic Capability Token Signing & Tamper Verification:** Verified in `tests/integration/realtime-persistence-poc.test.ts` (RFC 7519 NumericDate seconds, HMAC-SHA256, timingSafeEqual, expiration, future `iat` rejection, max 24h lifetime bound, roster membership, alg header validation).
+- **Vote Confidentiality Guarantee (CINE-020):** Verified in `tests/integration/realtime-persistence-poc.test.ts` (live broadcasts and event replay omit participant LIKE/SKIP choices).
+- **Authoritative Publisher Trust Model:** Verified in `tests/integration/realtime-persistence-poc.test.ts` (clients denied publication on authoritative channel; server-only broadcast).
 - **Channel Access Isolation & Topic Authorization:** Verified via local topic and roster simulation (model only).
-- **Relational Multi-Worker Concurrency & ACID Isolation:** Verified via Node 24 `node:sqlite` WAL mode across two isolated worker threads with deterministic write contention and lock waiting (SQLite algorithmic model only).
+- **Relational Multi-Worker Concurrency & ACID Isolation:** Verified via Node 24 `node:sqlite` WAL mode across two isolated worker threads with deterministic two-way handshake contention and lock waiting (SQLite algorithmic model only).
 - **Subscribe-First Reconnect & Exact Monotonic Outbox Replay:** Verified with deterministic version recovery `[4, 5, 6]` (model only).
 - **Local Latency Percentiles:** Verified in local asynchronous mock (model only, not deployed cloud latency).
 - **External Multi-Instance PostgreSQL & Live Supabase Cloud Infrastructure:** Explicitly marked **OUTSTANDING & BLOCKED** pending cloud infrastructure provisioning in CINE-012/CINE-018.
