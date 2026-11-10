@@ -9,9 +9,10 @@ import path from "node:path";
  * CINE-011: Architecture Decision Record Proof of Concept (POC)
  * 
  * Validates:
- * 1. Cryptographic capability token signing, signature tampering rejection, expiration, and participant roster authorization (matching CINE-013 guest participantId design).
- * 2. Supabase Realtime Authorization topic policy simulation (realtime.topic() and room_participants membership).
- * 3. Multi-worker real relational database concurrency (Node 24 node:sqlite WAL mode across 2 isolated worker threads).
+ * 1. Cryptographic capability token signing, RFC 7519 NumericDate standard compliance (seconds),
+ *    algorithm validation (HS256 only), tamper rejection, expiration, and participant roster authorization (matching CINE-013 guest participantId design).
+ * 2. Supabase Realtime Authorization canonical topic policy enforcement (realtime.topic() === 'room:' || room_id, rejecting room code, and public.room_participants membership).
+ * 3. Multi-worker relational database concurrency with deterministic write contention and lock waiting (Node 24 node:sqlite WAL mode across 2 isolated worker threads).
  * 4. Deterministic subscribe-first, version-reconciled reconnect protocol with zero-loss outbox recovery.
  * 5. Local model execution latency profiling.
  * 
@@ -24,10 +25,10 @@ const TEST_JWT_SECRET = "cine-match-poc-hmac-sha256-test-secret-key-min-32-chars
 
 export interface RoomTokenClaims {
   sub: string; // participantId (CINE-013 anonymous guest identity)
-  room_id: string; // roomId
+  room_id: string; // roomId (opaque UUID)
   role: "authenticated";
-  iat: number;
-  exp: number;
+  iat: number; // RFC 7519 NumericDate (seconds since Unix epoch)
+  exp: number; // RFC 7519 NumericDate (seconds since Unix epoch)
 }
 
 export class RealtimeAuthorizationError extends Error {
@@ -40,21 +41,27 @@ export class RealtimeAuthorizationError extends Error {
 
 /**
  * Creates a cryptographically signed HMAC-SHA256 capability JWT token.
+ * All timestamps strictly adhere to RFC 7519 NumericDate in seconds.
  */
 export function createCryptographicRoomToken(
   participantId: string,
   roomId: string,
-  ttlMs = 3600000,
-  secret = TEST_JWT_SECRET
+  ttlSeconds = 3600,
+  secret = TEST_JWT_SECRET,
+  customClaims?: Partial<RoomTokenClaims>,
+  customHeader?: Record<string, unknown>
 ): string {
-  const header = { alg: "HS256", typ: "JWT" };
-  const now = Date.now();
+  const header = customHeader || { alg: "HS256", typ: "JWT" };
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const iat = ttlSeconds < 0 ? nowSeconds + ttlSeconds - 60 : nowSeconds;
+  const exp = nowSeconds + ttlSeconds;
   const payload: RoomTokenClaims = {
     sub: participantId,
     room_id: roomId,
     role: "authenticated",
-    iat: now,
-    exp: now + ttlMs,
+    iat,
+    exp,
+    ...customClaims,
   };
 
   const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64url");
@@ -65,7 +72,8 @@ export function createCryptographicRoomToken(
 }
 
 /**
- * Cryptographically verifies token signature, expiration, room match, and optional participant roster membership.
+ * Cryptographically verifies token signature, expiration (RFC 7519 seconds), algorithm,
+ * room match, and optional participant roster membership.
  */
 export function verifyCryptographicRoomToken(
   token: string,
@@ -78,6 +86,19 @@ export function verifyCryptographicRoomToken(
     throw new RealtimeAuthorizationError("Malformed token: JWT must have 3 segments");
   }
   const [headerB64, payloadB64, signature] = parts;
+
+  let header: { alg?: string; typ?: string };
+  try {
+    header = JSON.parse(Buffer.from(headerB64, "base64url").toString("utf-8"));
+  } catch {
+    throw new RealtimeAuthorizationError("Malformed token: Header JSON parse error");
+  }
+
+  // Reject algorithms other than HS256 to prevent algorithm confusion attacks (e.g. none, RS256, etc.)
+  if (header.alg !== "HS256") {
+    throw new RealtimeAuthorizationError(`Unsupported algorithm: "${header.alg}". Only HS256 is permitted.`);
+  }
+
   const data = `${headerB64}.${payloadB64}`;
   const expectedSig = crypto.createHmac("sha256", secret).update(data).digest("base64url");
 
@@ -95,7 +116,29 @@ export function verifyCryptographicRoomToken(
     throw new RealtimeAuthorizationError("Malformed token: Payload JSON parse error");
   }
 
-  if (Date.now() > payload.exp) {
+  // Validate RFC 7519 NumericDate standard (finite numbers)
+  if (
+    typeof payload.iat !== "number" ||
+    typeof payload.exp !== "number" ||
+    !Number.isFinite(payload.iat) ||
+    !Number.isFinite(payload.exp)
+  ) {
+    throw new RealtimeAuthorizationError("Malformed token: iat and exp must be finite numbers");
+  }
+
+  // Reject JavaScript millisecond timestamps (> 100_000_000_000, e.g. 1.7e12)
+  if (payload.iat > 100_000_000_000 || payload.exp > 100_000_000_000) {
+    throw new RealtimeAuthorizationError(
+      "Malformed token: Timestamps must be RFC 7519 NumericDate in seconds, not milliseconds"
+    );
+  }
+
+  if (payload.exp < payload.iat) {
+    throw new RealtimeAuthorizationError("Malformed token: exp cannot be earlier than iat");
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (nowSeconds >= payload.exp) {
     throw new RealtimeAuthorizationError("Token expired");
   }
 
@@ -115,8 +158,8 @@ export function verifyCryptographicRoomToken(
 }
 
 interface Room {
-  id: string;
-  code: string;
+  id: string; // Opaque UUID
+  code: string; // 6-character shareable code
   status: "LOBBY" | "VOTING" | "MATCHED" | "NO_MATCH";
   hostId: string;
   participants: Set<string>;
@@ -172,7 +215,7 @@ class SharedStateAuthority {
 
   createRoom(code: string, hostId: string, deck: number[]): Room {
     const room: Room = {
-      id: `room-${code}`,
+      id: `room-uuid-${code}`,
       code,
       status: "LOBBY",
       hostId,
@@ -345,7 +388,7 @@ class SharedStateAuthority {
 
   /**
    * Subscribes to private room channel simulating Supabase Realtime Authorization
-   * Check: realtime.topic() === 'room:' || claims.room_id AND claims.sub IN room_participants
+   * Check: realtime.topic() === 'room:' || claims.room_id AND claims.sub IN public.room_participants
    */
   subscribe(channelTopic: string, roomId: string, token: string, listener: (event: OutboxEvent) => void): () => void {
     const expectedTopic = `room:${roomId}`;
@@ -442,7 +485,7 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
   });
 
   describe("Cryptographic Capability Tokens & Channel Authorization", () => {
-    it("signs valid HS256 JWT tokens and authorizes legitimate room members", () => {
+    it("signs valid HS256 JWT tokens with RFC 7519 NumericDate in seconds and authorizes legitimate members", () => {
       const room = workerA.createRoom("SEC001", "user-1", [10, 20]);
       const token = createCryptographicRoomToken("user-1", room.id);
       const claims = verifyCryptographicRoomToken(token, room.id, room.participants);
@@ -450,6 +493,52 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       expect(claims.sub).toBe("user-1");
       expect(claims.room_id).toBe(room.id);
       expect(claims.role).toBe("authenticated");
+      expect(claims.exp - claims.iat).toBe(3600);
+      expect(claims.iat).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+      expect(claims.exp).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    });
+
+    it("rejects tokens with millisecond timestamps instead of RFC 7519 NumericDate seconds", () => {
+      const room = workerA.createRoom("SEC001M", "user-1", [10, 20]);
+      const nowMs = Date.now();
+      const invalidMsToken = createCryptographicRoomToken("user-1", room.id, 3600, TEST_JWT_SECRET, {
+        iat: nowMs,
+        exp: nowMs + 3600000,
+      });
+
+      expect(() =>
+        verifyCryptographicRoomToken(invalidMsToken, room.id, room.participants)
+      ).toThrow("Timestamps must be RFC 7519 NumericDate in seconds, not milliseconds");
+    });
+
+    it("rejects tokens with unsupported or insecure algorithm headers (e.g. 'none' or 'HS384')", () => {
+      const room = workerA.createRoom("SEC001A", "user-1", [10, 20]);
+
+      // Tampered alg: none
+      const noneToken = createCryptographicRoomToken(
+        "user-1",
+        room.id,
+        3600,
+        TEST_JWT_SECRET,
+        undefined,
+        { alg: "none", typ: "JWT" }
+      );
+      expect(() =>
+        verifyCryptographicRoomToken(noneToken, room.id, room.participants)
+      ).toThrow('Unsupported algorithm: "none". Only HS256 is permitted.');
+
+      // Tampered alg: HS384
+      const hs384Token = createCryptographicRoomToken(
+        "user-1",
+        room.id,
+        3600,
+        TEST_JWT_SECRET,
+        undefined,
+        { alg: "HS384", typ: "JWT" }
+      );
+      expect(() =>
+        verifyCryptographicRoomToken(hs384Token, room.id, room.participants)
+      ).toThrow('Unsupported algorithm: "HS384". Only HS256 is permitted.');
     });
 
     it("rejects forged or tampered tokens with invalid cryptographic signatures", () => {
@@ -457,9 +546,10 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       const validToken = createCryptographicRoomToken("user-1", room.id);
 
       const parts = validToken.split(".");
+      const nowSeconds = Math.floor(Date.now() / 1000);
       // Tamper with payload (substituting sub claim)
       const tamperedPayload = Buffer.from(
-        JSON.stringify({ sub: "attacker", room_id: room.id, role: "authenticated", exp: Date.now() + 3600000 })
+        JSON.stringify({ sub: "attacker", room_id: room.id, role: "authenticated", iat: nowSeconds, exp: nowSeconds + 3600 })
       ).toString("base64url");
       const forgedToken = `${parts[0]}.${tamperedPayload}.${parts[2]}`;
 
@@ -468,13 +558,36 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       ).toThrow("Cryptographic verification failed: Invalid signature");
     });
 
-    it("rejects expired capability tokens", () => {
+    it("rejects expired capability tokens (negative TTL and near boundary)", () => {
       const room = workerA.createRoom("SEC003", "user-1", [10, 20]);
-      const expiredToken = createCryptographicRoomToken("user-1", room.id, -10000);
+      const expiredToken = createCryptographicRoomToken("user-1", room.id, -10);
 
       expect(() =>
         verifyCryptographicRoomToken(expiredToken, room.id, room.participants)
       ).toThrow("Token expired");
+
+      // Boundary condition: exp equal to current second
+      const nowSec = Math.floor(Date.now() / 1000);
+      const boundaryExpiredToken = createCryptographicRoomToken("user-1", room.id, 0, TEST_JWT_SECRET, {
+        iat: nowSec - 10,
+        exp: nowSec,
+      });
+      expect(() =>
+        verifyCryptographicRoomToken(boundaryExpiredToken, room.id, room.participants)
+      ).toThrow("Token expired");
+    });
+
+    it("rejects malformed tokens where exp is earlier than iat", () => {
+      const room = workerA.createRoom("SEC003B", "user-1", [10, 20]);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const malformedToken = createCryptographicRoomToken("user-1", room.id, 3600, TEST_JWT_SECRET, {
+        iat: nowSec,
+        exp: nowSec - 100,
+      });
+
+      expect(() =>
+        verifyCryptographicRoomToken(malformedToken, room.id, room.participants)
+      ).toThrow("Malformed token: exp cannot be earlier than iat");
     });
 
     it("rejects validly signed tokens when user is not in the room roster (non-member denial)", () => {
@@ -484,6 +597,25 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       expect(() =>
         verifyCryptographicRoomToken(outsiderToken, room.id, room.participants)
       ).toThrow('Participant "outsider-user" is not in authorized room roster');
+    });
+
+    it("enforces canonical topic standard room:${room_id} (UUID) and rejects room code topic room:${room_code}", () => {
+      const room = workerA.createRoom("ABC123", "user-1", [10, 20]);
+      const token = createCryptographicRoomToken("user-1", room.id);
+
+      // Room code is "ABC123", while room id is "room-uuid-ABC123"
+      expect(room.code).toBe("ABC123");
+      expect(room.id).toBe("room-uuid-ABC123");
+
+      // Subscribing with shareable 6-char room code FAILS canonical topic standard
+      expect(() =>
+        workerA.subscribeToRoom(`room:${room.code}`, room.id, token, () => {})
+      ).toThrow(`Channel topic "room:${room.code}" does not match authorized room topic "room:${room.id}"`);
+
+      // Subscribing with canonical UUID topic SUCCEEDS
+      expect(() =>
+        workerA.subscribeToRoom(`room:${room.id}`, room.id, token, () => {})
+      ).not.toThrow();
     });
 
     it("rejects cross-room channel subscription attempts via Supabase Realtime topic authorization rule", () => {
@@ -500,7 +632,7 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       // Attempting to subscribe to room2's channel topic with room1's token is rejected
       expect(() =>
         workerB.subscribeToRoom(`room:${room2.id}`, room2.id, tokenRoom1, () => {})
-      ).toThrow('Room claim "room-SEC005" does not match required room "room-SEC006"');
+      ).toThrow(`Room claim "${room1.id}" does not match required room "${room2.id}"`);
 
       // Attempting to subscribe with mismatched channel topic vs room ID is rejected
       expect(() =>
@@ -511,9 +643,11 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
 
   describe("Multi-Worker Real Relational Database Concurrency (Node 24 node:sqlite WAL mode)", () => {
     const testDbPath = path.join(process.cwd(), "tests", "poc-sqlite-concurrency.db");
+    const barrierPath = path.join(process.cwd(), "tests", "poc-sqlite-barrier.tmp");
 
     beforeEach(() => {
       if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+      if (fs.existsSync(barrierPath)) fs.unlinkSync(barrierPath);
       const db = new DatabaseSync(testDbPath);
       db.exec("PRAGMA journal_mode = WAL;");
       db.exec("PRAGMA busy_timeout = 5000;");
@@ -555,6 +689,7 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
     afterEach(() => {
       try {
         if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+        if (fs.existsSync(barrierPath)) fs.unlinkSync(barrierPath);
         const shm = testDbPath + "-shm";
         const wal = testDbPath + "-wal";
         if (fs.existsSync(shm)) fs.unlinkSync(shm);
@@ -564,11 +699,12 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       }
     });
 
-    it("demonstrates true multi-instance relational concurrency: 2 isolated worker threads write concurrently with ACID isolation and exactly-once match transition", async () => {
+    it("demonstrates true multi-instance relational concurrency: 2 isolated worker threads write concurrently with ACID isolation, deterministic write contention, lock waiting, and exactly-once match transition", async () => {
       const workerCode = `
         const { DatabaseSync } = require('node:sqlite');
         const { parentPort, workerData } = require('node:worker_threads');
-        const { workerId, participantId, dbPath } = workerData;
+        const fs = require('node:fs');
+        const { workerId, participantId, dbPath, barrierPath } = workerData;
 
         const db = new DatabaseSync(dbPath);
         db.exec('PRAGMA busy_timeout = 5000;');
@@ -580,27 +716,64 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
           throw new Error('Participant not in room roster');
         }
 
-        // Begin transaction with immediate write lock
-        db.exec('BEGIN IMMEDIATE');
-        db.prepare('INSERT OR IGNORE INTO votes VALUES (?, ?, ?, ?)').run('room-WAL01', participantId, 550, 'LIKE');
+        let lockWaitMs = 0;
 
-        const likeCount = db.prepare("SELECT count(*) as cnt FROM votes WHERE room_id = ? AND movie_id = ? AND vote = 'LIKE'")
-          .get('room-WAL01', 550).cnt;
+        if (workerId === 'instance-A') {
+          // Instance A acquires exclusive write lock first
+          db.exec('BEGIN IMMEDIATE');
+          // Signal instance B that write lock is acquired and held
+          fs.writeFileSync(barrierPath, 'locked');
+          // Hold write lock for 70ms to force instance B into contention window
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 70);
 
-        let transitioned = false;
-        if (likeCount >= 2) {
-          const res = db.prepare("UPDATE rooms SET status = 'MATCHED', matched_movie_id = ?, state_version = state_version + 1 WHERE id = ? AND status = 'VOTING'")
-            .run(550, 'room-WAL01');
-          if (res.changes > 0) {
-            transitioned = true;
-            db.prepare('INSERT INTO room_events (room_id, version, event_type, payload) VALUES (?, (SELECT state_version FROM rooms WHERE id = ?), ?, ?)')
-              .run('room-WAL01', 'room-WAL01', 'match_announced', JSON.stringify({ movieId: 550 }));
+          db.prepare('INSERT OR IGNORE INTO votes VALUES (?, ?, ?, ?)').run('room-WAL01', participantId, 550, 'LIKE');
+          const likeCount = db.prepare("SELECT count(*) as cnt FROM votes WHERE room_id = ? AND movie_id = ? AND vote = 'LIKE'")
+            .get('room-WAL01', 550).cnt;
+
+          let transitioned = false;
+          if (likeCount >= 2) {
+            const res = db.prepare("UPDATE rooms SET status = 'MATCHED', matched_movie_id = ?, state_version = state_version + 1 WHERE id = ? AND status = 'VOTING'")
+              .run(550, 'room-WAL01');
+            if (res.changes > 0) {
+              transitioned = true;
+              db.prepare('INSERT INTO room_events (room_id, version, event_type, payload) VALUES (?, (SELECT state_version FROM rooms WHERE id = ?), ?, ?)')
+                .run('room-WAL01', 'room-WAL01', 'match_announced', JSON.stringify({ movieId: 550 }));
+            }
           }
-        }
-        db.exec('COMMIT');
-        db.close();
+          db.exec('COMMIT');
+          db.close();
+          parentPort.postMessage({ workerId, participantId, transitioned, likeCount, lockWaitMs });
+        } else {
+          // Instance B waits until instance A has acquired the write lock
+          let waitedForA = 0;
+          while (!fs.existsSync(barrierPath) && waitedForA < 2000) {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+            waitedForA += 5;
+          }
 
-        parentPort.postMessage({ workerId, participantId, transitioned, likeCount });
+          // Instance B attempts BEGIN IMMEDIATE while Instance A holds the write lock
+          const t0 = performance.now();
+          db.exec('BEGIN IMMEDIATE');
+          lockWaitMs = performance.now() - t0;
+
+          db.prepare('INSERT OR IGNORE INTO votes VALUES (?, ?, ?, ?)').run('room-WAL01', participantId, 550, 'LIKE');
+          const likeCount = db.prepare("SELECT count(*) as cnt FROM votes WHERE room_id = ? AND movie_id = ? AND vote = 'LIKE'")
+            .get('room-WAL01', 550).cnt;
+
+          let transitioned = false;
+          if (likeCount >= 2) {
+            const res = db.prepare("UPDATE rooms SET status = 'MATCHED', matched_movie_id = ?, state_version = state_version + 1 WHERE id = ? AND status = 'VOTING'")
+              .run(550, 'room-WAL01');
+            if (res.changes > 0) {
+              transitioned = true;
+              db.prepare('INSERT INTO room_events (room_id, version, event_type, payload) VALUES (?, (SELECT state_version FROM rooms WHERE id = ?), ?, ?)')
+                .run('room-WAL01', 'room-WAL01', 'match_announced', JSON.stringify({ movieId: 550 }));
+            }
+          }
+          db.exec('COMMIT');
+          db.close();
+          parentPort.postMessage({ workerId, participantId, transitioned, likeCount, lockWaitMs });
+        }
       `;
 
       function spawnWorker(workerId: string, participantId: string): Promise<{
@@ -608,11 +781,12 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
         participantId: string;
         transitioned: boolean;
         likeCount: number;
+        lockWaitMs: number;
       }> {
         return new Promise((resolve, reject) => {
           const w = new Worker(workerCode, {
             eval: true,
-            workerData: { workerId, participantId, dbPath: testDbPath },
+            workerData: { workerId, participantId, dbPath: testDbPath, barrierPath },
           });
           w.on("message", (msg) => {
             w.terminate().then(() => resolve(msg));
@@ -629,6 +803,10 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       ]);
 
       expect(results.length).toBe(2);
+
+      // Verify that instance B experienced measurable lock contention / waiting behind instance A
+      const instanceB = results.find((r) => r.workerId === "instance-B")!;
+      expect(instanceB.lockWaitMs).toBeGreaterThan(25);
 
       // Exactly one worker performed the guarded transition to MATCHED
       const transitionedWorkers = results.filter((r) => r.transitioned);
