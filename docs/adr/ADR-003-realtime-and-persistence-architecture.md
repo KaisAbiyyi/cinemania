@@ -100,42 +100,104 @@ In serverless execution environments, compute functions are **stateless, ephemer
    - Token timestamps conform strictly to RFC 7519 `NumericDate` (integer seconds since Unix epoch).
    - Verifiers enforce `iat <= nowSeconds + 30` (rejecting future-issued tokens), maximum token TTL of 24 hours (`exp - iat <= 86400`), algorithm whitelist (`HS256` only), and roster membership validation.
 
-2. **Channel Authorization & Row-Level Security (Supabase Realtime Private Channels):**
-   - **Canonical Topic Standard:** Realtime channel topic is strictly and exclusively formatted as `room:${room_id}` where `room_id` is the opaque room UUIDv4 (never the user-facing 6-character room code).
-   - **Listen-Only Client Access (SELECT Policy):** Channel connections require the capability JWT. Supabase Realtime Authorization evaluates Row-Level Security policies on `realtime.messages` using `realtime.topic()`:
-     ```sql
-     -- 1. Authorize private channel subscription (listen only)
-     CREATE POLICY "Authorize room channel subscription"
-     ON realtime.messages
-     FOR SELECT
-     TO authenticated
-     USING (
-       -- Compare channel topic to authorized room ID claim in JWT
-       realtime.topic() = ('room:' || (auth.jwt() ->> 'room_id'))
-       -- Authorize only registered participants in the room roster (CINE-013 guest participant_id)
-       AND EXISTS (
-         SELECT 1 FROM public.room_participants
-         WHERE room_id = (auth.jwt() ->> 'room_id')::uuid
-           AND participant_id = (auth.jwt() ->> 'sub')::uuid
-       )
-     );
+2. **Fail-Closed Supabase Realtime Private Channels Deployment Settings:**
+   To guarantee strict private-only channel enforcement and prevent unauthorized or unauthenticated eavesdropping:
+   - **Project Setting (Fail-Closed):** The project-level Realtime setting **"Allow public access" MUST BE DISABLED** in Supabase Project Settings -> Realtime. When public access is disabled, channels reject anonymous connections by default.
+   - **Client Channel Configuration:** Clients MUST subscribe using explicit private channel configuration:
+     ```typescript
+     // Client subscription pattern (Next.js client)
+     const channel = supabase.channel(`room:${roomId}`, {
+       config: { private: true },
+     });
      ```
-   - **Denial of Client Publication on Authoritative Channels (No INSERT Policy for Clients):**
-     - Clients are **strictly prohibited from publishing directly to `room:${room_id}`**. There is NO `INSERT` policy granted to `authenticated` for authoritative room state channels.
-     - Authoritative state events (`roster_frozen`, `vote_recorded`, `match_announced`) are published **exclusively by backend serverless route handlers** using the server-side service-role key (which bypasses RLS).
-     - Any client attempt to forge or spoof a broadcast on the authoritative room channel is rejected with `403 Forbidden`.
-     - Client UI components treat WebSocket events as reactive notifications and reconcile against the authoritative snapshot via HTTP `GET /api/room/[code]`.
-     - If future milestones introduce peer-to-peer ephemeral signals (such as typing indicators or cursor positions), they must be segregated into an unauthoritative subtopic (e.g. `room:${room_id}:presence`) where client `INSERT` is permitted, fully isolated from game state.
+   - **Canonical Topic Standard:** Realtime channel topic is strictly and exclusively formatted as `room:${room_id}` where `room_id` is the opaque room UUIDv4 (never the user-facing 6-character room code).
 
-3. **Permission Grants & Service Key Lifecycle:**
-   - The PostgreSQL `authenticated` role requires `SELECT` permissions on `public.room_participants` (or via a `SECURITY DEFINER` authorization function).
-   - The Supabase service-role secret is strictly server-only, never exposed to client browsers or mobile devices.
+3. **Row-Level Security on `realtime.messages` (Listen-Only Subscription Policy):**
+   Supabase Realtime Authorization evaluates Row-Level Security policies on `realtime.messages` using `realtime.topic()`:
+   ```sql
+   -- Authorize private channel subscription (listen-only)
+   CREATE POLICY "Authorize room channel subscription"
+   ON realtime.messages
+   FOR SELECT
+   TO authenticated
+   USING (
+     -- Compare channel topic to authorized room ID claim in JWT
+     realtime.topic() = ('room:' || (auth.jwt() ->> 'room_id'))
+     -- Authorize only registered participants via safe non-enumerating helper
+     AND public.is_room_participant(
+       (auth.jwt() ->> 'room_id')::uuid,
+       (auth.jwt() ->> 'sub')::uuid
+     )
+   );
+   ```
 
-### 4.2.1 Anonymous Guest Identity & RLS Reconciliation (CINE-013 & CINE-018)
+4. **Strict Denial of Client-Side Broadcast (Fail-Closed Publisher Policy):**
+   - Clients are **strictly prohibited from publishing directly to `room:${room_id}`**. There is NO client broadcast permission.
+   - An explicit fail-closed denial policy is attached to `realtime.messages`:
+     ```sql
+     -- Explicitly deny all client-originated broadcast on room channels
+     CREATE POLICY "Deny client publication on room channels"
+     ON realtime.messages
+     FOR INSERT
+     TO authenticated
+     WITH CHECK (false);
+     ```
+   - Authoritative state events (`roster_frozen`, `vote_recorded`, `match_announced`) are published **exclusively by backend serverless route handlers** using the server-side modern secret key (`SUPABASE_SECRET_KEY`), which bypasses client RLS.
+   - Any client attempt to forge or spoof a broadcast on the authoritative room channel is rejected with `403 Forbidden`.
+   - Client UI components treat WebSocket events as reactive notifications and reconcile against the authoritative snapshot via HTTP `GET /api/room/[code]`.
+   - Negative E2E controls planned for CINE-012/CINE-018:
+     - `TEST_UNAUTHORIZED_PUBLIC_JOIN`: Unauthenticated client receives connection denial.
+     - `TEST_CROSS_ROOM_JOIN`: Valid token for Room A receives `403 Forbidden` attempting to join Room B.
+     - `TEST_ROGUE_CLIENT_BROADCAST`: Authenticated participant attempting `channel.send()` receives rejection.
+     - `TEST_AUTHENTICATED_MEMBER_SELECT`: Valid participant successfully receives server-originated broadcasts.
+
+### 4.2.1 Guest Membership Lookup RLS & Security Definer Pattern (CINE-013 & CINE-018)
 In CineMatch, users participate as anonymous guests without registering email/password accounts or having rows in Supabase Auth's `auth.users` table:
 1. **Guest Identity Generation:** The server generates a cryptographic UUIDv4 `participant_id` for each guest, sealed in an `HttpOnly, Secure, SameSite=Lax` cookie (`cinematch_guest_token`).
-2. **Room Membership Table:** When a guest joins a room, a row is persisted in `public.room_participants (room_id, participant_id, role, joined_at)`.
-3. **Realtime Capability JWT Claims (RFC 7519 Compliant):** To connect to Supabase Realtime private channels, the server issues a scoped JWT signed with the project's Supabase JWT secret using algorithm `HS256`:
+2. **Room Membership Table Schema:**
+   ```sql
+   CREATE TABLE public.room_participants (
+     room_id UUID NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+     participant_id UUID NOT NULL,
+     role TEXT NOT NULL DEFAULT 'MEMBER' CHECK (role IN ('HOST', 'MEMBER')),
+     joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+     PRIMARY KEY (room_id, participant_id)
+   );
+
+   -- Least-privilege RLS: participants can ONLY read their own membership record
+   ALTER TABLE public.room_participants ENABLE ROW LEVEL SECURITY;
+
+   CREATE POLICY "Participants can only read own room participant records"
+     ON public.room_participants
+     FOR SELECT
+     TO authenticated
+     USING (participant_id = (auth.jwt() ->> 'sub')::uuid);
+   ```
+3. **Safe Non-Enumerating Membership Helper (SECURITY DEFINER):**
+   To allow Realtime RLS to verify room membership without granting blanket `SELECT` on all participants (preventing user enumeration or cross-room scraping), a scoped `SECURITY DEFINER` function is pinned with `search_path`:
+   ```sql
+   CREATE OR REPLACE FUNCTION public.is_room_participant(target_room_id uuid, target_user_id uuid)
+   RETURNS boolean
+   LANGUAGE plpgsql
+   SECURITY DEFINER
+   SET search_path = public, pg_temp
+   AS $$
+   BEGIN
+     RETURN EXISTS (
+       SELECT 1
+       FROM public.room_participants
+       WHERE room_id = target_room_id
+         AND participant_id = target_user_id
+     );
+   END;
+   $$;
+
+   -- Lock down function execution permissions
+   REVOKE ALL ON FUNCTION public.is_room_participant(uuid, uuid) FROM public;
+   GRANT EXECUTE ON FUNCTION public.is_room_participant(uuid, uuid) TO authenticated;
+   GRANT EXECUTE ON FUNCTION public.is_room_participant(uuid, uuid) TO service_role;
+   ```
+4. **Realtime Capability JWT Claims (RFC 7519 Compliant):** To connect to Supabase Realtime private channels, the server issues a scoped JWT signed with the project's Supabase JWT secret using algorithm `HS256`:
    ```json
    {
      "sub": "<participant_id_uuid>",
@@ -146,7 +208,6 @@ In CineMatch, users participate as anonymous guests without registering email/pa
    }
    ```
    Note: `iat` and `exp` are integer seconds (RFC 7519 `NumericDate`), strictly bounded (max 24h lifetime) and validated.
-4. **Channel Authorization Enforcement:** Supabase Realtime Authorization evaluates `realtime.topic()` against `room:${room_id}` and executes the RLS subquery against `public.room_participants` matching `participant_id = (auth.jwt() ->> 'sub')::uuid`. Non-members cannot subscribe. Clients cannot publish.
 5. **Outstanding Live Cloud Qualification Gate:** While this policy and token contract are simulated and validated locally in `tests/integration/realtime-persistence-poc.test.ts`, live configuration and end-to-end testing against a real Supabase project (private channels extension, live RLS evaluation, WebSocket token handshake) remain **BLOCKED and OUTSTANDING** until Supabase infrastructure is provisioned in CINE-012/CINE-018.
 
 ### 4.3 Subscribe-First & Version-Reconciled Reconnect Protocol

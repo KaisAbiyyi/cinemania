@@ -233,9 +233,9 @@ class SharedStateAuthority {
     };
   }
 
-  createRoom(code: string, hostId: string, deck: number[]): Room {
+  createRoom(code: string, hostId: string, deck: number[], forcedRoomId?: string): Room {
     const room: Room = {
-      id: `room-uuid-${code}`,
+      id: forcedRoomId || crypto.randomUUID(),
       code,
       status: "LOBBY",
       hostId,
@@ -474,9 +474,18 @@ class SharedStateAuthority {
 
     const listeners = this.channelSubscribers.get(roomId);
     if (listeners) {
-      for (const listener of listeners) {
-        listener(event);
-      }
+      const listenersCopy = Array.from(listeners);
+      // Decouple subscriber event delivery from database transaction commit
+      // A subscriber throwing synchronously cannot abort or corrupt state
+      queueMicrotask(() => {
+        for (const listener of listenersCopy) {
+          try {
+            listener(event);
+          } catch {
+            // Decoupled delivery: swallow callback errors to protect transaction loop
+          }
+        }
+      });
     }
   }
 }
@@ -490,8 +499,8 @@ class SimulatedWorker {
     this.coordinator = coordinator;
   }
 
-  createRoom(code: string, hostId: string, deck: number[]) {
-    return this.coordinator.createRoom(code, hostId, deck);
+  createRoom(code: string, hostId: string, deck: number[], forcedRoomId?: string) {
+    return this.coordinator.createRoom(code, hostId, deck, forcedRoomId);
   }
 
   joinRoom(roomId: string, participantId: string) {
@@ -679,9 +688,9 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       const room = workerA.createRoom("ABC123", "user-1", [10, 20]);
       const token = createCryptographicRoomToken("user-1", room.id);
 
-      // Room code is "ABC123", while room id is "room-uuid-ABC123"
+      // Room code is "ABC123", while room id is an opaque RFC 4122 UUIDv4
       expect(room.code).toBe("ABC123");
-      expect(room.id).toBe("room-uuid-ABC123");
+      expect(room.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
 
       // Subscribing with shareable 6-char room code FAILS canonical topic standard
       expect(() =>
@@ -763,10 +772,14 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
     });
   });
 
-  describe("Multi-Worker Real Relational Database Concurrency (Node 24 node:sqlite WAL mode)", () => {
+  describe("Multi-Worker SQLite Algorithmic Model (Node 24 node:sqlite WAL mode)", () => {
     const testDbPath = path.join(process.cwd(), "tests", "poc-sqlite-concurrency.db");
     const barrierPathA = path.join(process.cwd(), "tests", "poc-sqlite-barrier-a.tmp");
     const barrierPathB = path.join(process.cwd(), "tests", "poc-sqlite-barrier-b.tmp");
+
+    const walRoomId = crypto.randomUUID();
+    const walUserAlpha = crypto.randomUUID();
+    const walUserBeta = crypto.randomUUID();
 
     beforeEach(() => {
       if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
@@ -803,10 +816,10 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
           event_type TEXT NOT NULL,
           payload TEXT NOT NULL
         );
-        INSERT INTO rooms VALUES ('room-WAL01', 'VOTING', 1, NULL);
-        INSERT INTO room_participants VALUES ('room-WAL01', 'user-alpha', 'HOST', 1000);
-        INSERT INTO room_participants VALUES ('room-WAL01', 'user-beta', 'MEMBER', 1001);
       `);
+      db.prepare("INSERT INTO rooms VALUES (?, 'VOTING', 1, NULL);").run(walRoomId);
+      db.prepare("INSERT INTO room_participants VALUES (?, ?, 'HOST', 1000);").run(walRoomId, walUserAlpha);
+      db.prepare("INSERT INTO room_participants VALUES (?, ?, 'MEMBER', 1001);").run(walRoomId, walUserBeta);
       db.close();
     });
 
@@ -824,19 +837,19 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       }
     });
 
-    it("demonstrates true multi-instance relational concurrency: 2 isolated worker threads write concurrently with ACID isolation, deterministic two-way handshake write contention, lock waiting, and exactly-once match transition", async () => {
+    it("multi-worker SQLite algorithmic model: 2 isolated worker threads write concurrently with ACID isolation, deterministic two-way handshake write contention, lock waiting, and exactly-once match transition", async () => {
       const workerCode = `
         const { DatabaseSync } = require('node:sqlite');
         const { parentPort, workerData } = require('node:worker_threads');
         const fs = require('node:fs');
-        const { workerId, participantId, dbPath, barrierPathA, barrierPathB } = workerData;
+        const { workerId, participantId, roomId, dbPath, barrierPathA, barrierPathB } = workerData;
 
         const db = new DatabaseSync(dbPath);
         db.exec('PRAGMA busy_timeout = 5000;');
 
         // Verify participant roster membership (CINE-013 guest design)
         const member = db.prepare('SELECT 1 FROM room_participants WHERE room_id = ? AND participant_id = ?')
-          .get('room-WAL01', participantId);
+          .get(roomId, participantId);
         if (!member) {
           throw new Error('Participant not in room roster');
         }
@@ -860,18 +873,18 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
           // Hold write lock for an additional 40ms to force instance B into measured lock-wait contention window
           Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
 
-          db.prepare('INSERT OR IGNORE INTO votes VALUES (?, ?, ?, ?)').run('room-WAL01', participantId, 550, 'LIKE');
+          db.prepare('INSERT OR IGNORE INTO votes VALUES (?, ?, ?, ?)').run(roomId, participantId, 550, 'LIKE');
           const likeCount = db.prepare("SELECT count(*) as cnt FROM votes WHERE room_id = ? AND movie_id = ? AND vote = 'LIKE'")
-            .get('room-WAL01', 550).cnt;
+            .get(roomId, 550).cnt;
 
           let transitioned = false;
           if (likeCount >= 2) {
             const res = db.prepare("UPDATE rooms SET status = 'MATCHED', matched_movie_id = ?, state_version = state_version + 1 WHERE id = ? AND status = 'VOTING'")
-              .run(550, 'room-WAL01');
+              .run(550, roomId);
             if (res.changes > 0) {
               transitioned = true;
               db.prepare('INSERT INTO room_events (room_id, version, event_type, payload) VALUES (?, (SELECT state_version FROM rooms WHERE id = ?), ?, ?)')
-                .run('room-WAL01', 'room-WAL01', 'match_announced', JSON.stringify({ movieId: 550 }));
+                .run(roomId, roomId, 'match_announced', JSON.stringify({ movieId: 550 }));
             }
           }
           db.exec('COMMIT');
@@ -893,18 +906,18 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
           db.exec('BEGIN IMMEDIATE');
           lockWaitMs = performance.now() - t0;
 
-          db.prepare('INSERT OR IGNORE INTO votes VALUES (?, ?, ?, ?)').run('room-WAL01', participantId, 550, 'LIKE');
+          db.prepare('INSERT OR IGNORE INTO votes VALUES (?, ?, ?, ?)').run(roomId, participantId, 550, 'LIKE');
           const likeCount = db.prepare("SELECT count(*) as cnt FROM votes WHERE room_id = ? AND movie_id = ? AND vote = 'LIKE'")
-            .get('room-WAL01', 550).cnt;
+            .get(roomId, 550).cnt;
 
           let transitioned = false;
           if (likeCount >= 2) {
             const res = db.prepare("UPDATE rooms SET status = 'MATCHED', matched_movie_id = ?, state_version = state_version + 1 WHERE id = ? AND status = 'VOTING'")
-              .run(550, 'room-WAL01');
+              .run(550, roomId);
             if (res.changes > 0) {
               transitioned = true;
               db.prepare('INSERT INTO room_events (room_id, version, event_type, payload) VALUES (?, (SELECT state_version FROM rooms WHERE id = ?), ?, ?)')
-                .run('room-WAL01', 'room-WAL01', 'match_announced', JSON.stringify({ movieId: 550 }));
+                .run(roomId, roomId, 'match_announced', JSON.stringify({ movieId: 550 }));
             }
           }
           db.exec('COMMIT');
@@ -923,7 +936,7 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
         return new Promise((resolve, reject) => {
           const w = new Worker(workerCode, {
             eval: true,
-            workerData: { workerId, participantId, dbPath: testDbPath, barrierPathA, barrierPathB },
+            workerData: { workerId, participantId, roomId: walRoomId, dbPath: testDbPath, barrierPathA, barrierPathB },
           });
           w.on("message", (msg) => {
             w.terminate().then(() => resolve(msg));
@@ -935,8 +948,8 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       }
 
       const results = await Promise.all([
-        spawnWorker("instance-A", "user-alpha"),
-        spawnWorker("instance-B", "user-beta"),
+        spawnWorker("instance-A", walUserAlpha),
+        spawnWorker("instance-B", walUserBeta),
       ]);
 
       expect(results.length).toBe(2);
@@ -953,7 +966,7 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       const verifyDb = new DatabaseSync(testDbPath);
       verifyDb.exec("PRAGMA busy_timeout = 5000;");
 
-      const finalRoom = verifyDb.prepare("SELECT * FROM rooms WHERE id = ?").get("room-WAL01") as {
+      const finalRoom = verifyDb.prepare("SELECT * FROM rooms WHERE id = ?").get(walRoomId) as {
         id: string;
         status: string;
         state_version: number;
@@ -963,13 +976,13 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       expect(finalRoom.matched_movie_id).toBe(550);
       expect(finalRoom.state_version).toBe(2);
 
-      const participants = verifyDb.prepare("SELECT * FROM room_participants WHERE room_id = ?").all("room-WAL01");
+      const participants = verifyDb.prepare("SELECT * FROM room_participants WHERE room_id = ?").all(walRoomId);
       expect(participants.length).toBe(2);
 
-      const votes = verifyDb.prepare("SELECT * FROM votes WHERE room_id = ?").all("room-WAL01");
+      const votes = verifyDb.prepare("SELECT * FROM votes WHERE room_id = ?").all(walRoomId);
       expect(votes.length).toBe(2);
 
-      const events = verifyDb.prepare("SELECT * FROM room_events WHERE room_id = ?").all("room-WAL01") as Array<{
+      const events = verifyDb.prepare("SELECT * FROM room_events WHERE room_id = ?").all(walRoomId) as Array<{
         version: number;
         event_type: string;
         payload: string;
@@ -1044,6 +1057,36 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
 
       const duplicateResult = await workerA.submitVote(room.id, "u1", 10, "LIKE");
       expect(duplicateResult.status).toBe("RECORDED");
+    });
+
+    it("ensures event delivery is decoupled from mutation commit so a throwing subscriber cannot corrupt state or abort votes", async () => {
+      const room = workerA.createRoom("DECOUPLE1", "host-user", [101, 102]);
+      workerB.joinRoom(room.id, "guest-user");
+      workerA.startRound(room.id, "host-user");
+
+      const guestToken = createCryptographicRoomToken("guest-user", room.id);
+
+      // Register a misbehaving subscriber that throws synchronously upon receiving any event
+      let throwingSubscriberCalled = false;
+      workerB.subscribeToRoom(`room:${room.id}`, room.id, guestToken, () => {
+        throwingSubscriberCalled = true;
+        throw new Error("UNHANDLED_CRASH_IN_SUBSCRIBER_CALLBACK");
+      });
+
+      // Submit vote: mutation commit MUST SUCCEED without throwing
+      const result = await workerA.submitVote(room.id, "host-user", 101, "LIKE");
+      expect(result.status).toBe("RECORDED");
+      expect(result.stateVersion).toBe(4);
+
+      // Allow microtask queue to drain
+      await new Promise((resolve) => setTimeout(resolve, 15));
+
+      expect(throwingSubscriberCalled).toBe(true);
+
+      // Verify room state is fully preserved and intact
+      const snapshot = workerB.getRoomSnapshot(room.id, guestToken);
+      expect(snapshot.stateVersion).toBe(4);
+      expect(snapshot.status).toBe("VOTING");
     });
   });
 
