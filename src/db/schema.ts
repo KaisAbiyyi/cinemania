@@ -2,6 +2,8 @@
  * CINE-012: Authoritative Database Schema Definitions and Types
  * Defines Room, Participant, Round, Candidate, Vote, Event with statuses:
  * LOBBY, ACTIVE, MATCHED, EXHAUSTED, EXPIRED.
+ * 
+ * Fully aligned with ADR-003 (Realtime & Persistence Architecture).
  */
 
 export type RoomStatus = "LOBBY" | "ACTIVE" | "MATCHED" | "EXHAUSTED" | "EXPIRED";
@@ -36,9 +38,8 @@ export interface Room {
 }
 
 export interface RoomParticipant {
-  id: string; // UUID
-  room_id: string;
-  guest_id: string;
+  room_id: string; // UUID
+  participant_id: string; // UUID (matches guest JWT sub per ADR-003)
   display_name: string;
   role: ParticipantRole;
   is_connected: boolean;
@@ -85,6 +86,10 @@ export interface RoomEvent {
   version: number;
   event_type: RoomEventType;
   payload: Record<string, unknown>;
+  dispatched: boolean;
+  dispatched_at: string | null;
+  retry_count: number;
+  poison: boolean;
   created_at: string;
 }
 

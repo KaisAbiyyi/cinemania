@@ -1,5 +1,6 @@
 -- CINE-012: SQLite Mirror Schema Migration 001 (Forward)
 -- Used for fast, zero-dependency offline unit & integration test validation
+-- Coherent with ADR-003 and PostgreSQL migration
 
 PRAGMA foreign_keys = ON;
 
@@ -21,15 +22,14 @@ CREATE TABLE IF NOT EXISTS rooms (
 );
 
 CREATE TABLE IF NOT EXISTS room_participants (
-  id TEXT PRIMARY KEY,
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-  guest_id TEXT NOT NULL,
+  participant_id TEXT NOT NULL,
   display_name TEXT NOT NULL CHECK(length(trim(display_name)) > 0),
   role TEXT NOT NULL DEFAULT 'MEMBER' CHECK(role IN ('HOST', 'MEMBER')),
   is_connected INTEGER NOT NULL DEFAULT 1 CHECK(is_connected IN (0, 1)),
   joined_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-  CONSTRAINT uq_room_guest UNIQUE (room_id, guest_id)
+  PRIMARY KEY (room_id, participant_id)
 );
 
 CREATE TABLE IF NOT EXISTS rounds (
@@ -54,18 +54,23 @@ CREATE TABLE IF NOT EXISTS candidates (
   release_date TEXT,
   vote_average REAL,
   CONSTRAINT uq_round_movie UNIQUE (round_id, movie_id),
-  CONSTRAINT uq_round_position UNIQUE (round_id, position)
+  CONSTRAINT uq_round_position UNIQUE (round_id, position),
+  CONSTRAINT uq_round_candidate_movie UNIQUE (round_id, id, movie_id)
 );
 
 CREATE TABLE IF NOT EXISTS votes (
   id TEXT PRIMARY KEY,
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
   round_id TEXT NOT NULL REFERENCES rounds(id) ON DELETE CASCADE,
-  participant_id TEXT NOT NULL REFERENCES room_participants(id) ON DELETE CASCADE,
-  candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+  participant_id TEXT NOT NULL,
+  candidate_id TEXT NOT NULL,
   movie_id INTEGER NOT NULL,
   vote TEXT NOT NULL CHECK(vote IN ('LIKE', 'SKIP')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CONSTRAINT fk_votes_participant FOREIGN KEY (room_id, participant_id)
+    REFERENCES room_participants(room_id, participant_id) ON DELETE CASCADE,
+  CONSTRAINT fk_votes_candidate FOREIGN KEY (round_id, candidate_id, movie_id)
+    REFERENCES candidates(round_id, id, movie_id) ON DELETE CASCADE,
   CONSTRAINT uq_vote_candidate UNIQUE (round_id, participant_id, candidate_id),
   CONSTRAINT uq_vote_movie UNIQUE (round_id, participant_id, movie_id)
 );
@@ -76,6 +81,10 @@ CREATE TABLE IF NOT EXISTS room_events (
   version INTEGER NOT NULL,
   event_type TEXT NOT NULL,
   payload TEXT NOT NULL,
+  dispatched INTEGER NOT NULL DEFAULT 0 CHECK(dispatched IN (0, 1)),
+  dispatched_at TEXT,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  poison INTEGER NOT NULL DEFAULT 0 CHECK(poison IN (0, 1)),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   CONSTRAINT uq_room_event_version UNIQUE (room_id, version)
 );

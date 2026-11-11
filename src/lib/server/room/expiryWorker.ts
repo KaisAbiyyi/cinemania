@@ -26,6 +26,9 @@ export interface RoomPersistenceAdapter {
  * Expiry Worker for CineMatch Rooms.
  * Evaluates configurable inactivity TTL (default 24h = 86400s) using a pluggable clock
  * to safely expire abandoned or timed-out rooms without destructive data loss.
+ * 
+ * Invariant: Active rooms that regularly submit votes or joins have their expires_at
+ * renewed atomically and will never expire prematurely.
  */
 export class RoomExpiryWorker {
   private readonly defaultTtlSeconds: number;
@@ -48,7 +51,9 @@ export class RoomExpiryWorker {
     const expiredRoomIds: string[] = [];
 
     for (const room of rooms) {
-      if (room.status === "EXPIRED") continue;
+      if (room.status === "EXPIRED" || room.status === "MATCHED" || room.status === "EXHAUSTED") {
+        continue;
+      }
 
       const ttlSeconds = room.inactivity_ttl_seconds || this.defaultTtlSeconds;
       const lastActivityTime = new Date(room.last_activity_at).getTime();
@@ -58,8 +63,8 @@ export class RoomExpiryWorker {
       const isPastLastActivityTtl = nowTime >= lastActivityTime + ttlSeconds * 1000;
       const isPastExplicitExpiry = nowTime >= expiresAtTime;
 
-      if (isPastLastActivityTtl || isPastExplicitExpiry) {
-        // Enforce state machine rules: assert valid transition from current status to EXPIRED
+      // Both conditions ensure a room with recent activity does not expire prematurely
+      if (isPastLastActivityTtl && isPastExplicitExpiry) {
         assertValidTransition(room.status, "EXPIRED", "Inactivity TTL exceeded");
 
         const newVersion = room.state_version + 1;
