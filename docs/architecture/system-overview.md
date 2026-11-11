@@ -208,3 +208,8 @@ flowchart LR
 - **Defensive Error Handling:**
   - When `YOUTUBE_API_KEY` is missing, `/api/youtube` returns HTTP 500 with `{ "error": "Server configuration error" }`.
   - When `IPINFO_TOKEN` is missing, `/api/geolocation` detects local IP requests and safely returns `{ "region": "US" }`.
+
+### 5.2 Offline Onboarding and Network Guard Boundary
+- **Fixture-Backed Hermetic Mode:** Onboarding and local development can run fully offline using the deterministic mock interceptor (`docs/artifacts/cine-002/fixtures/mock_tmdb.cjs`).
+- **Initial-Call and Redirect Guard Scope:** In hermetic test verification, `docs/artifacts/cine-005/hermetic_network_guard.cjs` wraps `node:http`, `node:https`, and `globalThis.fetch`. It enforces a strict loopback-only wire policy (`localhost`, `127.0.0.1`, `::1`), blocking initial external requests and 3xx redirects to external destinations with `[FAIL_CLOSED]`. This guarantees initial-call and redirect guard coverage for Node.js standard HTTP/HTTPS/fetch paths without making false claims of kernel-level sandbox isolation.
+- **Isolated Scratch Execution:** The onboarding test runner executes Next.js production builds inside a disposable scratch directory in `os.tmpdir()` with directory junctions to `.next` and `node_modules`. Because the scratch directory contains zero `.env*` files, Next.js cannot discover or load local developer credentials, providing true hermetic environment isolation without modifying developer files in the workspace.

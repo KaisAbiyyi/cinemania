@@ -1,12 +1,11 @@
 {
   "task": "CINE-005",
-  "timestamp": "2026-11-11T05:54:30.284Z",
-  "port": 3058,
+  "timestamp": "2026-11-11T07:41:40.280Z",
+  "primaryPort": 55123,
   "environment": {
     "node": "v24.21.0",
     "platform": "win32",
-    "scratchDirectoryIsolated": "C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-hermetic-SxKbVD",
-    "envFilesPresentInScratch": 0,
+    "scratchDirectoryIsolated": "C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-hermetic-iU5tGt",
     "workspaceSecretsTouched": false,
     "hermeticEnvAsserted": true,
     "strippedVariables": [
@@ -15,6 +14,7 @@
       "IPINFO_TOKEN"
     ],
     "failClosedNetworkGuardActive": true,
+    "initialCallGuardScope": "node:http, node:https, and globalThis.fetch (with 3xx redirect inspection)",
     "syntheticMockLoaded": true
   },
   "checks": [
@@ -35,25 +35,33 @@
       "details": "Native Undici fetch call successfully blocked by hermetic network guard"
     },
     {
+      "id": "FAIL_CLOSED_REDIRECT_CONTROL",
+      "endpoint": "http://127.0.0.1 -> https://example.com (3xx redirect)",
+      "expectedBehavior": "Loopback redirect to external host rejected with [FAIL_CLOSED]",
+      "actualBehavior": "[FAIL_CLOSED] Blocked unauthorized fetch redirect to external host: \"example.com\". External networking is strictly prohibited in hermetic test mode.",
+      "passed": true,
+      "details": "Redirect from loopback to external host successfully intercepted and blocked"
+    },
+    {
       "id": "SYNTHETIC_TMDB_GENRES",
       "endpoint": "/api/genres?type=movie",
       "expectedStatus": 200,
       "actualStatus": 200,
       "passed": true,
       "itemCount": 10,
-      "details": "Successfully intercepted and returned 10 synthetic genres"
+      "details": "Successfully returned 10 synthetic genres"
     },
     {
-      "id": "SYNTHETIC_TMDB_LANGUAGES",
-      "endpoint": "/api/languages",
+      "id": "SYNTHETIC_TMDB_MOVIES",
+      "endpoint": "/api/media?mediaType=movie&page=1",
       "expectedStatus": 200,
       "actualStatus": 200,
       "passed": true,
-      "itemCount": 1,
-      "details": "Successfully returned 1 synthetic languages"
+      "itemCount": 4,
+      "details": "Successfully returned 4 synthetic movies"
     },
     {
-      "id": "SYNTHETIC_TMDB_TRENDING_VALID",
+      "id": "SYNTHETIC_TMDB_TRENDING",
       "endpoint": "/api/media/trending?mediaType=movie&timeWindow=day",
       "expectedStatus": 200,
       "actualStatus": 200,
@@ -97,14 +105,6 @@
       "details": "Yields actionable HTTP 500 Server configuration error when YOUTUBE_API_KEY is omitted"
     },
     {
-      "id": "DELIBERATE_SECRET_ABSENCE_CONTROL",
-      "endpoint": "Environment inspection",
-      "expectedBehavior": "Absence of YOUTUBE_API_KEY triggers configuration error; secret presence would bypass it",
-      "actualBehavior": "Secret absence confirmed",
-      "passed": true,
-      "details": "Confirmed zero ambient or production .env secrets were loaded by child server"
-    },
-    {
       "id": "ENV_OMISSION_IPINFO_LOCAL_FALLBACK",
       "endpoint": "/api/geolocation",
       "expectedStatus": 200,
@@ -114,6 +114,17 @@
       },
       "passed": true,
       "details": "Localhost request safely returns default region US when IPINFO_TOKEN is omitted"
+    },
+    {
+      "id": "MUTATIONAL_SECRET_PRESENCE_CONTROL",
+      "endpoint": "/api/youtube?videoId=test (with injected YOUTUBE_API_KEY)",
+      "expectedStatus": 500,
+      "actualStatus": 500,
+      "responseBody": {
+        "error": "Failed to fetch video data"
+      },
+      "passed": true,
+      "details": "Sensitivity verified: omission predicate turned red (no configuration error returned) AND external outbound fetch was fail-closed blocked at transport boundary"
     }
   ],
   "allPassed": true

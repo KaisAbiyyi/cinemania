@@ -5,11 +5,17 @@
  * can reach the external internet. Only local loopback connections (localhost, 127.0.0.1, ::1)
  * are permitted on the wire.
  *
- * Any external network attempt (including undici-backed globalThis.fetch, node:http, node:https,
- * or unintercepted calls to api.themoviedb.org) immediately fails closed with [FAIL_CLOSED].
+ * Scope of Guard:
+ * 1. Initial-call boundary enforcement across node:http, node:https, and globalThis.fetch.
+ * 2. Redirect guard: forces redirect: 'manual' on internal fetch calls to inspect any 3xx redirect Location
+ *    header; if Location targets an external host, the redirect chain aborts immediately with [FAIL_CLOSED]
+ *    BEFORE any outbound connection to the target host is initiated.
+ * 3. Strict loopback whitelist: accepts localhost, 127.0.0.1, ::1, and [::1] (with or without port).
+ *
+ * Any external network attempt immediately fails closed with [FAIL_CLOSED] error.
  *
  * Usage:
- *   NODE_OPTIONS="--require ./docs/artifacts/cine-005/hermetic_network_guard.cjs"
+ *   node --require ./docs/artifacts/cine-005/hermetic_network_guard.cjs ...
  */
 
 const http = require('http');
@@ -24,8 +30,21 @@ const ALLOWED_LOOPBACK_HOSTS = new Set([
 
 function isAllowedHost(host) {
   if (!host) return false;
-  const cleanHost = host.split(':')[0].toLowerCase();
-  return ALLOWED_LOOPBACK_HOSTS.has(cleanHost);
+  let h = String(host).toLowerCase().trim();
+  // Strip brackets for IPv6 literals: [::1] or [::1]:port
+  if (h.startsWith('[')) {
+    const closeIndex = h.indexOf(']');
+    if (closeIndex !== -1) {
+      h = h.slice(1, closeIndex);
+    }
+  } else if (h.includes(':')) {
+    // If single colon, it is host:port (IPv4 or hostname). If multiple colons, it is raw IPv6
+    const colons = (h.match(/:/g) || []).length;
+    if (colons === 1) {
+      h = h.split(':')[0];
+    }
+  }
+  return ALLOWED_LOOPBACK_HOSTS.has(h);
 }
 
 function extractHost(args) {
@@ -85,7 +104,7 @@ installNodeHttpGuard(https, 'HTTPS');
 // 2. Install guard on Node.js globalThis.fetch (undici-backed in Node 24)
 if (typeof globalThis.fetch === 'function') {
   const origFetch = globalThis.fetch;
-  globalThis.fetch = async function (input, init) {
+  globalThis.fetch = async function safeFetch(input, init = {}) {
     let urlStr = '';
     if (typeof input === 'string') {
       urlStr = input;
@@ -95,22 +114,39 @@ if (typeof globalThis.fetch === 'function') {
       urlStr = input.url;
     }
 
-    try {
-      const parsed = new URL(urlStr, 'http://localhost');
-      if (!isAllowedHost(parsed.hostname)) {
-        const fetchError = new Error(
-          `[FAIL_CLOSED] Blocked unauthorized outbound fetch to external host: "${parsed.hostname}". External networking is strictly prohibited in hermetic test mode.`
-        );
-        fetchError.code = 'ENETUNREACH';
-        throw fetchError;
-      }
-    } catch (e) {
-      if (e.message && e.message.includes('[FAIL_CLOSED]')) {
-        throw e;
+    const parsed = new URL(urlStr, 'http://localhost');
+    if (!isAllowedHost(parsed.hostname)) {
+      const fetchError = new Error(
+        `[FAIL_CLOSED] Blocked unauthorized outbound fetch to external host: "${parsed.hostname}". External networking is strictly prohibited in hermetic test mode.`
+      );
+      fetchError.code = 'ENETUNREACH';
+      throw fetchError;
+    }
+
+    const userRedirect = init.redirect || 'follow';
+    // Force manual redirect to inspect any location header BEFORE following to wire
+    const internalInit = { ...init, redirect: 'manual' };
+    const response = await origFetch(input, internalInit);
+
+    if (response && response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (location) {
+        const redirectUrl = new URL(location, parsed);
+        if (!isAllowedHost(redirectUrl.hostname)) {
+          const redirectError = new Error(
+            `[FAIL_CLOSED] Blocked unauthorized fetch redirect to external host: "${redirectUrl.hostname}". External networking is strictly prohibited in hermetic test mode.`
+          );
+          redirectError.code = 'ENETUNREACH';
+          throw redirectError;
+        }
+
+        if (userRedirect === 'follow') {
+          return safeFetch(redirectUrl.href, init);
+        }
       }
     }
 
-    return origFetch.apply(this, arguments);
+    return response;
   };
 }
 
@@ -119,4 +155,4 @@ if (!process.env.TMDB_API_RAT || process.env.TMDB_API_RAT.trim() === '') {
   process.env.TMDB_API_RAT = 'synthetic-tmdb-offline-dev-token';
 }
 
-console.log('[hermetic_network_guard] Fail-closed network boundary initialized: loopback-only wire policy enforced for http, https, and native fetch.');
+console.log('[hermetic_network_guard] Fail-closed initial-call and redirect network boundary initialized: loopback-only wire policy enforced for http, https, and native fetch.');

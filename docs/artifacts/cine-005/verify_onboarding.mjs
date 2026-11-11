@@ -1,54 +1,68 @@
 /**
- * CINE-005 Hermetic Onboarding & Synthetic Fixtures Verification Runner
+ * Automated Verification Script for CINE-005: Developer Onboarding & Architecture Verification
+ * Revision 4 (Comprehensive Mutational Control & Guarded Transport Verification)
  *
- * Implements strict hermeticity and fail-closed network guarantees:
- * 1. Isolated Scratch Test Environment:
- *    - Next.js production server is executed inside an isolated disposable temp directory.
- *    - Junctions link to .next and node_modules; NO .env, .env.local, .env.production,
- *      or .env.production.local exist in the execution directory.
- *    - Developer workspace secrets are NEVER modified, renamed, or touched.
- * 2. Fail-Closed Network Transport Guard (hermetic_network_guard.cjs):
- *    - Outbound connections are restricted strictly to loopback (localhost, 127.0.0.1, ::1).
- *    - Outbound HTTP, HTTPS, and native Undici-backed globalThis.fetch calls fail closed.
- * 3. Preflight Negative Controls:
- *    - Negative Control: Native globalThis.fetch to external host throws [FAIL_CLOSED].
- *    - Negative Control: node:https request to external host emits [FAIL_CLOSED].
- *    - Negative Control: Direct unmocked wire access to external API host emits [FAIL_CLOSED].
- * 4. Route Assertions under Synthetic TMDB Mock Fixtures:
- *    - /api/genres?type=movie -> HTTP 200 (returns synthetic genres)
- *    - /api/languages -> HTTP 200 (returns synthetic languages)
- *    - /api/media/trending?mediaType=movie&timeWindow=day -> HTTP 200 (returns synthetic trending)
- *    - /movie -> HTTP 200 (HTML render)
- *    - / -> HTTP 200 (HTML render)
- * 5. Parameter Validation Defensive Assertion:
- *    - /api/media/trending without required params -> HTTP 400
- * 6. Secret Omission Negative Controls:
- *    - /api/youtube?videoId=test -> HTTP 500 {"error": "Server configuration error"} (YOUTUBE_API_KEY absent)
- *    - Deliberate secret-present control: validates that presence of key bypasses omission guard
- *    - /api/geolocation on loopback -> HTTP 200 {"region": "US"} (IPINFO_TOKEN absent, safe local fallback)
- *
- * Output: docs/artifacts/cine-005/onboarding-evidence.json
+ * Requirements verified:
+ * 1. Clean checkout reproducible start using synthetic offline provider fixtures (docs/artifacts/cine-002/fixtures/mock_tmdb.cjs).
+ * 2. Complete absence of real workspace secrets: server executes inside a disposable isolated scratch directory
+ *    in os.tmpdir() linked via directory junctions to .next and node_modules. ZERO workspace developer files are modified.
+ * 3. Environment omission yields actionable errors:
+ *    - Missing YOUTUBE_API_KEY returns HTTP 500 "Server configuration error".
+ *    - Missing IPINFO_TOKEN returns HTTP 200 with default region "US".
+ * 4. Mutational secret-present negative control:
+ *    - A separate isolated server with an injected synthetic YOUTUBE_API_KEY confirms the omission predicate turns red
+ *      (it no longer returns "Server configuration error", proving test sensitivity).
+ *    - Concurrently verifies that unmocked external requests (to googleapis.com) fail closed at the transport boundary
+ *      returning "Failed to fetch video data" without touching the external network.
+ * 5. Fail-closed network boundary:
+ *    - Preflight controls demonstrate that direct external node:https, globalThis.fetch, and 3xx loopback redirects
+ *      to external hosts immediately fail closed with [FAIL_CLOSED].
+ * 6. Clean lifecycle:
+ *    - Server processes are gracefully terminated and awaited.
+ *    - Scratch directories are recursively wiped and verified absent in finally blocks.
  */
 
-import { spawn } from 'child_process';
-import http from 'http';
-import https from 'https';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { spawn } from 'node:child_process';
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '../../..');
-const PORT = 3058;
-const BASE_URL = `http://localhost:${PORT}`;
 
-function httpRequest(url) {
+/**
+ * Allocate a dynamic ephemeral port
+ */
+function getAvailablePort() {
   return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
+    const s = net.createServer();
+    s.listen(0, '127.0.0.1', () => {
+      const port = s.address().port;
+      s.close((err) => {
+        if (err) reject(err);
+        else resolve(port);
+      });
+    });
+    s.on('error', reject);
+  });
+}
+
+/**
+ * Minimal HTTP request helper for testing endpoints
+ */
+function httpRequest(urlStr, options = {}) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(urlStr);
+    const req = http.request(parsed, options, (res) => {
       let data = '';
-      res.on('data', (chunk) => { data += chunk; });
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
       res.on('end', () => {
         resolve({
           statusCode: res.statusCode,
@@ -56,26 +70,66 @@ function httpRequest(url) {
           body: data
         });
       });
-    }).on('error', (err) => {
+    });
+
+    req.on('error', (err) => {
       reject(err);
     });
+
+    if (options.body) {
+      req.write(options.body);
+    }
+    req.end();
   });
 }
 
-async function waitForServer(url, timeoutMs = 40000) {
-  const startTime = Date.now();
-  while (Date.now() - startTime < timeoutMs) {
+/**
+ * Poll server until it responds to HTTP requests
+ */
+async function waitForServer(baseUrl, timeoutMs = 45000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
     try {
-      const res = await httpRequest(url);
-      if (res.statusCode >= 200 && res.statusCode < 500) {
+      const res = await httpRequest(`${baseUrl}/api/genres?type=movie`);
+      if (res.statusCode === 200) {
         return true;
       }
     } catch (_) {
-      // server not ready yet
+      // Server not ready yet
     }
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 600));
   }
-  throw new Error(`Server at ${url} failed to start within ${timeoutMs}ms`);
+  throw new Error(`Timed out waiting for server at ${baseUrl} after ${timeoutMs}ms`);
+}
+
+/**
+ * Gracefully stop a child process and wait for its exit event
+ */
+function stopServer(proc) {
+  return new Promise((resolve) => {
+    if (!proc || proc.exitCode !== null) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        proc.kill('SIGKILL');
+      } catch (_) {}
+      resolve();
+    }, 4000);
+
+    proc.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+
+    try {
+      proc.kill('SIGTERM');
+    } catch (_) {
+      clearTimeout(timer);
+      resolve();
+    }
+  });
 }
 
 /**
@@ -119,112 +173,160 @@ async function verifyFetchFailClosed() {
   }
 }
 
+/**
+ * Test redirect fail-closed behavior
+ */
+async function verifyRedirectFailClosed() {
+  return new Promise((resolve) => {
+    const srv = http.createServer((req, res) => {
+      res.writeHead(302, { Location: 'https://example.com/external-redirect-target' });
+      res.end();
+    });
+
+    srv.listen(0, '127.0.0.1', async () => {
+      const port = srv.address().port;
+      try {
+        await globalThis.fetch(`http://127.0.0.1:${port}`);
+        srv.close(() => {
+          resolve({
+            blocked: false,
+            error: 'Expected redirect to external host to be blocked, but it proceeded'
+          });
+        });
+      } catch (err) {
+        const isFailClosed = err.message && err.message.includes('[FAIL_CLOSED]');
+        srv.close(() => {
+          resolve({
+            blocked: isFailClosed,
+            errorMessage: err.message
+          });
+        });
+      }
+    });
+  });
+}
+
 async function run() {
-  console.log(`[CINE-005] Initializing hermetic onboarding verification on port ${PORT}...`);
+  const PORT = await getAvailablePort();
+  const BASE_URL = `http://127.0.0.1:${PORT}`;
+  console.log(`[CINE-005] Initializing hermetic onboarding verification on allocated port ${PORT}...`);
 
-  // Step 1: Create an isolated scratch test directory (zero workspace secrets touched)
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cinematch-hermetic-'));
-  console.log(`[CINE-005] Created isolated scratch test environment: ${tempDir}`);
-
-  // Create directory junctions for .next and node_modules
-  const nextTarget = path.resolve(rootDir, '.next');
-  const nodeModulesTarget = path.resolve(rootDir, 'node_modules');
-  const tempNext = path.join(tempDir, '.next');
-  const tempNodeModules = path.join(tempDir, 'node_modules');
-
-  fs.symlinkSync(nextTarget, tempNext, 'junction');
-  fs.symlinkSync(nodeModulesTarget, tempNodeModules, 'junction');
-  fs.copyFileSync(path.resolve(rootDir, 'package.json'), path.join(tempDir, 'package.json'));
-  fs.copyFileSync(path.resolve(rootDir, 'next.config.ts'), path.join(tempDir, 'next.config.ts'));
-
-  // Confirm NO .env* files exist in the isolated execution directory
-  const tempEnvFiles = fs.readdirSync(tempDir).filter(f => f.startsWith('.env'));
-  if (tempEnvFiles.length > 0) {
-    throw new Error(`Hermetic violation: Unexpected env files in scratch directory: ${tempEnvFiles.join(', ')}`);
-  }
-
-  // Step 2: Prepare clean environment without ambient secrets
-  const cleanEnv = { ...process.env };
-  delete cleanEnv.TMDB_API_RAT;
-  delete cleanEnv.YOUTUBE_API_KEY;
-  delete cleanEnv.IPINFO_TOKEN;
-
-  // Assert effective stripped environment before starting
-  if (cleanEnv.TMDB_API_RAT !== undefined || cleanEnv.YOUTUBE_API_KEY !== undefined || cleanEnv.IPINFO_TOKEN !== undefined) {
-    throw new Error('Hermetic assertion failed: Secrets still present in child process cleanEnv');
-  }
-
-  cleanEnv.PORT = String(PORT);
-  cleanEnv.NODE_ENV = 'production';
-  cleanEnv.NEXT_PUBLIC_TMDB_POSTER_URL = 'https://image.tmdb.org/t/p';
-  cleanEnv.NEXT_PUBLIC_IMAGE_BASE_URL = 'https://image.tmdb.org/t/p';
-
-  const networkGuardScript = path.resolve(__dirname, 'hermetic_network_guard.cjs');
-  const mockScriptPath = path.resolve(rootDir, 'docs/artifacts/cine-002/fixtures/mock_tmdb.cjs');
-  const nextBin = path.resolve(rootDir, 'node_modules/next/dist/bin/next');
-
-  // Step 3: Run preflight transport fail-closed controls in the test runner
-  console.log(`[CINE-005] Running preflight transport fail-closed controls...`);
-  const { createRequire } = await import('module');
-  const req = createRequire(import.meta.url);
-  req(networkGuardScript);
-
-  const httpsControl = await verifyHttpsFailClosed();
-  console.log(`[CINE-005] Preflight node:https guard verdict: ${httpsControl.blocked ? 'PASS (FAIL_CLOSED enforced)' : 'FAIL'}`);
-
-  const fetchControl = await verifyFetchFailClosed();
-  console.log(`[CINE-005] Preflight globalThis.fetch guard verdict: ${fetchControl.blocked ? 'PASS (FAIL_CLOSED enforced)' : 'FAIL'}`);
-
+  let tempDir = null;
+  let mutTempDir = null;
   let serverProc = null;
+  let mutServerProc = null;
+
   const results = {
     task: 'CINE-005',
     timestamp: new Date().toISOString(),
-    port: PORT,
+    primaryPort: PORT,
     environment: {
       node: process.version,
       platform: process.platform,
-      scratchDirectoryIsolated: tempDir,
-      envFilesPresentInScratch: tempEnvFiles.length,
+      scratchDirectoryIsolated: null,
       workspaceSecretsTouched: false,
       hermeticEnvAsserted: true,
       strippedVariables: ['TMDB_API_RAT', 'YOUTUBE_API_KEY', 'IPINFO_TOKEN'],
       failClosedNetworkGuardActive: true,
+      initialCallGuardScope: 'node:http, node:https, and globalThis.fetch (with 3xx redirect inspection)',
       syntheticMockLoaded: true
     },
     checks: []
   };
 
-  // Record preflight negative network controls
-  results.checks.push({
-    id: 'FAIL_CLOSED_HTTPS_CONTROL',
-    endpoint: 'https://youtube.googleapis.com (node:https)',
-    expectedBehavior: 'Immediate connection rejection with [FAIL_CLOSED]',
-    actualBehavior: httpsControl.errorMessage || 'Blocked',
-    passed: httpsControl.blocked,
-    details: httpsControl.blocked
-      ? 'Outbound external HTTPS request successfully blocked by hermetic network guard'
-      : 'Failed: external request reached network'
-  });
+  const networkGuardScript = path.resolve(__dirname, 'hermetic_network_guard.cjs');
+  const mockScriptPath = path.resolve(rootDir, 'docs/artifacts/cine-002/fixtures/mock_tmdb.cjs');
+  const nextBin = path.resolve(rootDir, 'node_modules/next/dist/bin/next');
 
-  results.checks.push({
-    id: 'FAIL_CLOSED_FETCH_CONTROL',
-    endpoint: 'https://example.com/api/test (globalThis.fetch)',
-    expectedBehavior: 'Immediate fetch rejection with [FAIL_CLOSED]',
-    actualBehavior: fetchControl.errorMessage || 'Blocked',
-    passed: fetchControl.blocked,
-    details: fetchControl.blocked
-      ? 'Native Undici fetch call successfully blocked by hermetic network guard'
-      : 'Failed: fetch reached network'
-  });
+  // Install network guard in parent process to run preflight controls
+  const { createRequire } = await import('module');
+  const req = createRequire(import.meta.url);
+  req(networkGuardScript);
 
   try {
-    console.log(`[CINE-005] Spawning Next.js production server in isolated directory with hermetic guard and synthetic mocks...`);
+    // Step 1: Preflight network boundary verification
+    console.log(`[CINE-005] Running preflight transport fail-closed controls...`);
+    const httpsControl = await verifyHttpsFailClosed();
+    console.log(`[CINE-005] Preflight node:https guard verdict: ${httpsControl.blocked ? 'PASS (FAIL_CLOSED enforced)' : 'FAIL'}`);
+
+    const fetchControl = await verifyFetchFailClosed();
+    console.log(`[CINE-005] Preflight globalThis.fetch guard verdict: ${fetchControl.blocked ? 'PASS (FAIL_CLOSED enforced)' : 'FAIL'}`);
+
+    const redirectControl = await verifyRedirectFailClosed();
+    console.log(`[CINE-005] Preflight fetch redirect guard verdict: ${redirectControl.blocked ? 'PASS (FAIL_CLOSED enforced)' : 'FAIL'}`);
+
+    results.checks.push({
+      id: 'FAIL_CLOSED_HTTPS_CONTROL',
+      endpoint: 'https://youtube.googleapis.com (node:https)',
+      expectedBehavior: 'Immediate connection rejection with [FAIL_CLOSED]',
+      actualBehavior: httpsControl.errorMessage || 'Blocked',
+      passed: httpsControl.blocked,
+      details: httpsControl.blocked
+        ? 'Outbound external HTTPS request successfully blocked by hermetic network guard'
+        : 'Failed: external request reached network'
+    });
+
+    results.checks.push({
+      id: 'FAIL_CLOSED_FETCH_CONTROL',
+      endpoint: 'https://example.com/api/test (globalThis.fetch)',
+      expectedBehavior: 'Immediate fetch rejection with [FAIL_CLOSED]',
+      actualBehavior: fetchControl.errorMessage || 'Blocked',
+      passed: fetchControl.blocked,
+      details: fetchControl.blocked
+        ? 'Native Undici fetch call successfully blocked by hermetic network guard'
+        : 'Failed: fetch reached network'
+    });
+
+    results.checks.push({
+      id: 'FAIL_CLOSED_REDIRECT_CONTROL',
+      endpoint: 'http://127.0.0.1 -> https://example.com (3xx redirect)',
+      expectedBehavior: 'Loopback redirect to external host rejected with [FAIL_CLOSED]',
+      actualBehavior: redirectControl.errorMessage || 'Blocked',
+      passed: redirectControl.blocked,
+      details: redirectControl.blocked
+        ? 'Redirect from loopback to external host successfully intercepted and blocked'
+        : 'Failed: redirect reached external network'
+    });
+
+    // Step 2: Create isolated scratch test directory (inside try/finally)
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cinematch-hermetic-'));
+    results.environment.scratchDirectoryIsolated = tempDir;
+    console.log(`[CINE-005] Created isolated scratch test environment: ${tempDir}`);
+
+    const nextTarget = path.resolve(rootDir, '.next');
+    const nodeModulesTarget = path.resolve(rootDir, 'node_modules');
+    fs.symlinkSync(nextTarget, path.join(tempDir, '.next'), 'junction');
+    fs.symlinkSync(nodeModulesTarget, path.join(tempDir, 'node_modules'), 'junction');
+    fs.copyFileSync(path.resolve(rootDir, 'package.json'), path.join(tempDir, 'package.json'));
+    fs.copyFileSync(path.resolve(rootDir, 'next.config.ts'), path.join(tempDir, 'next.config.ts'));
+
+    const tempEnvFiles = fs.readdirSync(tempDir).filter(f => f.startsWith('.env'));
+    if (tempEnvFiles.length > 0) {
+      throw new Error(`Hermetic violation: Unexpected env files in scratch directory: ${tempEnvFiles.join(', ')}`);
+    }
+
+    // Step 3: Prepare clean environment without ambient secrets
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.TMDB_API_RAT;
+    delete cleanEnv.YOUTUBE_API_KEY;
+    delete cleanEnv.IPINFO_TOKEN;
+
+    if (cleanEnv.TMDB_API_RAT !== undefined || cleanEnv.YOUTUBE_API_KEY !== undefined || cleanEnv.IPINFO_TOKEN !== undefined) {
+      throw new Error('Hermetic assertion failed: Secrets still present in child process cleanEnv');
+    }
+
+    cleanEnv.PORT = String(PORT);
+    cleanEnv.NODE_ENV = 'production';
+    cleanEnv.NEXT_PUBLIC_TMDB_POSTER_URL = 'https://image.tmdb.org/t/p';
+    cleanEnv.NEXT_PUBLIC_IMAGE_BASE_URL = 'https://image.tmdb.org/t/p';
+
+    console.log(`[CINE-005] Spawning primary Next.js production server in isolated directory with hermetic guard and synthetic mocks...`);
     serverProc = spawn(process.execPath, [
       '--require', networkGuardScript,
       '--require', mockScriptPath,
       nextBin, 'start', '-p', String(PORT)
     ], {
-      cwd: tempDir, // RUN IN ISOLATED TEMP DIRECTORY WITH NO .ENV FILES
+      cwd: tempDir,
       env: cleanEnv,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -234,7 +336,7 @@ async function run() {
 
     console.log(`[CINE-005] Polling ${BASE_URL} for server readiness...`);
     await waitForServer(BASE_URL, 40000);
-    console.log(`[CINE-005] Next.js server is ready. Executing verification assertions...`);
+    console.log(`[CINE-005] Next.js server is ready. Executing primary test assertions...`);
 
     // Test 1: Synthetic TMDB /api/genres?type=movie
     console.log(`Testing /api/genres?type=movie (Synthetic TMDB)...`);
@@ -248,31 +350,31 @@ async function run() {
       actualStatus: genresRes.statusCode,
       passed: genresPass,
       itemCount: Array.isArray(genresBody) ? genresBody.length : 0,
-      details: genresPass ? `Successfully intercepted and returned ${genresBody.length} synthetic genres` : 'Failed'
+      details: genresPass ? `Successfully returned ${genresBody.length} synthetic genres` : 'Failed'
     });
 
-    // Test 2: Synthetic TMDB /api/languages
-    console.log(`Testing /api/languages (Synthetic TMDB)...`);
-    const langRes = await httpRequest(`${BASE_URL}/api/languages`);
-    const langBody = JSON.parse(langRes.body);
-    const langPass = langRes.statusCode === 200 && Array.isArray(langBody) && langBody.length > 0;
+    // Test 2: Synthetic TMDB /api/media?mediaType=movie&page=1
+    console.log(`Testing /api/media?mediaType=movie&page=1 (Synthetic TMDB Popular Movies)...`);
+    const moviesRes = await httpRequest(`${BASE_URL}/api/media?mediaType=movie&page=1`);
+    const moviesBody = JSON.parse(moviesRes.body);
+    const moviesPass = moviesRes.statusCode === 200 && Array.isArray(moviesBody.results) && moviesBody.results.length > 0;
     results.checks.push({
-      id: 'SYNTHETIC_TMDB_LANGUAGES',
-      endpoint: '/api/languages',
+      id: 'SYNTHETIC_TMDB_MOVIES',
+      endpoint: '/api/media?mediaType=movie&page=1',
       expectedStatus: 200,
-      actualStatus: langRes.statusCode,
-      passed: langPass,
-      itemCount: Array.isArray(langBody) ? langBody.length : 0,
-      details: langPass ? `Successfully returned ${langBody.length} synthetic languages` : 'Failed'
+      actualStatus: moviesRes.statusCode,
+      passed: moviesPass,
+      itemCount: Array.isArray(moviesBody.results) ? moviesBody.results.length : 0,
+      details: moviesPass ? `Successfully returned ${moviesBody.results.length} synthetic movies` : 'Failed'
     });
 
     // Test 3: Synthetic TMDB /api/media/trending?mediaType=movie&timeWindow=day
-    console.log(`Testing /api/media/trending?mediaType=movie&timeWindow=day (Synthetic TMDB)...`);
+    console.log(`Testing /api/media/trending?mediaType=movie&timeWindow=day (Synthetic TMDB Trending)...`);
     const trendRes = await httpRequest(`${BASE_URL}/api/media/trending?mediaType=movie&timeWindow=day`);
     const trendBody = JSON.parse(trendRes.body);
-    const trendPass = trendRes.statusCode === 200 && Array.isArray(trendBody.results);
+    const trendPass = trendRes.statusCode === 200 && Array.isArray(trendBody.results) && trendBody.results.length > 0;
     results.checks.push({
-      id: 'SYNTHETIC_TMDB_TRENDING_VALID',
+      id: 'SYNTHETIC_TMDB_TRENDING',
       endpoint: '/api/media/trending?mediaType=movie&timeWindow=day',
       expectedStatus: 200,
       actualStatus: trendRes.statusCode,
@@ -324,34 +426,22 @@ async function run() {
     console.log(`Testing /api/youtube?videoId=test (Env Omission Negative Control)...`);
     const ytRes = await httpRequest(`${BASE_URL}/api/youtube?videoId=test`);
     const ytBody = JSON.parse(ytRes.body);
-    const ytPass = ytRes.statusCode === 500 && ytBody.error === 'Server configuration error';
+    const ytOmissionPass = ytRes.statusCode === 500 && ytBody.error === 'Server configuration error';
     results.checks.push({
       id: 'ENV_OMISSION_YOUTUBE_API_KEY',
       endpoint: '/api/youtube?videoId=test',
       expectedStatus: 500,
       actualStatus: ytRes.statusCode,
       responseBody: ytBody,
-      passed: ytPass,
-      details: ytPass ? 'Yields actionable HTTP 500 Server configuration error when YOUTUBE_API_KEY is omitted' : 'Failed'
+      passed: ytOmissionPass,
+      details: ytOmissionPass ? 'Yields actionable HTTP 500 Server configuration error when YOUTUBE_API_KEY is omitted' : 'Failed'
     });
 
-    // Test 8: Deliberate Secret-Present Negative Control
-    console.log(`Testing secret presence detection control...`);
-    // Proves that when YOUTUBE_API_KEY is omitted, it yields Server configuration error.
-    // If a secret were injected, the route would NOT return the configuration error.
-    const secretControlPass = ytBody.error === 'Server configuration error';
-    results.checks.push({
-      id: 'DELIBERATE_SECRET_ABSENCE_CONTROL',
-      endpoint: 'Environment inspection',
-      expectedBehavior: 'Absence of YOUTUBE_API_KEY triggers configuration error; secret presence would bypass it',
-      actualBehavior: secretControlPass ? 'Secret absence confirmed' : 'Secret unexpectedly present',
-      passed: secretControlPass,
-      details: 'Confirmed zero ambient or production .env secrets were loaded by child server'
-    });
-
-    // Test 9: Env Omission Local Fallback - IPINFO_TOKEN
+    // Test 8: Env Omission Local Fallback - IPINFO_TOKEN
     console.log(`Testing /api/geolocation (Env Omission Local Fallback)...`);
-    const geoRes = await httpRequest(`${BASE_URL}/api/geolocation`);
+    const geoRes = await httpRequest(`${BASE_URL}/api/geolocation`, {
+      headers: { 'x-forwarded-for': '127.0.0.1' }
+    });
     const geoBody = JSON.parse(geoRes.body);
     const geoPass = geoRes.statusCode === 200 && geoBody.region === 'US';
     results.checks.push({
@@ -364,6 +454,66 @@ async function run() {
       details: geoPass ? 'Localhost request safely returns default region US when IPINFO_TOKEN is omitted' : 'Failed'
     });
 
+    // Step 4: Gracefully shut down primary server before launching mutational control
+    console.log(`[CINE-005] Shutting down primary server to prepare mutational sensitivity control...`);
+    await stopServer(serverProc);
+    serverProc = null;
+
+    // Step 5: Mutational Secret-Present Negative Control (P1-A verification)
+    console.log(`\n[CINE-005] Executing P1-A Mutational Secret-Present Negative Control...`);
+    mutTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cinematch-mutational-'));
+    fs.symlinkSync(nextTarget, path.join(mutTempDir, '.next'), 'junction');
+    fs.symlinkSync(nodeModulesTarget, path.join(mutTempDir, 'node_modules'), 'junction');
+    fs.copyFileSync(path.resolve(rootDir, 'package.json'), path.join(mutTempDir, 'package.json'));
+    fs.copyFileSync(path.resolve(rootDir, 'next.config.ts'), path.join(mutTempDir, 'next.config.ts'));
+
+    const MUT_PORT = await getAvailablePort();
+    const MUT_BASE_URL = `http://127.0.0.1:${MUT_PORT}`;
+    const mutEnv = {
+      ...cleanEnv,
+      PORT: String(MUT_PORT),
+      YOUTUBE_API_KEY: 'synthetic-dev-mutational-youtube-key' // INJECT SYNTHETIC SECRET
+    };
+
+    mutServerProc = spawn(process.execPath, [
+      '--require', networkGuardScript,
+      '--require', mockScriptPath,
+      nextBin, 'start', '-p', String(MUT_PORT)
+    ], {
+      cwd: mutTempDir,
+      env: mutEnv,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    await waitForServer(MUT_BASE_URL, 40000);
+    console.log(`[CINE-005] Mutational server ready on port ${MUT_PORT}. Querying /api/youtube?videoId=test...`);
+
+    const mutRes = await httpRequest(`${MUT_BASE_URL}/api/youtube?videoId=test`);
+    const mutBody = JSON.parse(mutRes.body);
+
+    // Predicate turning red: with YOUTUBE_API_KEY injected, it must NOT return "Server configuration error"
+    const omissionPredicateTurnedRed = mutBody.error !== 'Server configuration error';
+    // Security verification: outbound fetch to googleapis.com was blocked by fail-closed guard, yielding "Failed to fetch video data"
+    const failClosedTransportEnforced = mutRes.statusCode === 500 && mutBody.error === 'Failed to fetch video data';
+    const mutationalPass = omissionPredicateTurnedRed && failClosedTransportEnforced;
+
+    results.checks.push({
+      id: 'MUTATIONAL_SECRET_PRESENCE_CONTROL',
+      endpoint: '/api/youtube?videoId=test (with injected YOUTUBE_API_KEY)',
+      expectedStatus: 500,
+      actualStatus: mutRes.statusCode,
+      responseBody: mutBody,
+      passed: mutationalPass,
+      details: mutationalPass
+        ? 'Sensitivity verified: omission predicate turned red (no configuration error returned) AND external outbound fetch was fail-closed blocked at transport boundary'
+        : 'Failed: predicate did not turn red or external networking was not blocked'
+    });
+
+    console.log(`[CINE-005] Shutting down mutational server...`);
+    await stopServer(mutServerProc);
+    mutServerProc = null;
+
+    // Step 6: Verify all checks passed and serialize results
     const allPassed = results.checks.every(c => c.passed);
     results.allPassed = allPassed;
 
@@ -384,14 +534,31 @@ async function run() {
     }
   } finally {
     if (serverProc) {
-      console.log(`[CINE-005] Shutting down Next.js server (PID: ${serverProc.pid})...`);
-      serverProc.kill('SIGTERM');
+      console.log(`[CINE-005] Cleaning up primary server process...`);
+      await stopServer(serverProc);
     }
-    // Clean up isolated scratch test directory
-    try {
-      console.log(`[CINE-005] Cleaning up isolated scratch test environment...`);
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch (_) {}
+    if (mutServerProc) {
+      console.log(`[CINE-005] Cleaning up mutational server process...`);
+      await stopServer(mutServerProc);
+    }
+    if (tempDir && fs.existsSync(tempDir)) {
+      try {
+        console.log(`[CINE-005] Cleaning up primary scratch directory: ${tempDir}...`);
+        fs.rmSync(tempDir, { recursive: true, force: true });
+        console.log(`[CINE-005] Primary scratch cleaned up. Exists: ${fs.existsSync(tempDir)}`);
+      } catch (e) {
+        console.error(`[CINE-005] Error cleaning primary scratch:`, e.message);
+      }
+    }
+    if (mutTempDir && fs.existsSync(mutTempDir)) {
+      try {
+        console.log(`[CINE-005] Cleaning up mutational scratch directory: ${mutTempDir}...`);
+        fs.rmSync(mutTempDir, { recursive: true, force: true });
+        console.log(`[CINE-005] Mutational scratch cleaned up. Exists: ${fs.existsSync(mutTempDir)}`);
+      } catch (e) {
+        console.error(`[CINE-005] Error cleaning mutational scratch:`, e.message);
+      }
+    }
   }
 }
 
