@@ -1,0 +1,86 @@
+{
+  "task": "CINE-005",
+  "timestamp": "2026-11-08T10:01:39.320Z",
+  "port": 3058,
+  "environment": {
+    "node": "v24.21.0",
+    "platform": "win32",
+    "syntheticMockLoaded": true
+  },
+  "checks": [
+    {
+      "id": "SYNTHETIC_TMDB_GENRES",
+      "endpoint": "/api/genres?type=movie",
+      "expectedStatus": 200,
+      "actualStatus": 200,
+      "passed": true,
+      "itemCount": 10,
+      "details": "Successfully intercepted and returned 10 synthetic genres"
+    },
+    {
+      "id": "SYNTHETIC_TMDB_LANGUAGES",
+      "endpoint": "/api/languages",
+      "expectedStatus": 200,
+      "actualStatus": 200,
+      "passed": true,
+      "itemCount": 1,
+      "details": "Successfully returned 1 synthetic languages"
+    },
+    {
+      "id": "SYNTHETIC_TMDB_TRENDING_VALID",
+      "endpoint": "/api/media/trending?mediaType=movie&timeWindow=day",
+      "expectedStatus": 200,
+      "actualStatus": 200,
+      "passed": true,
+      "itemCount": 4,
+      "details": "Successfully returned 4 synthetic trending titles"
+    },
+    {
+      "id": "PARAM_VALIDATION_TRENDING_MISSING",
+      "endpoint": "/api/media/trending",
+      "expectedStatus": 400,
+      "actualStatus": 400,
+      "passed": true,
+      "details": "Defensively returned HTTP 400 on missing mediaType/timeWindow"
+    },
+    {
+      "id": "UI_ROOT_HOME",
+      "endpoint": "/",
+      "expectedStatus": 200,
+      "actualStatus": 200,
+      "passed": true,
+      "details": "Root home page rendered valid HTML"
+    },
+    {
+      "id": "UI_MOVIE_INDEX",
+      "endpoint": "/movie",
+      "expectedStatus": 200,
+      "actualStatus": 200,
+      "passed": true,
+      "details": "Movie index page rendered valid HTML"
+    },
+    {
+      "id": "ENV_OMISSION_YOUTUBE_API_KEY",
+      "endpoint": "/api/youtube?videoId=test",
+      "expectedStatus": 500,
+      "actualStatus": 500,
+      "responseBody": {
+        "error": "Server configuration error"
+      },
+      "passed": true,
+      "details": "Yields actionable HTTP 500 Server configuration error when YOUTUBE_API_KEY is omitted"
+    },
+    {
+      "id": "ENV_OMISSION_IPINFO_LOCAL_FALLBACK",
+      "endpoint": "/api/geolocation",
+      "expectedStatus": 200,
+      "actualStatus": 200,
+      "responseBody": {
+        "region": "US"
+      },
+      "passed": true,
+      "details": "Localhost request safely returns default region US when IPINFO_TOKEN is omitted"
+    }
+  ],
+  "allPassed": true
+}
