@@ -3,21 +3,27 @@
 > **Real-Time Collaborative Movie Decision Engine**  
 > *Transforming the agony of "what should we watch?" into a fast, unanimous group match.*
 
-CineMatch is a modern real-time group movie selection application built on **Next.js 16.4.5 (Turbopack)**, **Node.js 24 LTS**, **React 19**, and **Tailwind CSS v4**. It features an authoritative server-side voting engine, anonymous guest identity, and a comprehensive discovery catalog powered by The Movie Database (TMDB).
+CineMatch is a modern movie decision and discovery platform built on **Next.js 16.4.5 (Turbopack)**, **Node.js 24 LTS**, **React 19**, and **Tailwind CSS v4**.
+
+The repository is currently organized across two key architectural horizons:
+1. **Implemented Foundation (Operational Today):** A high-performance movie & TV discovery catalog featuring 29 UI pages, 27 secure server-side API route handlers on the Node.js runtime, a hardened server-only TMDB client (CINE-006), comprehensive synthetic mock fixtures for offline development, and a strict 5-job automated CI pipeline (CINE-004).
+2. **Target Collaborative Engine (Design & Implementation in Progress):** An authoritative server-side room coordinator, anonymous guest session capabilities, frozen rosters, 20-title group decks, confidential binary voting, and unanimous consensus matching, specified in [ADR-002](docs/adr/ADR-002-cinematch-product-contract-and-room-architecture.md) and [ADR-003](docs/adr/ADR-003-realtime-and-persistence-architecture.md) and actively being developed across tasks CINE-011 through CINE-020.
 
 ---
 
-## 1. Product Contract & MVP Specifications
+## 1. Product Contract & Target MVP Specifications (Planned Architecture)
 
-CineMatch is governed by strict functional invariants designed to deliver fast, friction-free decisions without endless browsing:
+The upcoming collaborative matching engine is governed by strict functional invariants designed to deliver fast, friction-free decisions without endless browsing:
 
 - **Participant Capacity:** Strictly **2 to 5 participants** per room. Two members is the canonical pair use case; five is the upper bound for unanimous consensus.
-- **Anonymous Guest Onboarding:** No login or OAuth friction required. Participants join via 6-character room codes or shareable links and receive cryptographic guest session capability tokens.
+- **Anonymous Guest Onboarding:** No login or OAuth friction required. Participants join via 6-character room codes or shareable links and receive cryptographically signed guest session capability tokens.
 - **Host Authority & Roster Freeze:** The room creator controls lobby settings. Once the Host starts the voting round, the active participant roster is **frozen**; no mid-round joins or departures alter quorum.
 - **Deterministic 20-Title Movie Deck:** Each round serves an identical, server-generated deck of 20 titles tailored to common group preferences.
-- **Immutable Binary Voting:** Each participant casts exactly one immutable vote per movie: **LIKE** (accept) or **SKIP** (reject).
+- **Immutable Secret Voting:** Each participant casts exactly one immutable vote per movie: **LIKE** (accept) or **SKIP** (reject). Individual choices remain confidential until consensus to prevent group bias (CINE-020).
 - **Unanimous Match Consensus:** A match is achieved if and only if **100% of the frozen roster** votes `LIKE` on a title. The first unanimous title triggers an instant celebration screen with watch provider details. If all 20 titles are exhausted without unanimous consensus, the room transitions to `NO_MATCH`.
 - **Server Authority & Idempotency:** All state transitions and vote tallies are processed server-side with idempotency keys (`roomId:participantId:movieId`). Multi-tenant rooms are strictly isolated.
+
+*Note: ADR-002 and ADR-003 define these target specifications; backend room lifecycle, Supabase Realtime synchronization, and PostgreSQL persistence are actively under development in CINE-011–020.*
 
 ---
 
@@ -31,10 +37,10 @@ flowchart TD
         ThemeContext[Theme & Filter Context Providers]
     end
 
-    subgraph Server [Next.js 16 Server / Vercel Edge Runtime]
+    subgraph Server [Next.js 16 Server / Node.js Serverless Functions]
         RSC[React Server Components / Dynamic Pages]
-        RouteHandlers[27 API Route Handlers /api/*]
-        TMDBClient[TMDB Server Client src/services/tmdbApi.ts]
+        RouteHandlers[27 API Route Handlers /api/* - Node.js Runtime]
+        TMDBClient[Hardened TMDB Server Client src/services/tmdb-server-client.ts]
         GeoProxy[Geolocation Proxy /api/geolocation]
         YTProxy[YouTube Proxy /api/youtube]
     end
@@ -45,8 +51,13 @@ flowchart TD
         YouTubeAPI[(Google YouTube Data API v3)]
     end
 
-    subgraph Hermetic [Hermetic Offline Mode]
+    subgraph Hermetic [Hermetic Offline Test Mode]
         MockInterceptor[Synthetic TMDB Mock Interceptor mock_tmdb.cjs]
+    end
+
+    subgraph TargetBackend [Target Realtime Engine - In Development CINE-011-020]
+        RoomEngine[Room Coordinator & State Machine]
+        RealtimeBus[(Supabase Realtime / Postgres Outbox)]
     end
 
     App <--> RSC
@@ -60,6 +71,8 @@ flowchart TD
     TMDBClient -->|Live Requests| TMDBAPI
     GeoProxy --> IPInfo
     YTProxy --> YouTubeAPI
+
+    App -.->|Target Planned Flow| TargetBackend
 ```
 
 For complete technical specifications, data flows, and route tables, see the [System Architecture & Route Catalog](docs/architecture/system-overview.md).
@@ -137,7 +150,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## 5. Offline & Synthetic Developer Fixtures
 
-New developers do **not** need live TMDB credentials or external network connectivity to build, test, and run CineMatch. The repository includes a deterministic synthetic TMDB interceptor that provides realistic movies, genres, trending feeds, and streaming providers offline:
+New developers do **not** need live TMDB credentials or external API network access to run, test, and develop CineMatch features. *(Note: initial `npm ci` dependency installation requires npm registry access or a pre-populated local npm cache; once dependencies are installed, all application data flows, tests, and builds operate completely offline via synthetic mock fixtures.)* The repository includes a deterministic synthetic TMDB interceptor that provides realistic movies, genres, trending feeds, and streaming providers offline:
 
 ```bash
 # Run Next.js with synthetic TMDB mock interception:

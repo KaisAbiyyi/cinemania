@@ -1,13 +1,29 @@
 {
   "task": "CINE-005",
-  "timestamp": "2026-11-08T10:01:39.320Z",
+  "timestamp": "2026-11-11T05:22:31.086Z",
   "port": 3058,
   "environment": {
     "node": "v24.21.0",
     "platform": "win32",
+    "hermeticEnvAsserted": true,
+    "strippedVariables": [
+      "TMDB_API_RAT",
+      "YOUTUBE_API_KEY",
+      "IPINFO_TOKEN"
+    ],
+    "envLocalIsolated": false,
+    "failClosedNetworkGuardActive": true,
     "syntheticMockLoaded": true
   },
   "checks": [
+    {
+      "id": "FAIL_CLOSED_NETWORK_CONTROL",
+      "endpoint": "https://youtube.googleapis.com (External)",
+      "expectedBehavior": "Immediate connection rejection with [FAIL_CLOSED]",
+      "actualBehavior": "[FAIL_CLOSED] Blocked unauthorized outbound HTTPS request to external host: \"youtube.googleapis.com\". External networking is strictly prohibited in hermetic test mode.",
+      "passed": true,
+      "details": "Outbound external HTTPS request successfully blocked by hermetic network guard"
+    },
     {
       "id": "SYNTHETIC_TMDB_GENRES",
       "endpoint": "/api/genres?type=movie",

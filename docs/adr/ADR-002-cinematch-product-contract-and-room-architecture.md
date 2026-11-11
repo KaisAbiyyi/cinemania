@@ -1,9 +1,11 @@
 # ADR-002: CineMatch Product Contract, Room Architecture & Voting Consensus
 
-- **Status:** Accepted
+- **Status:** Accepted (Target Product Contract & Invariant Specification; Implementation in Progress across CINE-011–020)
 - **Deciders:** CineMatch Architecture Team & Repository Owner
 - **Date:** 2026-11-05 (Reified 2026-11-08)
 - **Task References:** [CINE-011](https://github.com/KaisAbiyyi/cinemania/issues/13), [CINE-012](https://github.com/KaisAbiyyi/cinemania/issues/14), [CINE-017](https://github.com/KaisAbiyyi/cinemania/issues/19), [CINE-018](https://github.com/KaisAbiyyi/cinemania/issues/20), [CINE-019](https://github.com/KaisAbiyyi/cinemania/issues/21)
+
+> **Implementation Status Notice:** This ADR establishes the target functional specifications and product contract for CineMatch collaborative sessions. It serves as the design specification for upcoming backend services and is not a claim of an already-deployed production backend. Implementation is tracked across CINE-011 through CINE-020.
 
 ---
 

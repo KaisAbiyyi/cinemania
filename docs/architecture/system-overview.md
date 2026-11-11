@@ -2,6 +2,8 @@
 
 This document provides the authoritative architectural reference for CineMatch, detailing the system topology, runtime environment, data flows, security boundaries, and the complete inventory of 29 UI pages and 27 API handlers.
 
+It explicitly distinguishes between the **operational foundation implemented today** (movie discovery catalog, server-side route handlers, hardened TMDB client, and offline test mocks) and the **target collaborative engine in development** (realtime rooms, frozen rosters, 20-title decks, and unanimous consensus per ADR-002/ADR-003).
+
 ---
 
 ## 1. High-Level System Topology
@@ -14,10 +16,10 @@ flowchart TD
         FP[Filter & Theme Context Providers]
     end
 
-    subgraph Server Tier [Next.js 16 Server / Vercel Edge Runtime]
+    subgraph Server Tier [Next.js 16 Server / Node.js Serverless Functions]
         RSC[React Server Components / Dynamic Pages]
-        API[27 API Route Handlers /api/*]
-        TMDB_SVC[TMDB Server Client src/services/tmdbApi.ts]
+        API[27 API Route Handlers /api/* - Node.js Runtime]
+        TMDB_SVC[Hardened TMDB Server Client src/services/tmdb-server-client.ts]
         GEO_SVC[Geolocation Proxy /api/geolocation]
         YT_SVC[YouTube Proxy /api/youtube]
     end
@@ -32,6 +34,11 @@ flowchart TD
         MOCK[Synthetic TMDB Interceptor mock_tmdb.cjs]
     end
 
+    subgraph Target Collaborative Subsystem [Target Realtime Architecture - CINE-011-020]
+        ROOM_COORD[Room State Coordinator & Outbox]
+        REALTIME_BUS[(Supabase Realtime / PostgreSQL)]
+    end
+
     UI <-->|Hydration / RSC Payload| RSC
     UI <-->|Fetch JSON API| API
     RQ <-->|Query Cache| API
@@ -43,6 +50,8 @@ flowchart TD
     TMDB_SVC -->|Production HTTPS / Bearer Token| TMDB
     GEO_SVC -->|HTTPS / IPINFO_TOKEN| IPINFO
     YT_SVC -->|HTTPS / YOUTUBE_API_KEY| YOUTUBE
+
+    UI -.->|Target Planned Flow| Target Collaborative Subsystem
 ```
 
 ---
@@ -60,7 +69,7 @@ flowchart TD
 | **Command Palette** | cmdk | `^1.1.1` | Native React 19 peer dependency resolution |
 | **Date Selection** | react-day-picker | `^9.14.0` | DayPicker v9 component API; zero date-fns collision |
 | **Client State & Cache** | TanStack React Query | `^5.67.2` | Global QueryClient in `src/app/layout.tsx` |
-| **HTTP Client (Server)** | Axios | `^1.8.2` | Dedicated client in `src/services/tmdbApi.ts` |
+| **HTTP Client (Server)** | Axios | `^1.8.2` | Hardened server-only client in `src/services/tmdb-server-client.ts` |
 | **Icons** | Lucide React | `^0.479.0` | Accessible SVG icon primitives |
 
 ---
@@ -191,11 +200,11 @@ flowchart LR
     end
 
     Public Scope -->|Embedded in HTML / JS Bundle| Browser[User Browser]
-    Private Scope -->|Confined to Node.js / Edge Runtime| NextServer[Next.js Server]
+    Private Scope -->|Confined to Node.js Serverless Functions| NextServer[Next.js Server]
 ```
 
 - **Zero Secret Infiltration:** The `NEXT_PUBLIC_` prefix is strictly prohibited for API keys or authorization tokens.
-- **Header Injection:** `TMDB_API_RAT` is injected exclusively in `src/services/tmdbApi.ts` as `Authorization: Bearer <token>`.
+- **Header Injection:** `TMDB_API_RAT` is injected exclusively in `src/services/tmdb-server-client.ts` (hardened in CINE-006) as `Authorization: Bearer <token>`.
 - **Defensive Error Handling:**
   - When `YOUTUBE_API_KEY` is missing, `/api/youtube` returns HTTP 500 with `{ "error": "Server configuration error" }`.
   - When `IPINFO_TOKEN` is missing, `/api/geolocation` detects local IP requests and safely returns `{ "region": "US" }`.
