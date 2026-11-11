@@ -1,6 +1,7 @@
 -- CINE-012: Authoritative Room Schema Migration 001 (Rollback)
 -- Target: PostgreSQL 15+
 
+DROP FUNCTION IF EXISTS get_room_by_code(VARCHAR(6)) CASCADE;
 DROP FUNCTION IF EXISTS is_current_user_room_participant(UUID) CASCADE;
 
 DROP TABLE IF EXISTS room_events CASCADE;

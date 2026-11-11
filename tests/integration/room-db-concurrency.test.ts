@@ -85,7 +85,7 @@ describe("CINE-012: Relational Schema DDL & Referential Integrity", () => {
         `INSERT INTO room_participants (room_id, participant_id, display_name, role)
          VALUES (?, ?, 'Bob Dupe', 'MEMBER')`
       ).run(room.id, member1Id);
-    }).toThrow(/UNIQUE constraint failed: room_participants\.room_id, room_participants\.participant_id/);
+    }).toThrow(/UNIQUE constraint failed: room_participants/);
 
     // 3. Start Round with exactly 20 candidates
     const candidatesInput = Array.from({ length: DECK_SIZE }, (_, idx) => ({
@@ -265,6 +265,115 @@ describe("CINE-012: Relational Schema DDL & Referential Integrity", () => {
     expect(new Date(roomAfterVote.expires_at).getTime()).toBeGreaterThanOrEqual(
       new Date(roomAfterRound.expires_at).getTime()
     );
+
+    db.close();
+  });
+
+  it("enforces SQL-level composite foreign key rejections when mixing rooms and rounds directly", () => {
+    const db = new DatabaseSync(testDbPath);
+    const repo = new SqliteRoomRepository(db);
+
+    const { room: roomA, host: hostA } = repo.createRoom({ hostDisplayName: "Room A Host" });
+    const guestAId = crypto.randomUUID();
+    repo.joinRoom(roomA.id, guestAId, "Room A Guest");
+
+    const { room: roomB, host: hostB } = repo.createRoom({ hostDisplayName: "Room B Host" });
+    const guestBId = crypto.randomUUID();
+    repo.joinRoom(roomB.id, guestBId, "Room B Guest");
+
+    const deck = Array.from({ length: DECK_SIZE }, (_, idx) => ({
+      movieId: 3000 + idx,
+      title: `Deck Movie ${idx}`,
+    }));
+    const { round: roundA, candidates: candidatesA } = repo.startRound(roomA.id, deck);
+
+    // Negative 1: Inserting candidate into Room B with an unpopulated Round 2 belonging to Room A violates composite FK (room_id, round_id -> rounds)
+    const round2AId = crypto.randomUUID();
+    db.prepare(`INSERT INTO rounds (id, room_id, round_number, status) VALUES (?, ?, 2, 'ACTIVE')`).run(
+      round2AId,
+      roomA.id
+    );
+
+    expect(() => {
+      db.prepare(
+        `INSERT INTO candidates (id, room_id, round_id, movie_id, position, title)
+         VALUES ('cand-illegal', ?, ?, 9999, 0, 'Cross room candidate')`
+      ).run(roomB.id, round2AId);
+    }).toThrow(/FOREIGN KEY constraint failed/);
+
+    // Negative 2: Inserting vote into Room B with Candidate from Room A violates composite FK (room_id, round_id, candidate_id, movie_id -> candidates)
+    expect(() => {
+      db.prepare(
+        `INSERT INTO votes (id, room_id, round_id, participant_id, candidate_id, movie_id, vote)
+         VALUES ('vote-illegal', ?, ?, ?, ?, ?, 'LIKE')`
+      ).run(roomB.id, round2AId, hostB.participant_id, candidatesA[0].id, candidatesA[0].movie_id);
+    }).toThrow(/FOREIGN KEY constraint failed/);
+
+    db.close();
+  });
+
+  it("safely handles host participant removal by nulling host_participant_id without affecting room PK", () => {
+    const db = new DatabaseSync(testDbPath);
+    const repo = new SqliteRoomRepository(db);
+
+    const { room, host } = repo.createRoom({ hostDisplayName: "Host To Remove" });
+    expect(repo.getRoomById(room.id)!.host_participant_id).toBe(host.participant_id);
+
+    // Delete host participant
+    db.prepare(`DELETE FROM room_participants WHERE room_id = ? AND participant_id = ?`).run(
+      room.id,
+      host.participant_id
+    );
+
+    // Room must still exist with unchanged PK and host_participant_id set to NULL
+    const roomAfterHostDelete = repo.getRoomById(room.id);
+    expect(roomAfterHostDelete).not.toBeNull();
+    expect(roomAfterHostDelete!.id).toBe(room.id);
+    expect(roomAfterHostDelete!.host_participant_id).toBeNull();
+
+    db.close();
+  });
+
+  it("fences against TOCTOU race in expiry worker when a fresh vote arrives after room scan", () => {
+    const db = new DatabaseSync(testDbPath);
+    const repo = new SqliteRoomRepository(db);
+
+    const { room, host } = repo.createRoom({
+      hostDisplayName: "Alice",
+      inactivityTtlSeconds: 10,
+    });
+    const guestId = crypto.randomUUID();
+    repo.joinRoom(room.id, guestId, "Bob");
+
+    const deck = Array.from({ length: DECK_SIZE }, (_, idx) => ({
+      movieId: 4000 + idx,
+      title: `Deck Movie ${idx}`,
+    }));
+    const { round, candidates } = repo.startRound(room.id, deck);
+
+    // State version is now 3 (create=1, join=2, startRound=3)
+    const activeRoom = repo.getRoomById(room.id)!;
+    expect(activeRoom.state_version).toBe(3);
+
+    // Simulate an expiry scanner capturing snapshot at state_version 3
+    const capturedVersion = activeRoom.state_version;
+    const simulatedExpiredAt = new Date(Date.now() + 15000).toISOString();
+
+    // Before expireRoom executes, a participant casts a fresh vote!
+    repo.recordVote(room.id, round.id, host.participant_id, candidates[0].id, candidates[0].movie_id, "SKIP");
+
+    // Room is now at state_version 4 with fresh last_activity_at
+    const updatedRoom = repo.getRoomById(room.id)!;
+    expect(updatedRoom.state_version).toBe(4);
+
+    // Stale expiry attempt using captured version 3 is executed
+    const didExpire = repo.expireRoom(room.id, capturedVersion, simulatedExpiredAt);
+
+    // Must be rejected (didExpire = false), preserving the active room and vote!
+    expect(didExpire).toBe(false);
+    const finalRoom = repo.getRoomById(room.id)!;
+    expect(finalRoom.status).toBe("ACTIVE");
+    expect(finalRoom.state_version).toBe(4);
 
     db.close();
   });

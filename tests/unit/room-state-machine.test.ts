@@ -160,13 +160,15 @@ describe("CINE-012: Inactivity TTL & Expiry Worker with Synthetic Clock", () => 
     const expiredCalls: { id: string; version: number }[] = [];
     const mockAdapter = {
       findActiveRooms: () => testRooms,
-      expireRoom: (roomId: string, newVersion: number) => {
-        expiredCalls.push({ id: roomId, version: newVersion });
+      expireRoom: (roomId: string, expectedVersion: number) => {
+        expiredCalls.push({ id: roomId, version: expectedVersion });
         const room = testRooms.find((r) => r.id === roomId);
         if (room) {
           room.status = "EXPIRED";
-          room.state_version = newVersion;
+          room.state_version = expectedVersion + 1;
+          return true;
         }
+        return false;
       },
     };
 
@@ -181,7 +183,7 @@ describe("CINE-012: Inactivity TTL & Expiry Worker with Synthetic Clock", () => 
     const resultFinal = await worker.processExpiredRooms(mockAdapter);
     expect(resultFinal.processedCount).toBe(1);
     expect(resultFinal.expiredRoomIds).toEqual(["room-active-1"]);
-    expect(expiredCalls).toEqual([{ id: "room-active-1", version: 2 }]);
+    expect(expiredCalls).toEqual([{ id: "room-active-1", version: 1 }]);
 
     // Running again is idempotent and processes 0 rooms
     const resultIdempotent = await worker.processExpiredRooms(mockAdapter);

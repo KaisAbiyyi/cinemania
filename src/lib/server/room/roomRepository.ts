@@ -636,39 +636,63 @@ export class SqliteRoomRepository {
 
   /**
    * Safe transactional conditional room expiry.
-   * Guarantees atomic check to prevent racing against concurrent votes.
+   * Fenced against TOCTOU race condition: checks expectedVersion and fresh last_activity_at
+   * under atomic lock to ensure no fresh vote occurred between scan and expiry.
    */
-  expireRoom(roomId: string, newVersion: number, expiredAt: string): void {
+  expireRoom(roomId: string, expectedVersion: number, expiredAt: string): boolean {
     this.db.exec("BEGIN IMMEDIATE;");
     try {
       const room = this.getRoomById(roomId);
       if (!room) {
         this.db.exec("COMMIT;");
-        return;
+        return false;
       }
-      if (room.status === "MATCHED" || room.status === "EXPIRED") {
+      if (room.status === "MATCHED" || room.status === "EXPIRED" || room.status === "EXHAUSTED") {
         this.db.exec("COMMIT;");
-        return;
+        return false;
+      }
+
+      // 1. Guard against concurrent activity race: if state_version changed, abort expiry
+      if (room.state_version !== expectedVersion) {
+        this.db.exec("COMMIT;");
+        return false;
+      }
+
+      // 2. Re-verify that room has actually lapsed TTL since fresh last_activity_at
+      const nowTime = new Date(expiredAt).getTime();
+      const lastActivityTime = new Date(room.last_activity_at).getTime();
+      const ttlMs = (room.inactivity_ttl_seconds || DEFAULT_INACTIVITY_TTL_SECONDS) * 1000;
+      if (nowTime < lastActivityTime + ttlMs) {
+        // Fresh activity arrived, abort expiry
+        this.db.exec("COMMIT;");
+        return false;
       }
 
       assertValidTransition(room.status, "EXPIRED", "Room expired due to inactivity");
+      const nextVersion = room.state_version + 1;
 
-      this.db
+      const result = this.db
         .prepare(
           `UPDATE rooms
            SET status = 'EXPIRED', state_version = ?, updated_at = ?
-           WHERE id = ? AND status NOT IN ('MATCHED', 'EXPIRED')`
+           WHERE id = ? AND state_version = ? AND status NOT IN ('MATCHED', 'EXPIRED', 'EXHAUSTED')`
         )
-        .run(newVersion, expiredAt, roomId);
+        .run(nextVersion, expiredAt, roomId, expectedVersion);
+
+      if (result.changes === 0) {
+        this.db.exec("COMMIT;");
+        return false;
+      }
 
       this.db
         .prepare(
           `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
            VALUES (?, ?, 'ROOM_EXPIRED', ?, 0, 0, 0, ?)`
         )
-        .run(roomId, newVersion, JSON.stringify({ expiredAt }), expiredAt);
+        .run(roomId, nextVersion, JSON.stringify({ expiredAt }), expiredAt);
 
       this.db.exec("COMMIT;");
+      return true;
     } catch (err) {
       this.db.exec("ROLLBACK;");
       throw err;

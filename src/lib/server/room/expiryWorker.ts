@@ -19,7 +19,7 @@ export interface ExpiryResult {
 
 export interface RoomPersistenceAdapter {
   findActiveRooms(): Promise<Room[]> | Room[];
-  expireRoom(roomId: string, newVersion: number, expiredAt: string): Promise<void> | void;
+  expireRoom(roomId: string, expectedVersion: number, expiredAt: string): Promise<boolean> | boolean;
 }
 
 /**
@@ -29,6 +29,8 @@ export interface RoomPersistenceAdapter {
  * 
  * Invariant: Active rooms that regularly submit votes or joins have their expires_at
  * renewed atomically and will never expire prematurely.
+ * Fenced against TOCTOU race condition: adapter verifies expectedVersion and fresh
+ * last_activity_at under atomic transaction / row lock.
  */
 export class RoomExpiryWorker {
   private readonly defaultTtlSeconds: number;
@@ -67,9 +69,11 @@ export class RoomExpiryWorker {
       if (isPastLastActivityTtl && isPastExplicitExpiry) {
         assertValidTransition(room.status, "EXPIRED", "Inactivity TTL exceeded");
 
-        const newVersion = room.state_version + 1;
-        await adapter.expireRoom(room.id, newVersion, now.toISOString());
-        expiredRoomIds.push(room.id);
+        // Pass expected state_version to adapter to prevent race condition with concurrent votes
+        const didExpire = await adapter.expireRoom(room.id, room.state_version, now.toISOString());
+        if (didExpire) {
+          expiredRoomIds.push(room.id);
+        }
       }
     }
 

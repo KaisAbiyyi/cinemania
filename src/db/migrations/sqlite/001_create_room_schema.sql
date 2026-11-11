@@ -1,6 +1,6 @@
 -- CINE-012: SQLite Mirror Schema Migration 001 (Forward)
 -- Used for fast, zero-dependency offline unit & integration test validation
--- Coherent with ADR-003 and PostgreSQL migration
+-- Coherent with ADR-003 and hardened PostgreSQL relational schema
 
 PRAGMA foreign_keys = ON;
 
@@ -9,16 +9,18 @@ CREATE TABLE IF NOT EXISTS rooms (
   code TEXT NOT NULL CHECK(length(code) = 6),
   status TEXT NOT NULL DEFAULT 'LOBBY' CHECK(status IN ('LOBBY', 'ACTIVE', 'MATCHED', 'EXHAUSTED', 'EXPIRED')),
   host_participant_id TEXT,
+  current_round_id TEXT,
   state_version INTEGER NOT NULL DEFAULT 1,
   participant_count INTEGER NOT NULL DEFAULT 1 CHECK(participant_count >= 1 AND participant_count <= 5),
   matched_movie_id INTEGER,
-  current_round_id TEXT,
   deck_filter TEXT,
   inactivity_ttl_seconds INTEGER NOT NULL DEFAULT 86400 CHECK(inactivity_ttl_seconds > 0),
   last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (host_participant_id) REFERENCES room_participants(participant_id) ON DELETE SET NULL,
+  FOREIGN KEY (current_round_id) REFERENCES rounds(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS room_participants (
@@ -29,7 +31,8 @@ CREATE TABLE IF NOT EXISTS room_participants (
   is_connected INTEGER NOT NULL DEFAULT 1 CHECK(is_connected IN (0, 1)),
   joined_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (room_id, participant_id)
+  PRIMARY KEY (room_id, participant_id),
+  CONSTRAINT uq_participant_id UNIQUE (participant_id)
 );
 
 CREATE TABLE IF NOT EXISTS rounds (
@@ -39,13 +42,14 @@ CREATE TABLE IF NOT EXISTS rounds (
   status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE', 'COMPLETED', 'CANCELLED')),
   started_at TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at TEXT,
-  CONSTRAINT uq_room_round_number UNIQUE (room_id, round_number)
+  CONSTRAINT uq_room_round_number UNIQUE (room_id, round_number),
+  CONSTRAINT uq_rounds_composite UNIQUE (room_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS candidates (
   id TEXT PRIMARY KEY,
-  round_id TEXT NOT NULL REFERENCES rounds(id) ON DELETE CASCADE,
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  round_id TEXT NOT NULL,
   movie_id INTEGER NOT NULL,
   position INTEGER NOT NULL CHECK(position >= 0 AND position < 20),
   title TEXT NOT NULL,
@@ -53,24 +57,23 @@ CREATE TABLE IF NOT EXISTS candidates (
   overview TEXT,
   release_date TEXT,
   vote_average REAL,
+  FOREIGN KEY (room_id, round_id) REFERENCES rounds(room_id, id) ON DELETE CASCADE,
   CONSTRAINT uq_round_movie UNIQUE (round_id, movie_id),
   CONSTRAINT uq_round_position UNIQUE (round_id, position),
-  CONSTRAINT uq_round_candidate_movie UNIQUE (round_id, id, movie_id)
+  CONSTRAINT uq_candidates_composite UNIQUE (room_id, round_id, id, movie_id)
 );
 
 CREATE TABLE IF NOT EXISTS votes (
   id TEXT PRIMARY KEY,
-  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-  round_id TEXT NOT NULL REFERENCES rounds(id) ON DELETE CASCADE,
+  room_id TEXT NOT NULL,
+  round_id TEXT NOT NULL,
   participant_id TEXT NOT NULL,
   candidate_id TEXT NOT NULL,
   movie_id INTEGER NOT NULL,
   vote TEXT NOT NULL CHECK(vote IN ('LIKE', 'SKIP')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  CONSTRAINT fk_votes_participant FOREIGN KEY (room_id, participant_id)
-    REFERENCES room_participants(room_id, participant_id) ON DELETE CASCADE,
-  CONSTRAINT fk_votes_candidate FOREIGN KEY (round_id, candidate_id, movie_id)
-    REFERENCES candidates(round_id, id, movie_id) ON DELETE CASCADE,
+  FOREIGN KEY (room_id, participant_id) REFERENCES room_participants(room_id, participant_id) ON DELETE CASCADE,
+  FOREIGN KEY (room_id, round_id, candidate_id, movie_id) REFERENCES candidates(room_id, round_id, id, movie_id) ON DELETE CASCADE,
   CONSTRAINT uq_vote_candidate UNIQUE (round_id, participant_id, candidate_id),
   CONSTRAINT uq_vote_movie UNIQUE (round_id, participant_id, movie_id)
 );
