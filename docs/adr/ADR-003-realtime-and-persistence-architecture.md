@@ -124,23 +124,29 @@ In serverless execution environments, compute functions are **stateless, ephemer
      -- Compare channel topic to authorized room ID claim in JWT
      realtime.topic() = ('room:' || (auth.jwt() ->> 'room_id'))
      -- Authorize only registered participants via safe non-enumerating helper
-     AND public.is_room_participant(
-       (auth.jwt() ->> 'room_id')::uuid,
-       (auth.jwt() ->> 'sub')::uuid
+     AND public.is_current_user_room_participant(
+       (auth.jwt() ->> 'room_id')::uuid
      )
    );
    ```
 
-4. **Strict Denial of Client-Side Broadcast (Fail-Closed Publisher Policy):**
+4. **Strict Denial of Client-Side Broadcast (Fail-Closed Restrictive Policy):**
    - Clients are **strictly prohibited from publishing directly to `room:${room_id}`**. There is NO client broadcast permission.
-   - An explicit fail-closed denial policy is attached to `realtime.messages`:
+   - An explicit fail-closed **RESTRICTIVE** policy is attached to `realtime.messages`. In PostgreSQL, restrictive policies are combined with AND across all policies, guaranteeing that client publications are rejected even if another permissive INSERT policy exists:
      ```sql
-     -- Explicitly deny all client-originated broadcast on room channels
+     -- Fail-closed restrictive policy denying client-originated broadcast on room channels
      CREATE POLICY "Deny client publication on room channels"
      ON realtime.messages
+     AS RESTRICTIVE
      FOR INSERT
      TO authenticated
-     WITH CHECK (false);
+     WITH CHECK (
+       -- Restrictive check: unconditional denial for room:* topics
+       CASE
+         WHEN realtime.topic() LIKE 'room:%' THEN false
+         ELSE true
+       END
+     );
      ```
    - Authoritative state events (`roster_frozen`, `vote_recorded`, `match_announced`) are published **exclusively by backend serverless route handlers** using the server-side modern secret key (`SUPABASE_SECRET_KEY`), which bypasses client RLS.
    - Any client attempt to forge or spoof a broadcast on the authoritative room channel is rejected with `403 Forbidden`.
@@ -174,28 +180,28 @@ In CineMatch, users participate as anonymous guests without registering email/pa
      USING (participant_id = (auth.jwt() ->> 'sub')::uuid);
    ```
 3. **Safe Non-Enumerating Membership Helper (SECURITY DEFINER):**
-   To allow Realtime RLS to verify room membership without granting blanket `SELECT` on all participants (preventing user enumeration or cross-room scraping), a scoped `SECURITY DEFINER` function is pinned with `search_path`:
+   To allow Realtime RLS to verify room membership without granting blanket `SELECT` on all participants (preventing user enumeration or cross-room scraping), a scoped `SECURITY DEFINER` function derives user identity **strictly from the caller's verified JWT (`auth.jwt() ->> 'sub'`)**:
    ```sql
-   CREATE OR REPLACE FUNCTION public.is_room_participant(target_room_id uuid, target_user_id uuid)
+   -- Safe non-enumerating membership helper: caller cannot supply arbitrary target_user_id
+   CREATE OR REPLACE FUNCTION public.is_current_user_room_participant(target_room_id uuid)
    RETURNS boolean
-   LANGUAGE plpgsql
+   LANGUAGE sql
+   STABLE
    SECURITY DEFINER
    SET search_path = public, pg_temp
    AS $$
-   BEGIN
-     RETURN EXISTS (
+     SELECT EXISTS (
        SELECT 1
        FROM public.room_participants
        WHERE room_id = target_room_id
-         AND participant_id = target_user_id
+         AND participant_id = (auth.jwt() ->> 'sub')::uuid
      );
-   END;
    $$;
 
    -- Lock down function execution permissions
-   REVOKE ALL ON FUNCTION public.is_room_participant(uuid, uuid) FROM public;
-   GRANT EXECUTE ON FUNCTION public.is_room_participant(uuid, uuid) TO authenticated;
-   GRANT EXECUTE ON FUNCTION public.is_room_participant(uuid, uuid) TO service_role;
+   REVOKE ALL ON FUNCTION public.is_current_user_room_participant(uuid) FROM public;
+   GRANT EXECUTE ON FUNCTION public.is_current_user_room_participant(uuid) TO authenticated;
+   GRANT EXECUTE ON FUNCTION public.is_current_user_room_participant(uuid) TO service_role;
    ```
 4. **Realtime Capability JWT Claims (RFC 7519 Compliant):** To connect to Supabase Realtime private channels, the server issues a scoped JWT signed with the project's Supabase JWT secret using algorithm `HS256`:
    ```json
@@ -239,6 +245,33 @@ sequenceDiagram
     Note over Player: 3. Hydrate UI with snapshot.<br/>Replay buffered events where version > 5.<br/>Discard events where version <= 5.
 ```
 
+### 4.4 Transactional Outbox Dispatch, Delivery Guarantees & Crash Recovery (Assigned to CINE-018)
+In serverless execution environments, compute functions can terminate, time out, or lose network connectivity after a database transaction commits but before WebSocket publication succeeds. To guarantee eventual delivery without corrupting room state:
+1. **Atomic Outbox Persistence:** Every state mutation commits its updated room record and appends a corresponding event to `public.room_events` in the **same atomic database transaction**:
+   ```sql
+   CREATE TABLE public.room_events (
+     id BIGSERIAL PRIMARY KEY,
+     room_id UUID NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+     version INT NOT NULL,
+     event_type TEXT NOT NULL,
+     payload JSONB NOT NULL,
+     dispatched BOOLEAN NOT NULL DEFAULT FALSE,
+     poison BOOLEAN NOT NULL DEFAULT FALSE,
+     retry_count INT NOT NULL DEFAULT 0,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+   );
+   CREATE INDEX idx_room_events_pending ON public.room_events (room_id, version) WHERE NOT dispatched AND NOT poison;
+   ```
+2. **Immediate Post-Commit Dispatch:** The executing serverless route handler attempts immediate synchronous broadcast to `room:${room_id}` via Supabase Realtime using `SUPABASE_SECRET_KEY` and flags `dispatched = TRUE`.
+3. **Crash Recovery & Reconciliation Sweeper (CINE-018 Acceptance):**
+   - If the serverless worker crashes after DB commit but before broadcast:
+     - The next incoming room request (or a lightweight scheduled sweeper) executes:
+       `SELECT * FROM public.room_events WHERE room_id = $1 AND NOT dispatched AND NOT poison ORDER BY version ASC FOR UPDATE SKIP LOCKED;`
+     - Any un-dispatched events are published to `room:${room_id}` in strict monotonic version order, and updated to `dispatched = TRUE`.
+   - **Idempotency & Poison-Event Handling:**
+     - Realtime clients deduplicate events via monotonic `version` tracking: any event with `version <= lastSeenVersion` is discarded.
+     - Events exceeding retry limits (e.g. 3 failed attempts) are quarantined with `poison = TRUE` and logged for operational alerting without permanently blocking room progression.
+
 ---
 
 ## 5. Consequences & Tradeoffs
@@ -261,11 +294,12 @@ sequenceDiagram
 
 ---
 
-## 6. Implementation Roadmap
-- **CINE-012:** Authoritative PostgreSQL schema (`rooms`, `public.room_participants`, `room_deck`, `votes`, `room_events`), migrations, and row-level locking stored procedure.
-- **CINE-013:** Anonymous guest identity, cryptographically signed capability tokens (RFC 7519 NumericDate), and cookie handling.
-- **CINE-014:** Room creation, 6-character room code generation, and capacity enforcement.
-- **CINE-018:** Server-only realtime event publication, listen-only private channel authorization, and outbox subscriber.
+## 6. Implementation Scope Fence & Owner Milestone Gate
+- **Deliverables Completed in CINE-011 (PR #40):**
+  1. Complete architectural decision record (ADR-003) selecting Supabase Realtime + PostgreSQL, defining state authority, capability token claims, RLS policies, reconnect protocols, and outbox reliability contracts.
+  2. Local multi-worker SQLite algorithmic model (`tests/integration/realtime-persistence-poc.test.ts`) validating serializable consensus, deterministic two-way handshake write contention (`BEGIN IMMEDIATE`), lock waiting, decoupled subscriber delivery, crash-between-commit-and-publish recovery, and versioned reconciliation.
+- **Formally Fenced / Blocked Cloud Infrastructure (Deferred to CINE-012/CINE-018):**
+  - Live cloud multi-instance PostgreSQL row locks (`SELECT ... FOR UPDATE`), live cloud Supabase Realtime WebSocket private channel connections, cloud JWT handshake, and measured cloud network latency are formally **BLOCKED and NOT RUN** on this task pending the owner's explicit milestone decision and infrastructure provisioning in CINE-012 (Data Layer) and CINE-018 (Realtime Broker).
 
 ---
 
@@ -274,8 +308,9 @@ sequenceDiagram
 - **Cryptographic Capability Token Signing & Tamper Verification:** Verified in `tests/integration/realtime-persistence-poc.test.ts` (RFC 7519 NumericDate seconds, HMAC-SHA256, timingSafeEqual, expiration, future `iat` rejection, max 24h lifetime bound, roster membership, alg header validation).
 - **Vote Confidentiality Guarantee (CINE-020):** Verified in `tests/integration/realtime-persistence-poc.test.ts` (live broadcasts and event replay omit participant LIKE/SKIP choices).
 - **Authoritative Publisher Trust Model:** Verified in `tests/integration/realtime-persistence-poc.test.ts` (clients denied publication on authoritative channel; server-only broadcast).
-- **Channel Access Isolation & Topic Authorization:** Verified via local topic and roster simulation (model only).
+- **Non-Enumerating Least-Privilege RLS:** Verified via `public.is_current_user_room_participant` architecture and simulated multi-user topic authorization.
 - **Relational Multi-Worker Concurrency & ACID Isolation:** Verified via Node 24 `node:sqlite` WAL mode across two isolated worker threads with deterministic two-way handshake contention and lock waiting (SQLite algorithmic model only).
 - **Subscribe-First Reconnect & Exact Monotonic Outbox Replay:** Verified with deterministic version recovery `[4, 5, 6]` (model only).
+- **Crash-Between-Commit-and-Publish Recovery:** Verified via outbox persistence and reconciliation model.
 - **Local Latency Percentiles:** Verified in local asynchronous mock (model only, not deployed cloud latency).
 - **External Multi-Instance PostgreSQL & Live Supabase Cloud Infrastructure:** Explicitly marked **OUTSTANDING & BLOCKED** pending cloud infrastructure provisioning in CINE-012/CINE-018.

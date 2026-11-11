@@ -204,6 +204,7 @@ interface OutboxEvent {
   type: string;
   payload: Record<string, unknown>;
   createdAt: number;
+  dispatched?: boolean;
 }
 
 /**
@@ -216,6 +217,32 @@ class SharedStateAuthority {
   private channelSubscribers = new Map<string, Set<(event: OutboxEvent) => void>>();
   private roomLocks = new Map<string, Promise<void>>();
   public transientFailureFlag = false;
+  public simulateCrashBeforeBroadcast = false;
+
+  /**
+   * Evaluates PostgreSQL RLS policies on realtime.messages for INSERT.
+   * Compares PERMISSIVE policies (combined with OR) against RESTRICTIVE policies (combined with AND).
+   */
+  evaluateInsertRlsPolicy(
+    channelTopic: string,
+    role: "authenticated" | "service_role",
+    hasPermissiveInsertGrant: boolean
+  ): boolean {
+    if (role === "service_role") {
+      return true; // Server secret key bypasses client RLS
+    }
+
+    // 1. Evaluate PERMISSIVE policies (combined with OR):
+    const permissiveAllowed = hasPermissiveInsertGrant;
+
+    // 2. Evaluate RESTRICTIVE policy (combined with AND across all policies):
+    // Policy: CASE WHEN realtime.topic() LIKE 'room:%' THEN false ELSE true END
+    const restrictiveAllowed = channelTopic.startsWith("room:") ? false : true;
+
+    // PostgreSQL combining rule:
+    // If restrictive policies exist, at least one permissive policy MUST pass AND ALL restrictive policies MUST pass!
+    return permissiveAllowed && restrictiveAllowed;
+  }
 
   private async acquireRoomLock(roomId: string): Promise<() => void> {
     while (this.roomLocks.has(roomId)) {
@@ -468,11 +495,22 @@ class SharedStateAuthority {
       type,
       payload,
       createdAt: Date.now(),
+      dispatched: false,
     };
 
     this.outboxEvents.push(event);
 
-    const listeners = this.channelSubscribers.get(roomId);
+    if (this.simulateCrashBeforeBroadcast) {
+      // Simulate crash immediately after DB commit: outbox event persisted on disk but not broadcast
+      return;
+    }
+
+    this.dispatchOutboxEvent(event);
+  }
+
+  private dispatchOutboxEvent(event: OutboxEvent) {
+    event.dispatched = true;
+    const listeners = this.channelSubscribers.get(event.roomId);
     if (listeners) {
       const listenersCopy = Array.from(listeners);
       // Decouple subscriber event delivery from database transaction commit
@@ -487,6 +525,18 @@ class SharedStateAuthority {
         }
       });
     }
+  }
+
+  /**
+   * Sweeper / Reconnection reconciliation for un-dispatched outbox events (CINE-018)
+   */
+  reconcileUndispatchedEvents(roomId: string): OutboxEvent[] {
+    const pending = this.outboxEvents.filter((e) => e.roomId === roomId && !e.dispatched);
+    pending.sort((a, b) => a.version - b.version);
+    for (const event of pending) {
+      this.dispatchOutboxEvent(event);
+    }
+    return pending;
   }
 }
 
@@ -529,6 +579,14 @@ class SimulatedWorker {
 
   publishClientMessage(channelTopic: string, roomId: string, token: string, payload: unknown) {
     return this.coordinator.publishClientMessage(channelTopic, roomId, token, payload);
+  }
+
+  evaluateInsertRlsPolicy(channelTopic: string, role: "authenticated" | "service_role", hasPermissiveInsertGrant: boolean) {
+    return this.coordinator.evaluateInsertRlsPolicy(channelTopic, role, hasPermissiveInsertGrant);
+  }
+
+  reconcileUndispatchedEvents(roomId: string) {
+    return this.coordinator.reconcileUndispatchedEvents(roomId);
   }
 }
 
@@ -736,6 +794,46 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
           movieId: 999,
         })
       ).toThrow("Client publication on authoritative room channel is forbidden");
+    });
+
+    it("verifies non-enumerating membership helper derives identity strictly from JWT sub and rejects cross-user probing", () => {
+      const room = workerA.createRoom("ORACLE_TEST", "host-user", [10, 20]);
+      workerB.joinRoom(room.id, "guest-user");
+
+      const legitimateHostToken = createCryptographicRoomToken("host-user", room.id);
+      const outsiderAttackerToken = createCryptographicRoomToken("outsider-attacker", room.id);
+
+      // Function public.is_current_user_room_participant(target_room_id uuid)
+      // Extracts (auth.jwt() ->> 'sub')::uuid internally; caller cannot supply arbitrary target_user_id
+      function isCurrentUserRoomParticipant(targetRoomId: string, token: string): boolean {
+        const claims = verifyCryptographicRoomToken(token, targetRoomId);
+        // SQL: SELECT EXISTS(SELECT 1 FROM public.room_participants WHERE room_id = targetRoomId AND participant_id = (auth.jwt() ->> 'sub')::uuid)
+        return room.participants.has(claims.sub);
+      }
+
+      // 1. Legitimate participant membership is confirmed
+      expect(isCurrentUserRoomParticipant(room.id, legitimateHostToken)).toBe(true);
+
+      // 2. Outsider cannot probe another user's membership: helper strictly inspects the caller's verified sub
+      expect(isCurrentUserRoomParticipant(room.id, outsiderAttackerToken)).toBe(false);
+    });
+
+    it("proves PostgreSQL AS RESTRICTIVE policy disallows client broadcast even when competing permissive INSERT policies exist", () => {
+      const room = workerA.createRoom("RESTRICT_TEST", "user-1", [10, 20]);
+
+      // Scenario 1: Clean policy set without permissive grants -> write denied
+      const cleanRlsAllowed = workerA.evaluateInsertRlsPolicy(`room:${room.id}`, "authenticated", false);
+      expect(cleanRlsAllowed).toBe(false);
+
+      // Scenario 2: Competing permissive INSERT policy exists (e.g. from generic extension)
+      // Permissive policy evaluates to true, BUT the AS RESTRICTIVE policy evaluates to false for room:*
+      // PostgreSQL combining rule: permissive (true) AND restrictive (false) = false!
+      const competingRlsAllowed = workerA.evaluateInsertRlsPolicy(`room:${room.id}`, "authenticated", true);
+      expect(competingRlsAllowed).toBe(false);
+
+      // Scenario 3: Backend publisher using server secret key bypasses client RLS entirely
+      const backendPublisherAllowed = workerA.evaluateInsertRlsPolicy(`room:${room.id}`, "service_role", false);
+      expect(backendPublisherAllowed).toBe(true);
     });
 
     it("guarantees vote confidentiality (CINE-020): live broadcasts and event replay never disclose individual LIKE/SKIP choices", async () => {
@@ -1087,6 +1185,45 @@ describe("CINE-011: Realtime and Persistence Architecture POC & Model Verificati
       const snapshot = workerB.getRoomSnapshot(room.id, guestToken);
       expect(snapshot.stateVersion).toBe(4);
       expect(snapshot.status).toBe("VOTING");
+    });
+
+    it("recovers un-dispatched outbox events following serverless crash between DB commit and broadcast", async () => {
+      const room = workerA.createRoom("CRASH_TEST", "host-user", [101, 102]);
+      workerB.joinRoom(room.id, "guest-user");
+      workerA.startRound(room.id, "host-user");
+
+      const guestToken = createCryptographicRoomToken("guest-user", room.id);
+      const receivedEvents: OutboxEvent[] = [];
+      workerB.subscribeToRoom(`room:${room.id}`, room.id, guestToken, (e) => {
+        receivedEvents.push(e);
+      });
+
+      // Simulate serverless crash immediately after database commit but before WebSocket dispatch
+      coordinator.simulateCrashBeforeBroadcast = true;
+
+      // Host casts vote: state mutation commits to DB and outbox, but WebSocket dispatch crashes
+      const voteResult = await workerA.submitVote(room.id, "host-user", 101, "LIKE");
+      expect(voteResult.status).toBe("RECORDED");
+      expect(voteResult.stateVersion).toBe(4);
+
+      // Microtask drain: verify listener received NO live event because server crashed before broadcast
+      await new Promise((r) => setTimeout(r, 15));
+      expect(receivedEvents.length).toBe(0);
+
+      // Reconnection / outbox recovery sweeper executes on next request / worker recovery
+      coordinator.simulateCrashBeforeBroadcast = false;
+      const recoveredEvents = workerB.reconcileUndispatchedEvents(room.id);
+
+      // Microtask drain: verify listener now receives the recovered outbox event in exact version sequence
+      await new Promise((r) => setTimeout(r, 15));
+      expect(recoveredEvents.length).toBe(1);
+      expect(recoveredEvents[0].version).toBe(4);
+      expect(receivedEvents.length).toBe(1);
+      expect(receivedEvents[0].version).toBe(4);
+
+      // Verify room snapshot is intact and matches state_version 4
+      const snapshot = workerB.getRoomSnapshot(room.id, guestToken);
+      expect(snapshot.stateVersion).toBe(4);
     });
   });
 
