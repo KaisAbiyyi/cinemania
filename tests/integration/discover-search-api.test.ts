@@ -8,6 +8,8 @@ import { GET as searchKeyword } from "@/app/api/search/keyword/route";
 import { GET as getKeywords } from "@/app/api/keywords/route";
 import tmdbApi, { TmdbApiError } from "@/services/tmdbApi";
 import { mockMoviesList } from "../fixtures/tmdb-fixtures";
+import { buildMediaQueryParams } from "@/feature/media/components/filter/FilterProvider";
+import { globalDefaultFilters } from "@/types/filters";
 
 describe("CINE-007: Integration Tests for Discover & Search API Routes", () => {
   beforeEach(() => {
@@ -15,6 +17,54 @@ describe("CINE-007: Integration Tests for Discover & Search API Routes", () => {
   });
 
   describe("GET /api/media (Discover Endpoint)", () => {
+    // P1-A: Regression test with real full FilterProvider defaults payload
+    it("accepts full real default FilterProvider payload for movie and calls upstream with clean params (no 400)", async () => {
+      const spy = vi.spyOn(tmdbApi, "get").mockResolvedValueOnce({
+        data: mockMoviesList,
+      } as never);
+
+      const queryParams = buildMediaQueryParams("movie", globalDefaultFilters);
+      const searchParams = new URLSearchParams();
+      for (const [k, v] of Object.entries(queryParams)) {
+        if (v !== undefined) searchParams.append(k, String(v));
+      }
+
+      const request = new Request(`http://localhost:3000/api/media?${searchParams.toString()}`);
+      const response = await getDiscoverMedia(request);
+
+      expect(response.status).toBe(200);
+      const json = await response.json();
+      expect(json).toEqual(mockMoviesList);
+      expect(spy).toHaveBeenCalled();
+      const [endpoint] = spy.mock.calls[0];
+      const options = spy.mock.calls[0][1] as { params: Record<string, unknown> };
+      expect(endpoint).toBe("/discover/movie");
+      expect(options.params.include_adult).toBe(false);
+      expect(options.params.sort_by).toBe("popularity.desc");
+      expect(options.params["release_date.gte"]).toBeUndefined();
+    });
+
+    // P1-A: Regression test with real full FilterProvider defaults payload for TV
+    it("accepts full real default FilterProvider payload for tv and calls upstream without 400", async () => {
+      const spy = vi.spyOn(tmdbApi, "get").mockResolvedValueOnce({
+        data: { page: 1, results: [] },
+      } as never);
+
+      const queryParams = buildMediaQueryParams("tv", globalDefaultFilters);
+      const searchParams = new URLSearchParams();
+      for (const [k, v] of Object.entries(queryParams)) {
+        if (v !== undefined) searchParams.append(k, String(v));
+      }
+
+      const request = new Request(`http://localhost:3000/api/media?${searchParams.toString()}`);
+      const response = await getDiscoverMedia(request);
+
+      expect(response.status).toBe(200);
+      expect(spy).toHaveBeenCalled();
+      const [endpoint] = spy.mock.calls[0];
+      expect(endpoint).toBe("/discover/tv");
+    });
+
     it("returns 400 without calling provider when mediaType is missing", async () => {
       const spy = vi.spyOn(tmdbApi, "get");
       const request = new Request("http://localhost:3000/api/media?page=1");
@@ -95,25 +145,31 @@ describe("CINE-007: Integration Tests for Discover & Search API Routes", () => {
       });
     });
 
-    it("forwards tv mediaType to /discover/tv", async () => {
-      const spy = vi.spyOn(tmdbApi, "get").mockResolvedValueOnce({
-        data: { page: 1, results: [] },
-      } as never);
+    // P1-B: Test TV sort options in GET /api/media
+    it.each(["name.asc", "name.desc", "original_name.asc", "original_name.desc", "first_air_date.desc"])(
+      "accepts TV sort option '%s' on tv discover route",
+      async (tvSort) => {
+        const spy = vi.spyOn(tmdbApi, "get").mockResolvedValueOnce({
+          data: { page: 1, results: [] },
+        } as never);
 
-      const request = new Request("http://localhost:3000/api/media?mediaType=tv&page=1");
-      const response = await getDiscoverMedia(request);
+        const request = new Request(`http://localhost:3000/api/media?mediaType=tv&sort_by=${tvSort}`);
+        const response = await getDiscoverMedia(request);
 
-      expect(response.status).toBe(200);
-      expect(spy).toHaveBeenCalledWith("/discover/tv", {
-        params: {
-          page: 1,
-          language: "en-US",
-          include_adult: false,
-        },
-      });
-    });
+        expect(response.status).toBe(200);
+        expect(spy).toHaveBeenCalledWith("/discover/tv", {
+          params: {
+            page: 1,
+            language: "en-US",
+            include_adult: false,
+            sort_by: tvSort,
+          },
+        });
+      }
+    );
 
-    it("maps upstream TMDB 429 rate limit to HTTP 429", async () => {
+    // P2-A: Explicit 429 rate limit mapping with Retry-After header
+    it("maps upstream TMDB 429 rate limit to HTTP 429 with Retry-After header", async () => {
       vi.spyOn(tmdbApi, "get").mockRejectedValueOnce(
         new TmdbApiError(429, "TMDB_RATE_LIMIT", "Rate limit exceeded")
       );
@@ -122,8 +178,24 @@ describe("CINE-007: Integration Tests for Discover & Search API Routes", () => {
       const response = await getDiscoverMedia(request);
 
       expect(response.status).toBe(429);
+      expect(response.headers.get("Retry-After")).toBe("60");
       const json = await response.json();
       expect(json.code).toBe("RATE_LIMITED");
+    });
+
+    // P2-A: Explicit 503 service unavailable mapping with Retry-After header
+    it("maps upstream TMDB 503 service unavailable to HTTP 503 with Retry-After header", async () => {
+      vi.spyOn(tmdbApi, "get").mockRejectedValueOnce(
+        new TmdbApiError(503, "TMDB_UPSTREAM_ERROR", "TMDB is overloaded")
+      );
+
+      const request = new Request("http://localhost:3000/api/media?mediaType=movie");
+      const response = await getDiscoverMedia(request);
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get("Retry-After")).toBe("30");
+      const json = await response.json();
+      expect(json.code).toBe("SERVICE_UNAVAILABLE");
     });
 
     it("maps upstream TMDB 504 timeout to HTTP 504", async () => {
@@ -139,9 +211,9 @@ describe("CINE-007: Integration Tests for Discover & Search API Routes", () => {
       expect(json.code).toBe("GATEWAY_TIMEOUT");
     });
 
-    it("maps upstream TMDB 500/503 to HTTP 502 Bad Gateway", async () => {
+    it("maps upstream TMDB 500/502 to HTTP 502 Bad Gateway", async () => {
       vi.spyOn(tmdbApi, "get").mockRejectedValueOnce(
-        new TmdbApiError(503, "TMDB_UPSTREAM_ERROR", "TMDB is unavailable")
+        new TmdbApiError(502, "TMDB_NETWORK_ERROR", "TMDB gateway error")
       );
 
       const request = new Request("http://localhost:3000/api/media?mediaType=movie");
@@ -205,6 +277,18 @@ describe("CINE-007: Integration Tests for Discover & Search API Routes", () => {
       expect(spy).not.toHaveBeenCalled();
     });
 
+    // P2-B: Conflicting query aliases
+    it("returns 400 when conflicting 'q' and 'query' parameters are sent", async () => {
+      const spy = vi.spyOn(tmdbApi, "get");
+      const request = new Request("http://localhost:3000/api/search/movie?q=Interstellar&query=Oppenheimer");
+      const response = await searchMovie(request);
+
+      expect(response.status).toBe(400);
+      const json = await response.json();
+      expect(json.error).toMatch(/Conflicting query parameters/);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
     it("returns 200 and passes sanitized query and adult policy", async () => {
       const spy = vi.spyOn(tmdbApi, "get").mockResolvedValueOnce({
         data: mockMoviesList,
@@ -229,6 +313,16 @@ describe("CINE-007: Integration Tests for Discover & Search API Routes", () => {
     it("returns 400 when query is missing", async () => {
       const spy = vi.spyOn(tmdbApi, "get");
       const request = new Request("http://localhost:3000/api/search/tv");
+      const response = await searchTv(request);
+
+      expect(response.status).toBe(400);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    // P2-B: Rejects movie-only parameter primary_release_year
+    it("returns 400 when movie-only parameter primary_release_year is passed to /api/search/tv", async () => {
+      const spy = vi.spyOn(tmdbApi, "get");
+      const request = new Request("http://localhost:3000/api/search/tv?q=Dark&primary_release_year=2017");
       const response = await searchTv(request);
 
       expect(response.status).toBe(400);
@@ -273,6 +367,16 @@ describe("CINE-007: Integration Tests for Discover & Search API Routes", () => {
           include_adult: false,
         },
       });
+    });
+
+    // P2-B: Rejects year parameter on person search
+    it("returns 400 when year parameter is passed to /api/search/person", async () => {
+      const spy = vi.spyOn(tmdbApi, "get");
+      const request = new Request("http://localhost:3000/api/search/person?q=Nolan&year=1970");
+      const response = await searchPerson(request);
+
+      expect(response.status).toBe(400);
+      expect(spy).not.toHaveBeenCalled();
     });
   });
 

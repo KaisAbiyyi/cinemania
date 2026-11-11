@@ -2,13 +2,19 @@ import { describe, it, expect } from "vitest";
 import {
   extractAndGuardQueryParams,
   discoverMediaSchema,
-  searchMediaSchema,
+  searchMovieSchema,
+  searchTvSchema,
+  searchPersonSchema,
   searchKeywordSchema,
   trendingMediaSchema,
   ALLOWED_DISCOVER_KEYS,
-  ALLOWED_SEARCH_MEDIA_KEYS,
+  ALLOWED_SEARCH_MOVIE_KEYS,
+  ALLOWED_SEARCH_TV_KEYS,
+  ALLOWED_SEARCH_PERSON_KEYS,
   ALLOWED_SEARCH_KEYWORD_KEYS,
   ALLOWED_TRENDING_KEYS,
+  ALLOWED_MOVIE_SORT_VALUES,
+  ALLOWED_TV_SORT_VALUES,
 } from "@/lib/schemas/discoverSearch";
 import { ValidationError } from "@/lib/api/errorResponse";
 
@@ -20,6 +26,15 @@ describe("CINE-007: extractAndGuardQueryParams low-level security guards", () =>
       mediaType: "movie",
       page: "1",
       language: "en-US",
+    });
+  });
+
+  it("omits empty string parameters so default frontend filters pass cleanly", () => {
+    const params = new URLSearchParams("mediaType=movie&page=1&with_genres=&release_date.gte=");
+    const result = extractAndGuardQueryParams(params, ALLOWED_DISCOVER_KEYS);
+    expect(result).toEqual({
+      mediaType: "movie",
+      page: "1",
     });
   });
 
@@ -163,9 +178,31 @@ describe("CINE-007: discoverMediaSchema table-driven validation", () => {
     "vote_average.desc",
     "release_date.desc",
     "revenue.desc",
-  ])("accepts valid sort_by value: %s", (sort) => {
+  ])("accepts valid movie sort_by value: %s", (sort) => {
     const parsed = discoverMediaSchema.parse({ mediaType: "movie", sort_by: sort });
     expect(parsed.sort_by).toBe(sort);
+  });
+
+  it.each([
+    "first_air_date.desc",
+    "name.asc",
+    "original_name.desc",
+    "vote_average.asc",
+  ])("accepts valid tv sort_by value: %s", (sort) => {
+    const parsed = discoverMediaSchema.parse({ mediaType: "tv", sort_by: sort });
+    expect(parsed.sort_by).toBe(sort);
+  });
+
+  it("rejects movie-only sort on tv mediaType and vice versa", () => {
+    // release_date.desc is movie-only
+    expect(() =>
+      discoverMediaSchema.parse({ mediaType: "tv", sort_by: "release_date.desc" })
+    ).toThrow(/Sort option 'release_date.desc' is not valid for mediaType 'tv'/);
+
+    // name.asc is tv-only
+    expect(() =>
+      discoverMediaSchema.parse({ mediaType: "movie", sort_by: "name.asc" })
+    ).toThrow(/Sort option 'name.asc' is not valid for mediaType 'movie'/);
   });
 
   it.each(["random", "vote_average.random", "ORDER BY id", "popularity"])
@@ -230,6 +267,28 @@ describe("CINE-007: discoverMediaSchema table-driven validation", () => {
         "release_date.gte": "2020/01/01",
       })
     ).toThrow();
+
+    // Calendar invalidity: non-existent days
+    expect(() =>
+      discoverMediaSchema.parse({
+        mediaType: "movie",
+        "release_date.gte": "2026-02-31",
+      })
+    ).toThrow(/Invalid calendar date/);
+
+    expect(() =>
+      discoverMediaSchema.parse({
+        mediaType: "movie",
+        "release_date.gte": "2023-02-29", // not a leap year
+      })
+    ).toThrow(/Invalid calendar date/);
+
+    // Valid leap year date
+    const leapYear = discoverMediaSchema.parse({
+      mediaType: "movie",
+      "release_date.gte": "2024-02-29",
+    });
+    expect(leapYear["release_date.gte"]).toBe("2024-02-29");
   });
 
   it("validates ID list filters and regions", () => {
@@ -263,7 +322,7 @@ describe("CINE-007: discoverMediaSchema table-driven validation", () => {
   });
 });
 
-describe("CINE-007: searchMediaSchema table-driven validation & Unicode support", () => {
+describe("CINE-007: searchMovieSchema table-driven validation & Unicode support", () => {
   it.each([
     ["Inception", "Latin English"],
     ["千と千尋の神隠し", "Japanese Kanji & Hiragana"],
@@ -276,26 +335,88 @@ describe("CINE-007: searchMediaSchema table-driven validation & Unicode support"
     ["🎬 Popcorn & Movies 🍿", "Emoji and symbols"],
     ["Spider-Man: Across the Spider-Verse (2023)", "Punctuation & numbers"],
   ])("accepts valid Unicode search query: %s (%s)", (query) => {
-    const parsed = searchMediaSchema.parse({ q: query });
+    const parsed = searchMovieSchema.parse({ q: query });
     expect(parsed.q).toBe(query.trim());
     expect(parsed.page).toBe(1);
     expect(parsed.include_adult).toBe(false);
   });
 
   it("accepts query parameter named 'query' as alternative to 'q'", () => {
-    const parsed = searchMediaSchema.parse({ query: "Interstellar" });
+    const parsed = searchMovieSchema.parse({ query: "Interstellar" });
     expect(parsed.query).toBe("Interstellar");
   });
 
+  it("rejects request when 'q' and 'query' have conflicting values", () => {
+    expect(() =>
+      searchMovieSchema.parse({ q: "Batman", query: "Superman" })
+    ).toThrowError(/Conflicting query parameters/);
+  });
+
+  it("accepts request when 'q' and 'query' have identical values", () => {
+    const parsed = searchMovieSchema.parse({ q: "Batman", query: "Batman" });
+    expect(parsed.q).toBe("Batman");
+  });
+
   it("rejects search when both 'q' and 'query' are missing or empty", () => {
-    expect(() => searchMediaSchema.parse({})).toThrow(/Query parameter 'q' or 'query' is required/);
-    expect(() => searchMediaSchema.parse({ q: "   " })).toThrow();
+    expect(() => searchMovieSchema.parse({})).toThrow(/Query parameter 'q' or 'query' is required/);
+    expect(() => searchMovieSchema.parse({ q: "   " })).toThrow();
   });
 
   it("bounds search page in 1..500", () => {
-    expect(searchMediaSchema.parse({ q: "Batman", page: "500" }).page).toBe(500);
-    expect(() => searchMediaSchema.parse({ q: "Batman", page: "501" })).toThrow();
-    expect(() => searchMediaSchema.parse({ q: "Batman", page: "0" })).toThrow();
+    expect(searchMovieSchema.parse({ q: "Batman", page: "500" }).page).toBe(500);
+    expect(() => searchMovieSchema.parse({ q: "Batman", page: "501" })).toThrow();
+    expect(() => searchMovieSchema.parse({ q: "Batman", page: "0" })).toThrow();
+  });
+
+  it("allows year and primary_release_year in searchMovieSchema", () => {
+    const parsed = searchMovieSchema.parse({
+      q: "Inception",
+      year: "2010",
+      primary_release_year: "2010",
+    });
+    expect(parsed.year).toBe(2010);
+    expect(parsed.primary_release_year).toBe(2010);
+  });
+});
+
+describe("CINE-007: searchTvSchema and searchPersonSchema validations", () => {
+  it("validates searchTvSchema with year (maps to first_air_date_year)", () => {
+    const parsed = searchTvSchema.parse({
+      q: "Dark",
+      year: "2017",
+      page: "2",
+    });
+    expect(parsed.q).toBe("Dark");
+    expect(parsed.year).toBe(2017);
+    expect(parsed.page).toBe(2);
+  });
+
+  it("rejects primary_release_year in searchTvSchema (movie-only filter)", () => {
+    expect(() =>
+      extractAndGuardQueryParams(
+        new URLSearchParams("q=Breaking+Bad&primary_release_year=2008"),
+        ALLOWED_SEARCH_TV_KEYS
+      )
+    ).toThrowError(/Unrecognized query parameter "primary_release_year"/);
+  });
+
+  it("validates searchPersonSchema with query and page", () => {
+    const parsed = searchPersonSchema.parse({
+      q: "Cillian Murphy",
+      page: "1",
+    });
+    expect(parsed.q).toBe("Cillian Murphy");
+    expect(parsed.page).toBe(1);
+    expect(parsed.include_adult).toBe(false);
+  });
+
+  it("rejects year in searchPersonSchema", () => {
+    expect(() =>
+      extractAndGuardQueryParams(
+        new URLSearchParams("q=Nolan&year=1970"),
+        ALLOWED_SEARCH_PERSON_KEYS
+      )
+    ).toThrowError(/Unrecognized query parameter "year"/);
   });
 });
 
@@ -327,8 +448,13 @@ describe("CINE-007: searchKeywordSchema & allowed key sets", () => {
   });
 
   it("verifies allowed keys sets are properly populated", () => {
-    expect(ALLOWED_SEARCH_MEDIA_KEYS.has("q")).toBe(true);
+    expect(ALLOWED_SEARCH_MOVIE_KEYS.has("primary_release_year")).toBe(true);
+    expect(ALLOWED_SEARCH_TV_KEYS.has("year")).toBe(true);
+    expect(ALLOWED_SEARCH_TV_KEYS.has("primary_release_year")).toBe(false);
+    expect(ALLOWED_SEARCH_PERSON_KEYS.has("year")).toBe(false);
     expect(ALLOWED_SEARCH_KEYWORD_KEYS.has("query")).toBe(true);
     expect(ALLOWED_TRENDING_KEYS.has("timeWindow")).toBe(true);
+    expect(ALLOWED_MOVIE_SORT_VALUES).toContain("popularity.desc");
+    expect(ALLOWED_TV_SORT_VALUES).toContain("name.asc");
   });
 });

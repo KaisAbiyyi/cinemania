@@ -23,7 +23,14 @@ export class ValidationError extends Error {
 
 /**
  * Normalizes any error thrown during API route execution into a standard JSON response.
- * Maps upstream TMDB errors, validation failures, timeouts, and rate limits to appropriate HTTP statuses.
+ * Maps upstream TMDB errors, validation failures, timeouts, and rate limits to appropriate HTTP statuses:
+ * - 400: Input validation failures
+ * - 404: Not found
+ * - 429: Upstream rate limit exceeded (with optional Retry-After header)
+ * - 503: Upstream service unavailable (with optional Retry-After header)
+ * - 504: Upstream gateway timeout
+ * - 502: Upstream bad gateway / connection / configuration failure
+ * - 500: Internal server error
  */
 export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
   // Input Validation Error (Zod)
@@ -88,7 +95,27 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
           error: "Upstream rate limit exceeded",
           code: "RATE_LIMITED",
         },
-        { status: 429 }
+        {
+          status: 429,
+          headers: {
+            "Retry-After": "60",
+          },
+        }
+      );
+    }
+
+    if (status === 503) {
+      return NextResponse.json(
+        {
+          error: "Upstream service temporarily unavailable",
+          code: "SERVICE_UNAVAILABLE",
+        },
+        {
+          status: 503,
+          headers: {
+            "Retry-After": "30",
+          },
+        }
       );
     }
 

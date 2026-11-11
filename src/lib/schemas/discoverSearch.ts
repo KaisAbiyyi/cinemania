@@ -18,6 +18,7 @@ const CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/;
  * - Blocks arbitrary non-whitelisted parameter keys
  * - Enforces key and value length bounds
  * - Blocks URL scheme injection and unprintable control characters
+ * - Normalizes empty optional parameter strings (e.g. from standard form defaults) so they do not fail optional validation
  */
 export function extractAndGuardQueryParams(
   searchParams: URLSearchParams,
@@ -60,16 +61,20 @@ export function extractAndGuardQueryParams(
     }
   }
 
-  // Convert to plain key-value object
+  // Convert to plain key-value object, omitting empty optional parameter values so client defaults pass seamlessly
   const result: Record<string, string> = {};
   for (const [key, value] of totalEntries) {
+    if (value === "") {
+      // Empty string values are treated as unset/omitted optional parameters
+      continue;
+    }
     result[key] = value;
   }
   return result;
 }
 
-// Allowed sort values for TMDB discover endpoint
-export const ALLOWED_SORT_VALUES = [
+// Allowed sort values for TMDB discover movie
+export const ALLOWED_MOVIE_SORT_VALUES = [
   "popularity.asc",
   "popularity.desc",
   "revenue.asc",
@@ -82,13 +87,31 @@ export const ALLOWED_SORT_VALUES = [
   "vote_average.desc",
   "vote_count.asc",
   "vote_count.desc",
-  "first_air_date.asc",
-  "first_air_date.desc",
   "title.asc",
   "title.desc",
   "original_title.asc",
   "original_title.desc",
 ] as const;
+
+// Allowed sort values for TMDB discover tv (including UI menu options from SortBySelect)
+export const ALLOWED_TV_SORT_VALUES = [
+  "popularity.asc",
+  "popularity.desc",
+  "first_air_date.asc",
+  "first_air_date.desc",
+  "name.asc",
+  "name.desc",
+  "original_name.asc",
+  "original_name.desc",
+  "vote_average.asc",
+  "vote_average.desc",
+  "vote_count.asc",
+  "vote_count.desc",
+] as const;
+
+export const ALL_ALLOWED_SORT_VALUES = Array.from(
+  new Set([...ALLOWED_MOVIE_SORT_VALUES, ...ALLOWED_TV_SORT_VALUES])
+) as [string, ...string[]];
 
 // Common helper schemas
 const booleanString = z.preprocess((val) => {
@@ -97,8 +120,29 @@ const booleanString = z.preprocess((val) => {
   return val;
 }, z.boolean({ invalid_type_error: "Must be a valid boolean ('true' or 'false')" }));
 
-const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format, expected YYYY-MM-DD");
-const idListString = z.string().regex(/^(\d+[|,])*\d+$/, "Expected comma or pipe-separated integer IDs").max(200);
+// Validates both regex syntax AND calendar validity (e.g. rejects 2026-02-31)
+const calendarDateString = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format, expected YYYY-MM-DD")
+  .refine(
+    (val) => {
+      const [year, month, day] = val.split("-").map(Number);
+      if (month < 1 || month > 12) return false;
+      if (day < 1 || day > 31) return false;
+      const d = new Date(Date.UTC(year, month - 1, day));
+      return (
+        d.getUTCFullYear() === year &&
+        d.getUTCMonth() === month - 1 &&
+        d.getUTCDate() === day
+      );
+    },
+    { message: "Invalid calendar date (day does not exist in month)" }
+  );
+
+const idListString = z
+  .string()
+  .regex(/^(\d+[|,])*\d+$/, "Expected comma or pipe-separated integer IDs")
+  .max(200);
 
 export const ALLOWED_DISCOVER_KEYS = new Set([
   "mediaType",
@@ -140,15 +184,15 @@ export const discoverMediaSchema = z
     page: z.coerce.number().int("Page must be an integer").min(1, "Page must be at least 1").max(500, "Page must not exceed 500").default(1),
     include_adult: booleanString.default(false),
     language: z.string().regex(/^[a-z]{2}(-[A-Z]{2})?$/, "Invalid language code format (e.g. en-US)").default("en-US"),
-    sort_by: z.enum(ALLOWED_SORT_VALUES).optional(),
-    "release_date.gte": dateString.optional(),
-    "release_date.lte": dateString.optional(),
-    "first_air_date.gte": dateString.optional(),
-    "first_air_date.lte": dateString.optional(),
-    "air_date.gte": dateString.optional(),
-    "air_date.lte": dateString.optional(),
-    "primary_release_date.gte": dateString.optional(),
-    "primary_release_date.lte": dateString.optional(),
+    sort_by: z.enum(ALL_ALLOWED_SORT_VALUES).optional(),
+    "release_date.gte": calendarDateString.optional(),
+    "release_date.lte": calendarDateString.optional(),
+    "first_air_date.gte": calendarDateString.optional(),
+    "first_air_date.lte": calendarDateString.optional(),
+    "air_date.gte": calendarDateString.optional(),
+    "air_date.lte": calendarDateString.optional(),
+    "primary_release_date.gte": calendarDateString.optional(),
+    "primary_release_date.lte": calendarDateString.optional(),
     "vote_average.gte": z.coerce.number().min(0, "vote_average.gte must be >= 0").max(10, "vote_average.gte must be <= 10").optional(),
     "vote_average.lte": z.coerce.number().min(0, "vote_average.lte must be >= 0").max(10, "vote_average.lte must be <= 10").optional(),
     "vote_count.gte": z.coerce.number().int().min(0).max(1000000).optional(),
@@ -166,6 +210,23 @@ export const discoverMediaSchema = z
     year: z.coerce.number().int().min(1870).max(2100).optional(),
     primary_release_year: z.coerce.number().int().min(1870).max(2100).optional(),
   })
+  .refine(
+    (data) => {
+      // Validate sort option matches mediaType
+      if (!data.sort_by) return true;
+      if (data.mediaType === "movie") {
+        return (ALLOWED_MOVIE_SORT_VALUES as readonly string[]).includes(data.sort_by);
+      }
+      if (data.mediaType === "tv") {
+        return (ALLOWED_TV_SORT_VALUES as readonly string[]).includes(data.sort_by);
+      }
+      return true;
+    },
+    (data) => ({
+      message: `Sort option '${data.sort_by}' is not valid for mediaType '${data.mediaType}'`,
+      path: ["sort_by"],
+    })
+  )
   .refine(
     (data) => {
       if (data["vote_average.gte"] !== undefined && data["vote_average.lte"] !== undefined) {
@@ -229,7 +290,18 @@ export const trendingMediaSchema = z.object({
 
 export type ValidatedTrendingMedia = z.infer<typeof trendingMediaSchema>;
 
-export const ALLOWED_SEARCH_MEDIA_KEYS = new Set([
+// Helper function to resolve and guard query aliases (q and query)
+function resolveSearchQuery(data: { q?: string; query?: string }): string | undefined {
+  if (data.q && data.query && data.q.trim() !== data.query.trim()) {
+    throw new ValidationError(
+      "Conflicting query parameters: 'q' and 'query' were both provided with different values."
+    );
+  }
+  return data.q || data.query;
+}
+
+// 1. Movie Search Schema & Keys
+export const ALLOWED_SEARCH_MOVIE_KEYS = new Set([
   "q",
   "query",
   "page",
@@ -239,7 +311,7 @@ export const ALLOWED_SEARCH_MEDIA_KEYS = new Set([
   "primary_release_year",
 ]);
 
-export const searchMediaSchema = z
+export const searchMovieSchema = z
   .object({
     q: z.string().trim().min(1, "Search query must not be empty").max(200, "Search query must not exceed 200 characters").optional(),
     query: z.string().trim().min(1, "Search query must not be empty").max(200, "Search query must not exceed 200 characters").optional(),
@@ -249,13 +321,64 @@ export const searchMediaSchema = z
     year: z.coerce.number().int().min(1870).max(2100).optional(),
     primary_release_year: z.coerce.number().int().min(1870).max(2100).optional(),
   })
-  .refine((data) => Boolean(data.q || data.query), {
+  .refine((data) => Boolean(resolveSearchQuery(data)), {
     message: "Query parameter 'q' or 'query' is required",
     path: ["q"],
   });
 
-export type ValidatedSearchMedia = z.infer<typeof searchMediaSchema>;
+export type ValidatedSearchMovie = z.infer<typeof searchMovieSchema>;
 
+// 2. TV Search Schema & Keys (year maps to first_air_date_year; does NOT allow primary_release_year)
+export const ALLOWED_SEARCH_TV_KEYS = new Set([
+  "q",
+  "query",
+  "page",
+  "language",
+  "include_adult",
+  "year",
+]);
+
+export const searchTvSchema = z
+  .object({
+    q: z.string().trim().min(1, "Search query must not be empty").max(200, "Search query must not exceed 200 characters").optional(),
+    query: z.string().trim().min(1, "Search query must not be empty").max(200, "Search query must not exceed 200 characters").optional(),
+    page: z.coerce.number().int().min(1, "Page must be at least 1").max(500, "Page must not exceed 500").default(1),
+    language: z.string().regex(/^[a-z]{2}(-[A-Z]{2})?$/, "Invalid language code format (e.g. en-US)").default("en-US"),
+    include_adult: booleanString.default(false),
+    year: z.coerce.number().int().min(1870).max(2100).optional(),
+  })
+  .refine((data) => Boolean(resolveSearchQuery(data)), {
+    message: "Query parameter 'q' or 'query' is required",
+    path: ["q"],
+  });
+
+export type ValidatedSearchTv = z.infer<typeof searchTvSchema>;
+
+// 3. Person Search Schema & Keys (does NOT take year or release years)
+export const ALLOWED_SEARCH_PERSON_KEYS = new Set([
+  "q",
+  "query",
+  "page",
+  "language",
+  "include_adult",
+]);
+
+export const searchPersonSchema = z
+  .object({
+    q: z.string().trim().min(1, "Search query must not be empty").max(200, "Search query must not exceed 200 characters").optional(),
+    query: z.string().trim().min(1, "Search query must not be empty").max(200, "Search query must not exceed 200 characters").optional(),
+    page: z.coerce.number().int().min(1, "Page must be at least 1").max(500, "Page must not exceed 500").default(1),
+    language: z.string().regex(/^[a-z]{2}(-[A-Z]{2})?$/, "Invalid language code format (e.g. en-US)").default("en-US"),
+    include_adult: booleanString.default(false),
+  })
+  .refine((data) => Boolean(resolveSearchQuery(data)), {
+    message: "Query parameter 'q' or 'query' is required",
+    path: ["q"],
+  });
+
+export type ValidatedSearchPerson = z.infer<typeof searchPersonSchema>;
+
+// 4. Keyword Search Schema & Keys
 export const ALLOWED_SEARCH_KEYWORD_KEYS = new Set(["q", "query", "page"]);
 
 export const searchKeywordSchema = z
@@ -264,7 +387,7 @@ export const searchKeywordSchema = z
     query: z.string().trim().min(1, "Search query must not be empty").max(200, "Search query must not exceed 200 characters").optional(),
     page: z.coerce.number().int().min(1, "Page must be at least 1").max(500, "Page must not exceed 500").default(1),
   })
-  .refine((data) => Boolean(data.q || data.query), {
+  .refine((data) => Boolean(resolveSearchQuery(data)), {
     message: "Query parameter 'q' or 'query' is required",
     path: ["q"],
   });
