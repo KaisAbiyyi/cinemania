@@ -289,6 +289,23 @@ describe("CINE-007: discoverMediaSchema table-driven validation", () => {
       "release_date.gte": "2024-02-29",
     });
     expect(leapYear["release_date.gte"]).toBe("2024-02-29");
+
+    // Safe ISO timestamp normalization (e.g. from existing URL state / FilterContainer)
+    const isoDate = discoverMediaSchema.parse({
+      mediaType: "movie",
+      "release_date.gte": "2026-11-11T00:00:00.000Z",
+      "release_date.lte": "2026-11-12T23:59:59Z",
+    });
+    expect(isoDate["release_date.gte"]).toBe("2026-11-11");
+    expect(isoDate["release_date.lte"]).toBe("2026-11-12");
+
+    // Rejects impossible calendar dates even when formatted as ISO timestamps
+    expect(() =>
+      discoverMediaSchema.parse({
+        mediaType: "movie",
+        "release_date.gte": "2026-02-31T00:00:00.000Z",
+      })
+    ).toThrow(/Invalid calendar date/);
   });
 
   it("validates ID list filters and regions", () => {

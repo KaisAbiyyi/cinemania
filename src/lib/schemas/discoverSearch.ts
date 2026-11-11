@@ -120,24 +120,37 @@ const booleanString = z.preprocess((val) => {
   return val;
 }, z.boolean({ invalid_type_error: "Must be a valid boolean ('true' or 'false')" }));
 
-// Validates both regex syntax AND calendar validity (e.g. rejects 2026-02-31)
-const calendarDateString = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format, expected YYYY-MM-DD")
-  .refine(
-    (val) => {
-      const [year, month, day] = val.split("-").map(Number);
-      if (month < 1 || month > 12) return false;
-      if (day < 1 || day > 31) return false;
-      const d = new Date(Date.UTC(year, month - 1, day));
-      return (
-        d.getUTCFullYear() === year &&
-        d.getUTCMonth() === month - 1 &&
-        d.getUTCDate() === day
-      );
-    },
-    { message: "Invalid calendar date (day does not exist in month)" }
-  );
+// Validates both YYYY-MM-DD and ISO timestamp (e.g. 2026-11-11T00:00:00.000Z),
+// normalizes safely to canonical YYYY-MM-DD for TMDB API, and validates calendar validity (e.g. rejects 2026-02-31)
+const calendarDateString = z.preprocess(
+  (val) => {
+    if (typeof val !== "string") return val;
+    const trimmed = val.trim();
+    if (!trimmed) return undefined;
+    // Accept and normalize full ISO 8601 strings (e.g. from existing bookmarked URLs) to YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z?$/.test(trimmed)) {
+      return trimmed.split("T")[0];
+    }
+    return trimmed;
+  },
+  z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format, expected YYYY-MM-DD or ISO timestamp")
+    .refine(
+      (val) => {
+        const [year, month, day] = val.split("-").map(Number);
+        if (month < 1 || month > 12) return false;
+        if (day < 1 || day > 31) return false;
+        const d = new Date(Date.UTC(year, month - 1, day));
+        return (
+          d.getUTCFullYear() === year &&
+          d.getUTCMonth() === month - 1 &&
+          d.getUTCDate() === day
+        );
+      },
+      { message: "Invalid calendar date (day does not exist in month)" }
+    )
+);
 
 const idListString = z
   .string()

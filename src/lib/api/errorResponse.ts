@@ -22,6 +22,17 @@ export class ValidationError extends Error {
 }
 
 /**
+ * CineMania Local Policy Constants for Client Backoff:
+ * When upstream TMDB rate limit (429) or service disruption (503) does not provide
+ * an explicit upstream 'Retry-After' header, CineMania applies a documented local policy:
+ * - 429 (Rate Limit): 60 seconds local cooldown recommendation.
+ * - 503 (Service Unavailable): 30 seconds local cooldown recommendation.
+ * When an explicit upstream Retry-After header is received from TMDB, that value takes precedence.
+ */
+export const LOCAL_RATE_LIMIT_RETRY_AFTER_SECONDS = 60;
+export const LOCAL_SERVICE_UNAVAILABLE_RETRY_AFTER_SECONDS = 30;
+
+/**
  * Normalizes any error thrown during API route execution into a standard JSON response.
  * Maps upstream TMDB errors, validation failures, timeouts, and rate limits to appropriate HTTP statuses:
  * - 400: Input validation failures
@@ -90,6 +101,10 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
     const status = tmdbError.status;
 
     if (status === 429) {
+      const retryAfter =
+        tmdbError.retryAfter !== undefined
+          ? String(tmdbError.retryAfter)
+          : String(LOCAL_RATE_LIMIT_RETRY_AFTER_SECONDS);
       return NextResponse.json(
         {
           error: "Upstream rate limit exceeded",
@@ -98,13 +113,17 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
         {
           status: 429,
           headers: {
-            "Retry-After": "60",
+            "Retry-After": retryAfter,
           },
         }
       );
     }
 
     if (status === 503) {
+      const retryAfter =
+        tmdbError.retryAfter !== undefined
+          ? String(tmdbError.retryAfter)
+          : String(LOCAL_SERVICE_UNAVAILABLE_RETRY_AFTER_SECONDS);
       return NextResponse.json(
         {
           error: "Upstream service temporarily unavailable",
@@ -113,7 +132,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
         {
           status: 503,
           headers: {
-            "Retry-After": "30",
+            "Retry-After": retryAfter,
           },
         }
       );
