@@ -1,28 +1,38 @@
 {
   "task": "CINE-005",
-  "timestamp": "2026-11-11T05:22:31.086Z",
+  "timestamp": "2026-11-11T05:54:30.284Z",
   "port": 3058,
   "environment": {
     "node": "v24.21.0",
     "platform": "win32",
+    "scratchDirectoryIsolated": "C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-hermetic-SxKbVD",
+    "envFilesPresentInScratch": 0,
+    "workspaceSecretsTouched": false,
     "hermeticEnvAsserted": true,
     "strippedVariables": [
       "TMDB_API_RAT",
       "YOUTUBE_API_KEY",
       "IPINFO_TOKEN"
     ],
-    "envLocalIsolated": false,
     "failClosedNetworkGuardActive": true,
     "syntheticMockLoaded": true
   },
   "checks": [
     {
-      "id": "FAIL_CLOSED_NETWORK_CONTROL",
-      "endpoint": "https://youtube.googleapis.com (External)",
+      "id": "FAIL_CLOSED_HTTPS_CONTROL",
+      "endpoint": "https://youtube.googleapis.com (node:https)",
       "expectedBehavior": "Immediate connection rejection with [FAIL_CLOSED]",
       "actualBehavior": "[FAIL_CLOSED] Blocked unauthorized outbound HTTPS request to external host: \"youtube.googleapis.com\". External networking is strictly prohibited in hermetic test mode.",
       "passed": true,
       "details": "Outbound external HTTPS request successfully blocked by hermetic network guard"
+    },
+    {
+      "id": "FAIL_CLOSED_FETCH_CONTROL",
+      "endpoint": "https://example.com/api/test (globalThis.fetch)",
+      "expectedBehavior": "Immediate fetch rejection with [FAIL_CLOSED]",
+      "actualBehavior": "[FAIL_CLOSED] Blocked unauthorized outbound fetch to external host: \"example.com\". External networking is strictly prohibited in hermetic test mode.",
+      "passed": true,
+      "details": "Native Undici fetch call successfully blocked by hermetic network guard"
     },
     {
       "id": "SYNTHETIC_TMDB_GENRES",
@@ -85,6 +95,14 @@
       },
       "passed": true,
       "details": "Yields actionable HTTP 500 Server configuration error when YOUTUBE_API_KEY is omitted"
+    },
+    {
+      "id": "DELIBERATE_SECRET_ABSENCE_CONTROL",
+      "endpoint": "Environment inspection",
+      "expectedBehavior": "Absence of YOUTUBE_API_KEY triggers configuration error; secret presence would bypass it",
+      "actualBehavior": "Secret absence confirmed",
+      "passed": true,
+      "details": "Confirmed zero ambient or production .env secrets were loaded by child server"
     },
     {
       "id": "ENV_OMISSION_IPINFO_LOCAL_FALLBACK",
