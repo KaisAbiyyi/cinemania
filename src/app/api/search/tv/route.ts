@@ -1,31 +1,34 @@
 import { NextResponse } from "next/server";
 import tmdbApi from "@/services/tmdbApi";
+import { handleApiError } from "@/lib/api/errorResponse";
+import {
+  ALLOWED_SEARCH_MEDIA_KEYS,
+  extractAndGuardQueryParams,
+  searchMediaSchema,
+} from "@/lib/schemas/discoverSearch";
 
 /**
- * API Route untuk mencari film berdasarkan query.
+ * Validated API Route for TMDB TV Search.
  */
 export async function GET(request: Request) {
-    const { searchParams } = new URL(request.url);
-    const query = searchParams.get("q");
+  try {
+    const url = new URL(request.url);
+    const rawParams = extractAndGuardQueryParams(url.searchParams, ALLOWED_SEARCH_MEDIA_KEYS);
+    const validated = searchMediaSchema.parse(rawParams);
 
-    if (!query) {
-        return NextResponse.json(
-            { error: "Query parameter 'q' is required" },
-            { status: 400 }
-        );
-    }
+    const query = validated.q || validated.query;
+    const upstreamParams: Record<string, unknown> = {
+      query,
+      page: validated.page,
+      language: validated.language,
+      include_adult: validated.include_adult,
+    };
 
-    try {
-        // Fetch data dari TMDB API menggunakan instance tmdbApi
-        const { data } = await tmdbApi.get(`/search/keyword`, {
-            params: { query },
-        });
-        return NextResponse.json(data);
-    } catch (error: unknown) {
-        console.error("Error fetching keyword search results:", error);
-        return NextResponse.json(
-            { error: "Failed to fetch keyword search results" },
-            { status: 500 }
-        );
-    }
+    if (validated.year !== undefined) upstreamParams.first_air_date_year = validated.year;
+
+    const { data } = await tmdbApi.get("/search/tv", { params: upstreamParams });
+    return NextResponse.json(data);
+  } catch (error: unknown) {
+    return handleApiError(error);
+  }
 }
