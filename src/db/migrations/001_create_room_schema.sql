@@ -168,12 +168,16 @@ BEGIN
   RETURN EXISTS (
     SELECT 1 FROM public.room_participants
     WHERE room_id = target_room_id
-      AND participant_id = auth.uid()
+      AND participant_id = (auth.jwt() ->> 'sub')::uuid
   );
 END;
 $$;
 
--- P1-A Fix: Narrow secure RPC function for joining by code prevents room enumeration
+-- Server-authoritative room resolution function.
+-- Hardening: REVOKE from anon and authenticated to prevent unauthenticated/unthrottled
+-- room-code guessing oracles via direct PostgREST RPC. Room resolution by code is strictly
+-- server-authoritative and executed exclusively through rate-limited Next.js API route
+-- handlers using service_role.
 CREATE OR REPLACE FUNCTION get_room_by_code(lookup_code VARCHAR(6))
 RETURNS TABLE (id UUID, code VARCHAR(6), status room_status, participant_count INT)
 LANGUAGE plpgsql
@@ -190,10 +194,10 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION is_current_user_room_participant(UUID) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION is_current_user_room_participant(UUID) TO authenticated, anon, service_role;
+GRANT EXECUTE ON FUNCTION is_current_user_room_participant(UUID) TO authenticated, service_role;
 
-REVOKE ALL ON FUNCTION get_room_by_code(VARCHAR(6)) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION get_room_by_code(VARCHAR(6)) TO authenticated, anon, service_role;
+REVOKE ALL ON FUNCTION get_room_by_code(VARCHAR(6)) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION get_room_by_code(VARCHAR(6)) TO service_role;
 
 -- 10. Row-Level Security (RLS) & Authorization
 ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;
@@ -207,9 +211,11 @@ ALTER TABLE room_events ENABLE ROW LEVEL SECURITY;
 CREATE POLICY rooms_participant_read_policy ON rooms
   FOR SELECT USING (is_current_user_room_participant(id));
 
--- Room participants: viewable only by members of the same room
-CREATE POLICY participants_room_member_read_policy ON room_participants
-  FOR SELECT USING (is_current_user_room_participant(room_id));
+-- ADR-003 §4.2.1 Least-Privilege Privacy Policy:
+-- Participants can ONLY read their own participant record (prevents guest UUID/identity enumeration)
+CREATE POLICY participants_self_read_policy ON room_participants
+  FOR SELECT TO authenticated
+  USING (participant_id = (auth.jwt() ->> 'sub')::uuid);
 
 -- Rounds: viewable only by room participants
 CREATE POLICY rounds_read_policy ON rounds

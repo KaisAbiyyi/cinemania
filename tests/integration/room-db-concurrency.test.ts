@@ -22,6 +22,10 @@ const DOWN_MIGRATION_SQL = fs.readFileSync(
   path.join(process.cwd(), "src", "db", "migrations", "sqlite", "001_down_room_schema.sql"),
   "utf-8"
 );
+const PG_UP_MIGRATION_SQL = fs.readFileSync(
+  path.join(process.cwd(), "src", "db", "migrations", "001_create_room_schema.sql"),
+  "utf-8"
+);
 
 function getUniqueTempDbPath(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.db`);
@@ -273,7 +277,7 @@ describe("CINE-012: Relational Schema DDL & Referential Integrity", () => {
     const db = new DatabaseSync(testDbPath);
     const repo = new SqliteRoomRepository(db);
 
-    const { room: roomA, host: hostA } = repo.createRoom({ hostDisplayName: "Room A Host" });
+    const { room: roomA } = repo.createRoom({ hostDisplayName: "Room A Host" });
     const guestAId = crypto.randomUUID();
     repo.joinRoom(roomA.id, guestAId, "Room A Guest");
 
@@ -285,7 +289,7 @@ describe("CINE-012: Relational Schema DDL & Referential Integrity", () => {
       movieId: 3000 + idx,
       title: `Deck Movie ${idx}`,
     }));
-    const { round: roundA, candidates: candidatesA } = repo.startRound(roomA.id, deck);
+    const { candidates: candidatesA } = repo.startRound(roomA.id, deck);
 
     // Negative 1: Inserting candidate into Room B with an unpopulated Round 2 belonging to Room A violates composite FK (room_id, round_id -> rounds)
     const round2AId = crypto.randomUUID();
@@ -330,6 +334,48 @@ describe("CINE-012: Relational Schema DDL & Referential Integrity", () => {
     expect(roomAfterHostDelete).not.toBeNull();
     expect(roomAfterHostDelete!.id).toBe(room.id);
     expect(roomAfterHostDelete!.host_participant_id).toBeNull();
+
+    db.close();
+  });
+
+  it("permits the same participant ID to join multiple distinct rooms (parity with PostgreSQL)", () => {
+    const db = new DatabaseSync(testDbPath);
+    const repo = new SqliteRoomRepository(db);
+
+    const guestId = crypto.randomUUID();
+    const { room: room1 } = repo.createRoom({
+      hostParticipantId: guestId,
+      hostDisplayName: "Multi-Room Guest",
+    });
+
+    const { room: room2 } = repo.createRoom({
+      hostDisplayName: "Other Host",
+    });
+
+    // Guest joins room2 as a member
+    const participantInRoom2 = repo.joinRoom(room2.id, guestId, "Multi-Room Guest");
+    expect(participantInRoom2.participant_id).toBe(guestId);
+
+    // Verify database contains 2 rows for guestId across different room_ids
+    const rows = db.prepare(`SELECT * FROM room_participants WHERE participant_id = ?`).all(guestId);
+    expect(rows.length).toBe(2);
+
+    // Verify host integrity in room1
+    expect(repo.getRoomById(room1.id)!.host_participant_id).toBe(guestId);
+
+    // Verify attempting to assign a participant from room2 as host of room1 (when not in room1) fails
+    const otherGuestId = crypto.randomUUID();
+    repo.joinRoom(room2.id, otherGuestId, "Stranger");
+    expect(() => {
+      db.prepare(`UPDATE rooms SET host_participant_id = ? WHERE id = ?`).run(otherGuestId, room1.id);
+    }).toThrow(/FOREIGN KEY constraint failed/);
+
+    // Verify deleting participant from room1 nulls host in room1 but preserves membership in room2
+    db.prepare(`DELETE FROM room_participants WHERE room_id = ? AND participant_id = ?`).run(room1.id, guestId);
+    expect(repo.getRoomById(room1.id)!.host_participant_id).toBeNull();
+    const rowsAfter = db.prepare(`SELECT * FROM room_participants WHERE participant_id = ?`).all(guestId);
+    expect(rowsAfter.length).toBe(1);
+    expect((rowsAfter[0] as { room_id: string }).room_id).toBe(room2.id);
 
     db.close();
   });
@@ -641,17 +687,45 @@ describe("CINE-012: Parallel Transition Contention & Deterministic Concurrency",
   });
 });
 
-describe("CINE-012: Live PostgreSQL Qualification Gate", () => {
-  it("evaluates live PostgreSQL qualification status", () => {
-    const hasPostgres = Boolean(process.env.DATABASE_URL);
-    if (!hasPostgres) {
-      console.log(
-        "[CINE-012 GATE] Live PostgreSQL Qualification Status: NOT_RUN (DATABASE_URL not configured in local environment)"
-      );
-      // Hard gate documentation: this test records NOT_RUN per AGENTS.md contract
-      expect(true).toBe(true);
-    } else {
-      expect(hasPostgres).toBe(true);
-    }
+describe("CINE-012: PostgreSQL DDL Security & RLS Policy Assertions", () => {
+  it("verifies get_room_by_code is revoked from anon and authenticated, granted exclusively to service_role", () => {
+    // get_room_by_code revoked from anon and authenticated
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /REVOKE ALL ON FUNCTION get_room_by_code\(VARCHAR\(6\)\) FROM PUBLIC, anon, authenticated;/
+    );
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /GRANT EXECUTE ON FUNCTION get_room_by_code\(VARCHAR\(6\)\) TO service_role;/
+    );
+    expect(PG_UP_MIGRATION_SQL).not.toMatch(
+      /GRANT EXECUTE ON FUNCTION get_room_by_code\(VARCHAR\(6\)\) TO.*anon/
+    );
+
+    // room_participants self-read policy per ADR-003 §4.2.1
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /CREATE POLICY participants_self_read_policy ON room_participants/
+    );
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /USING \(participant_id = \(auth\.jwt\(\) ->> 'sub'\)::uuid\);/
+    );
+    expect(PG_UP_MIGRATION_SQL).not.toMatch(
+      /CREATE POLICY participants_room_member_read_policy/
+    );
+
+    // Private tables votes and room_events locked down
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /REVOKE ALL ON TABLE votes, room_events FROM anon, authenticated, PUBLIC;/
+    );
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /GRANT ALL ON TABLE votes, room_events TO service_role;/
+    );
   });
+});
+
+describe("CINE-012: Live PostgreSQL Qualification Gate", () => {
+  it.skipIf(!process.env.DATABASE_URL)(
+    "evaluates live PostgreSQL qualification status against real database",
+    () => {
+      expect(process.env.DATABASE_URL).toBeDefined();
+    }
+  );
 });

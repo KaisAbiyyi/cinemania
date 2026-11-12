@@ -19,7 +19,6 @@ CREATE TABLE IF NOT EXISTS rooms (
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (host_participant_id) REFERENCES room_participants(participant_id) ON DELETE SET NULL,
   FOREIGN KEY (current_round_id) REFERENCES rounds(id) ON DELETE SET NULL
 );
 
@@ -31,8 +30,7 @@ CREATE TABLE IF NOT EXISTS room_participants (
   is_connected INTEGER NOT NULL DEFAULT 1 CHECK(is_connected IN (0, 1)),
   joined_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (room_id, participant_id),
-  CONSTRAINT uq_participant_id UNIQUE (participant_id)
+  PRIMARY KEY (room_id, participant_id)
 );
 
 CREATE TABLE IF NOT EXISTS rounds (
@@ -102,3 +100,40 @@ CREATE INDEX IF NOT EXISTS idx_candidates_round ON candidates(round_id, position
 CREATE INDEX IF NOT EXISTS idx_votes_round_movie ON votes(round_id, movie_id, vote);
 CREATE INDEX IF NOT EXISTS idx_votes_participant ON votes(round_id, participant_id);
 CREATE INDEX IF NOT EXISTS idx_room_events_lookup ON room_events(room_id, version);
+
+-- SQLite triggers to enforce composite host reference semantics without global participant_id uniqueness:
+-- 1. When a participant is deleted, if they are the host of that room, set rooms.host_participant_id = NULL
+CREATE TRIGGER IF NOT EXISTS trg_room_participants_host_delete
+AFTER DELETE ON room_participants
+FOR EACH ROW
+WHEN OLD.participant_id = (SELECT host_participant_id FROM rooms WHERE id = OLD.room_id)
+BEGIN
+  UPDATE rooms SET host_participant_id = NULL WHERE id = OLD.room_id;
+END;
+
+-- 2. When rooms.host_participant_id is inserted as non-NULL, verify that participant exists in this room
+CREATE TRIGGER IF NOT EXISTS trg_rooms_host_check_insert
+BEFORE INSERT ON rooms
+FOR EACH ROW
+WHEN NEW.host_participant_id IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM room_participants
+    WHERE room_id = NEW.id AND participant_id = NEW.host_participant_id
+  );
+END;
+
+-- 3. When rooms.host_participant_id is updated to non-NULL, verify that participant exists in this room
+CREATE TRIGGER IF NOT EXISTS trg_rooms_host_check_update
+BEFORE UPDATE OF host_participant_id ON rooms
+FOR EACH ROW
+WHEN NEW.host_participant_id IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'FOREIGN KEY constraint failed')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM room_participants
+    WHERE room_id = NEW.id AND participant_id = NEW.host_participant_id
+  );
+END;
+
