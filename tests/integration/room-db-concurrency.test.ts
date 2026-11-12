@@ -711,25 +711,37 @@ describe("CINE-012: PostgreSQL DDL Security & RLS Policy Assertions", () => {
       /GRANT EXECUTE ON FUNCTION is_current_user_room_participant\(UUID\) TO.*anon/
     );
 
-    // 3. Fail-closed table permissions: anon has zero read or write privileges on any table
+    // 3. Fail-closed table permissions: PUBLIC, anon, and authenticated have all existing privileges revoked first
+    // Prevents retention of preexisting/default ACL privileges (e.g. TRUNCATE, REFERENCES, INSERT) on Supabase projects
     expect(PG_UP_MIGRATION_SQL).toMatch(
-      /REVOKE ALL ON TABLE rooms, room_participants, rounds, candidates, votes, room_events FROM PUBLIC, anon;/
+      /REVOKE ALL ON TABLE rooms, room_participants, rounds, candidates, votes, room_events FROM PUBLIC, anon, authenticated;/
     );
     expect(PG_UP_MIGRATION_SQL).not.toMatch(
-      /GRANT (SELECT|ALL|INSERT|UPDATE|DELETE) ON TABLE.*TO.*anon/
+      /GRANT (SELECT|ALL|INSERT|UPDATE|DELETE|TRUNCATE) ON TABLE.*TO.*anon/
     );
 
-    // 4. Authenticated role granted minimal SELECT on public models, subject to RLS
+    // 4. Authenticated role granted exclusively minimal SELECT on public models, subject to RLS
     expect(PG_UP_MIGRATION_SQL).toMatch(
       /GRANT SELECT ON TABLE rooms, room_participants, rounds, candidates TO authenticated;/
     );
-    expect(PG_UP_MIGRATION_SQL).toMatch(
-      /REVOKE ALL ON TABLE votes, room_events FROM authenticated;/
+    expect(PG_UP_MIGRATION_SQL).not.toMatch(
+      /GRANT (ALL|INSERT|UPDATE|DELETE|TRUNCATE|REFERENCES|TRIGGER) ON TABLE.*TO.*authenticated/
     );
 
     // 5. Service role granted full management access
     expect(PG_UP_MIGRATION_SQL).toMatch(
       /GRANT ALL ON TABLE rooms, room_participants, rounds, candidates, votes, room_events TO service_role;/
+    );
+
+    // 6. Explicit Sequence Privileges (BIGSERIAL outbox sequence)
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /REVOKE ALL ON SEQUENCE room_events_id_seq FROM PUBLIC, anon, authenticated;/
+    );
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /GRANT USAGE, SELECT ON SEQUENCE room_events_id_seq TO service_role;/
+    );
+    expect(PG_UP_MIGRATION_SQL).not.toMatch(
+      /GRANT (USAGE|ALL|SELECT) ON SEQUENCE room_events_id_seq TO.*(anon|authenticated)/
     );
 
     // 6. RLS Policies explicitly scoped TO authenticated

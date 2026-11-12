@@ -229,15 +229,18 @@ CREATE POLICY candidates_read_policy ON candidates
   USING (is_current_user_room_participant(room_id));
 
 -- 11. Explicit Table Permissions (Fail-Closed Least-Privilege Hardening)
--- Revoke all table privileges from PUBLIC and anon.
--- Unauthenticated clients (anon) have zero table-level read or write permissions.
-REVOKE ALL ON TABLE rooms, room_participants, rounds, candidates, votes, room_events FROM PUBLIC, anon;
+-- Revoke all table privileges from PUBLIC, anon, and authenticated.
+-- Prevents retention of preexisting/default ACL privileges (e.g. TRUNCATE, INSERT, UPDATE, DELETE, REFERENCES) on Supabase projects.
+REVOKE ALL ON TABLE rooms, room_participants, rounds, candidates, votes, room_events FROM PUBLIC, anon, authenticated;
 
 -- Authenticated guests can only SELECT rooms, room_participants, rounds, candidates subject to RLS
 GRANT SELECT ON TABLE rooms, room_participants, rounds, candidates TO authenticated;
 
--- Private tables (votes, room_events) are completely inaccessible to authenticated clients
-REVOKE ALL ON TABLE votes, room_events FROM authenticated;
-
 -- Server authority (service_role) has full management access across all tables
 GRANT ALL ON TABLE rooms, room_participants, rounds, candidates, votes, room_events TO service_role;
+
+-- 12. Explicit Sequence Privileges (BIGSERIAL Outbox Sequence Hardening)
+-- Revoke all sequence privileges from PUBLIC, anon, and authenticated.
+-- Grant USAGE and SELECT exclusively to service_role for transactional outbox dispatch.
+REVOKE ALL ON SEQUENCE room_events_id_seq FROM PUBLIC, anon, authenticated;
+GRANT USAGE, SELECT ON SEQUENCE room_events_id_seq TO service_role;
