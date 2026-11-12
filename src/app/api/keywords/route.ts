@@ -1,36 +1,31 @@
 import { NextResponse } from "next/server";
 import tmdbApi from "@/services/tmdbApi";
+import { handleApiError } from "@/lib/api/errorResponse";
+import {
+  ALLOWED_SEARCH_KEYWORD_KEYS,
+  extractAndGuardQueryParams,
+  searchKeywordSchema,
+} from "@/lib/schemas/discoverSearch";
 
 /**
- * API Route untuk mencari keyword di TMDB
- * Contoh request:
- * GET /api/keywords?query=action&page=1
- *
- * Param:
- * - query (wajib): string pencarian keyword
- * - page (opsional): nomor halaman
+ * Validated API Route for Keyword Search.
+ * Maps to TMDB /search/keyword.
  */
 export async function GET(request: Request) {
-    const { searchParams } = new URL(request.url);
-    const query = searchParams.get("query");
-    const page = searchParams.get("page") || "1";
+  try {
+    const url = new URL(request.url);
+    const rawParams = extractAndGuardQueryParams(url.searchParams, ALLOWED_SEARCH_KEYWORD_KEYS);
+    const validated = searchKeywordSchema.parse(rawParams);
 
-    if (!query) {
-        return NextResponse.json({ error: "Missing 'query' parameter" }, { status: 400 });
-    }
+    const query = validated.q || validated.query;
+    const upstreamParams = {
+      query,
+      page: validated.page,
+    };
 
-    try {
-        // Panggil endpoint TMDB /search/keyword
-        const { data } = await tmdbApi.get("/search/keyword", {
-            params: {
-                query,
-                page,
-            },
-        });
-
-        return NextResponse.json(data);
-    } catch (error: unknown) {
-        console.error("Error fetching keywords:", error);
-        return NextResponse.json({ error: "Failed to fetch keywords" }, { status: 500 });
-    }
+    const { data } = await tmdbApi.get("/search/keyword", { params: upstreamParams });
+    return NextResponse.json(data);
+  } catch (error: unknown) {
+    return handleApiError(error);
+  }
 }

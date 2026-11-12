@@ -39,12 +39,14 @@ export class TmdbApiError extends Error implements TmdbErrorShape {
   readonly isTmdbError = true;
   readonly status: number;
   readonly code: string;
+  readonly retryAfter?: number;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, retryAfter?: number) {
     super(message);
     this.name = "TmdbApiError";
     this.status = status;
     this.code = code;
+    this.retryAfter = retryAfter;
     Object.setPrototypeOf(this, TmdbApiError.prototype);
   }
 }
@@ -120,10 +122,13 @@ export function sanitizeAndMapError(error: unknown): Error {
     }
 
     const status = error.response?.status;
+    const retryAfterHeader = error.response?.headers?.["retry-after"];
+    const parsedRetryAfter = retryAfterHeader !== undefined ? parseInt(String(retryAfterHeader), 10) : undefined;
+    const retryAfter = Number.isFinite(parsedRetryAfter) && (parsedRetryAfter as number) > 0 ? (parsedRetryAfter as number) : undefined;
 
     // Handle redirected response when redirects are blocked
     if (status && (status === 301 || status === 302 || status === 307 || status === 308)) {
-      return new TmdbApiError(status, "TMDB_REDIRECT_BLOCKED", "Upstream HTTP redirect was blocked by security policy");
+      return new TmdbApiError(status, "TMDB_REDIRECT_BLOCKED", "Upstream HTTP redirect was blocked by security policy", retryAfter);
     }
 
     if (error.code === "ECONNABORTED" || (typeof error.message === "string" && error.message.includes("timeout"))) {
@@ -139,18 +144,18 @@ export function sanitizeAndMapError(error: unknown): Error {
     }
 
     if (status === 429) {
-      return new TmdbApiError(429, "TMDB_RATE_LIMIT", "Upstream TMDB rate limit exceeded");
+      return new TmdbApiError(429, "TMDB_RATE_LIMIT", "Upstream TMDB rate limit exceeded", retryAfter);
     }
 
     if (status && status >= 500 && status <= 599) {
-      return new TmdbApiError(status, "TMDB_UPSTREAM_ERROR", `Upstream TMDB gateway error (HTTP ${status})`);
+      return new TmdbApiError(status, "TMDB_UPSTREAM_ERROR", `Upstream TMDB gateway error (HTTP ${status})`, retryAfter);
     }
 
     if (!error.response) {
       return new TmdbApiError(502, "TMDB_NETWORK_ERROR", "Unable to reach upstream TMDB service");
     }
 
-    return new TmdbApiError(status || 500, "TMDB_REQUEST_FAILED", "Upstream TMDB request failed");
+    return new TmdbApiError(status || 500, "TMDB_REQUEST_FAILED", "Upstream TMDB request failed", retryAfter);
   }
 
   return error instanceof Error ? error : new Error(String(error));

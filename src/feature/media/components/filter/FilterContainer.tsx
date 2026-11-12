@@ -116,7 +116,12 @@ const FilterContainer: FC<FilterContainerProps> = ({
             if (val === undefined || val === "") return;
             const typedKey = key as keyof Filters;
             if (dateKeys.has(typedKey as string) && typeof val === "string" && val.trim() !== "") {
-                cleanedFilters[typedKey] = new Date(val).toISOString();
+                const parsedDate = new Date(val);
+                if (!isNaN(parsedDate.getTime())) {
+                    cleanedFilters[typedKey] = parsedDate.toISOString().split("T")[0];
+                } else {
+                    cleanedFilters[typedKey] = val;
+                }
             } else {
                 cleanedFilters[typedKey] = val;
             }
