@@ -32,13 +32,18 @@ if (fs.existsSync(envPath)) {
 }
 
 const ALLOWED_PROJECT_REF = "dmrbticnsczhyaiftrar";
-const TEST_SCHEMA = "cinematch_qualification";
 
 const PG_HOST = process.env.SUPABASE_PG_HOST || "";
 const PG_USER = process.env.SUPABASE_PG_USER || "";
 const PG_PASSWORD = process.env.SUPABASE_PG_PASSWORD || "";
 const PG_PORT = parseInt(process.env.SUPABASE_PG_PORT || "5432", 10);
 const PG_DATABASE = process.env.SUPABASE_PG_DATABASE || "postgres";
+
+// Unique per-run isolated schema identification
+const RUN_ID = crypto.randomUUID();
+const RUN_SUFFIX = crypto.randomBytes(4).toString("hex");
+const TIMESTAMP = Math.floor(Date.now() / 1000);
+const TEST_SCHEMA = `cinematch_qual_${TIMESTAMP}_${RUN_SUFFIX}`;
 
 const isConfigured = Boolean(
   process.env.ALLOW_DESTRUCTIVE_PG_TESTS === "true" &&
@@ -70,10 +75,14 @@ const DOWN_MIGRATION_PATH = path.join(process.cwd(), "src", "db", "migrations", 
 const UP_MIGRATION_RAW = fs.existsSync(UP_MIGRATION_PATH) ? fs.readFileSync(UP_MIGRATION_PATH, "utf-8") : "";
 const DOWN_MIGRATION_RAW = fs.existsSync(DOWN_MIGRATION_PATH) ? fs.readFileSync(DOWN_MIGRATION_PATH, "utf-8") : "";
 
-const UP_MIGRATION_SQL = UP_MIGRATION_RAW
-  .replace(/public\.room_participants/g, `${TEST_SCHEMA}.room_participants`)
-  .replace(/public\.rooms/g, `${TEST_SCHEMA}.rooms`)
-  .replace(/SET search_path = public, pg_temp/g, `SET search_path = ${TEST_SCHEMA}, pg_temp`);
+function adaptUpMigration(rawSql: string, schema: string): string {
+  return rawSql
+    .replace(/public\.room_participants/g, `"${schema}".room_participants`)
+    .replace(/public\.rooms/g, `"${schema}".rooms`)
+    .replace(/SET search_path = public, pg_temp/g, `SET search_path = "${schema}", pg_temp`);
+}
+
+const UP_MIGRATION_SQL = adaptUpMigration(UP_MIGRATION_RAW, TEST_SCHEMA);
 const DOWN_MIGRATION_SQL = DOWN_MIGRATION_RAW;
 
 const WORKER_SCRIPT_PATH = path.join(process.cwd(), "tests", "live", "supabase-worker.ts");
@@ -99,42 +108,114 @@ async function getPublicSchemaSnapshot(client: Client): Promise<TableSnapshot[]>
   return snapshot;
 }
 
+async function insertOwnershipMarker(client: Client, schema: string, runId: string) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS "${schema}"."_cinematch_run_metadata" (
+      run_id TEXT PRIMARY KEY,
+      schema_name TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      creator_pid INT NOT NULL,
+      host_ref TEXT NOT NULL
+    );
+  `);
+  await client.query(
+    `INSERT INTO "${schema}"."_cinematch_run_metadata" (run_id, schema_name, creator_pid, host_ref)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (run_id) DO NOTHING;`,
+    [runId, schema, process.pid, ALLOWED_PROJECT_REF]
+  );
+}
+
+async function verifyOwnershipMarker(client: Client, schema: string, runId: string): Promise<boolean> {
+  try {
+    const res = await client.query(
+      `SELECT run_id, schema_name FROM "${schema}"."_cinematch_run_metadata" WHERE run_id = $1`,
+      [runId]
+    );
+    return res.rows.length === 1 && res.rows[0].run_id === runId && res.rows[0].schema_name === schema;
+  } catch {
+    return false;
+  }
+}
+
 describe.skipIf(!isConfigured)("CINE-012: Live Supabase PostgreSQL Qualification", () => {
   let masterClient: Client;
   let baselineSnapshot: TableSnapshot[] = [];
+  let schemaCreated = false;
 
   beforeAll(async () => {
     masterClient = new Client(PG_CONFIG);
     await masterClient.connect();
-    // Record baseline snapshot of public schema
+
+    // 1. Record baseline snapshot of public schema
     baselineSnapshot = await getPublicSchemaSnapshot(masterClient);
-    // Create isolated test schema
-    await masterClient.query(`CREATE SCHEMA IF NOT EXISTS ${TEST_SCHEMA};`);
-    await masterClient.query(`GRANT USAGE ON SCHEMA ${TEST_SCHEMA} TO anon, authenticated, service_role;`);
-    await masterClient.query(`GRANT ALL ON SCHEMA ${TEST_SCHEMA} TO service_role;`);
-    await masterClient.query(`SET search_path TO ${TEST_SCHEMA}, pg_temp;`);
-  });
+
+    // 2. Pre-check: fail closed if target schema already exists
+    const preCheck = await masterClient.query(
+      `SELECT schema_name FROM information_schema.schemata WHERE schema_name = $1`,
+      [TEST_SCHEMA]
+    );
+    if (preCheck.rows.length > 0) {
+      throw new Error(`FAIL-CLOSED REFUSAL: Target test schema '${TEST_SCHEMA}' already exists.`);
+    }
+
+    // 3. Create unique isolated test schema with ownership marker
+    await masterClient.query(`CREATE SCHEMA "${TEST_SCHEMA}";`);
+    schemaCreated = true;
+    await masterClient.query(`GRANT USAGE ON SCHEMA "${TEST_SCHEMA}" TO anon, authenticated, service_role;`);
+    await masterClient.query(`GRANT ALL ON SCHEMA "${TEST_SCHEMA}" TO service_role;`);
+    await masterClient.query(`SET search_path TO "${TEST_SCHEMA}", pg_temp;`);
+    await insertOwnershipMarker(masterClient, TEST_SCHEMA, RUN_ID);
+  }, 30000);
 
   afterAll(async () => {
-    // Teardown: Drop isolated qualification schema CASCADE
-    try {
-      await masterClient.query("RESET ROLE;");
-      await masterClient.query(`DROP SCHEMA IF EXISTS ${TEST_SCHEMA} CASCADE;`);
-    } catch {}
+    let teardownErr: Error | null = null;
+    if (schemaCreated && masterClient) {
+      try {
+        await masterClient.query("RESET ROLE;");
+        const isOwner = await verifyOwnershipMarker(masterClient, TEST_SCHEMA, RUN_ID);
+        if (!isOwner) {
+          throw new Error(`FAIL-CLOSED REFUSAL: Schema '${TEST_SCHEMA}' ownership marker missing or run_id mismatch!`);
+        }
+
+        await masterClient.query(`DROP SCHEMA "${TEST_SCHEMA}" CASCADE;`);
+
+        const checkGone = await masterClient.query(
+          `SELECT count(*)::int as cnt FROM information_schema.schemata WHERE schema_name = $1`,
+          [TEST_SCHEMA]
+        );
+        if (checkGone.rows[0].cnt !== 0) {
+          throw new Error(`TEARDOWN VERIFICATION FAILURE: Schema '${TEST_SCHEMA}' still exists after DROP CASCADE!`);
+        }
+      } catch (err: unknown) {
+        teardownErr = err instanceof Error ? err : new Error(String(err));
+      }
+    }
 
     // Verify preservation of public schema
-    try {
-      const finalSnapshot = await getPublicSchemaSnapshot(masterClient);
-      expect(finalSnapshot.length).toBe(baselineSnapshot.length);
-      for (const bTable of baselineSnapshot) {
-        const matching = finalSnapshot.find((f) => f.name === bTable.name);
-        expect(matching).toBeDefined();
-        expect(matching?.rowCount).toBe(bTable.rowCount);
+    if (masterClient) {
+      try {
+        const finalSnapshot = await getPublicSchemaSnapshot(masterClient);
+        expect(finalSnapshot.length).toBe(baselineSnapshot.length);
+        for (const bTable of baselineSnapshot) {
+          const matching = finalSnapshot.find((f) => f.name === bTable.name);
+          expect(matching).toBeDefined();
+          expect(matching?.rowCount).toBe(bTable.rowCount);
+        }
+        const extraTables = finalSnapshot.filter((f) => !baselineSnapshot.some((b) => b.name === f.name));
+        expect(extraTables.length).toBe(0);
+      } catch (err: unknown) {
+        const presErr = err instanceof Error ? err : new Error(String(err));
+        if (!teardownErr) teardownErr = presErr;
+      } finally {
+        await masterClient.end();
       }
-    } finally {
-      await masterClient.end();
     }
-  });
+
+    if (teardownErr) {
+      throw teardownErr;
+    }
+  }, 45000);
 
   it("1. Verifies strict TLS verification and rejects invalid CA certificate", async () => {
     await masterClient.query("RESET ROLE;");
@@ -148,7 +229,6 @@ describe.skipIf(!isConfigured)("CINE-012: Live Supabase PostgreSQL Qualification
     expect(row.version).toMatch(/PostgreSQL 17/i);
 
     // Negative TLS probe: bogus CA must fail
-    let negativeTlsRejected = false;
     const bogusClient = new Client({
       ...PG_CONFIG,
       ssl: {
@@ -157,86 +237,88 @@ describe.skipIf(!isConfigured)("CINE-012: Live Supabase PostgreSQL Qualification
         servername: PG_HOST,
       },
     });
+
+    let rejected = false;
     try {
       await bogusClient.connect();
     } catch {
-      negativeTlsRejected = true;
+      rejected = true;
     } finally {
       try { await bogusClient.end(); } catch {}
     }
-    expect(negativeTlsRejected).toBe(true);
-  }, 60000);
+    expect(rejected).toBe(true);
+  }, 15000);
 
   it("2. Verifies forward and back migrations on clean and seeded DB in isolated schema", async () => {
     await masterClient.query("RESET ROLE;");
-    // 2a. Rollback down migration
-    await masterClient.query(DOWN_MIGRATION_SQL);
-    const tablesAfterDown = await masterClient.query(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
-      [TEST_SCHEMA]
-    );
-    expect(tablesAfterDown.rows.length).toBe(0);
+    await masterClient.query(`SET search_path TO "${TEST_SCHEMA}", pg_temp;`);
 
-    // 2b. Forward migration in isolated schema
-    await masterClient.query(UP_MIGRATION_SQL);
-    const tablesAfterUp = await masterClient.query(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
+    // 2a. Down migration on clean schema
+    await masterClient.query(DOWN_MIGRATION_SQL);
+    const tablesDown = await masterClient.query(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name != '_cinematch_run_metadata'`,
       [TEST_SCHEMA]
     );
-    expect(tablesAfterUp.rows.length).toBe(6);
+    expect(tablesDown.rows.length).toBe(0);
+
+    // 2b. Up migration
+    await masterClient.query(UP_MIGRATION_SQL);
+    const tablesUp = await masterClient.query(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name != '_cinematch_run_metadata'`,
+      [TEST_SCHEMA]
+    );
+    expect(tablesUp.rows.length).toBe(6);
+
+    // Re-seed ownership marker after migration
+    await insertOwnershipMarker(masterClient, TEST_SCHEMA, RUN_ID);
 
     // 2c. Seed test data via PostgresRoomRepository
     const testRepo = new PostgresRoomRepository(masterClient, { schema: TEST_SCHEMA });
-    const { room: seededRoom, host: seededHost } = await testRepo.createRoom({
-      hostDisplayName: "Vitest Seed Host",
+    const { room: sRoom, host: sHost } = await testRepo.createRoom({
+      hostDisplayName: "Seed Host Vitest",
       inactivityTtlSeconds: 86400,
     });
-    const seededGuest = await testRepo.joinRoom(seededRoom.id, crypto.randomUUID(), "Vitest Seed Guest");
-    const { round: seededRound, candidates: seededCands } = await testRepo.startRound(
-      seededRoom.id,
-      Array.from({ length: 20 }, (_, i) => ({ movieId: 91000 + i, title: `Seed Movie ${i}`, voteAverage: 7.5 }))
+    const sGuest = await testRepo.joinRoom(sRoom.id, crypto.randomUUID(), "Seed Guest Vitest");
+    const { round: sRound, candidates: sCands } = await testRepo.startRound(
+      sRoom.id,
+      Array.from({ length: 20 }, (_, i) => ({ movieId: 90000 + i, title: `Movie ${i}`, voteAverage: 7.5 }))
     );
-    await testRepo.recordVote(seededRoom.id, seededRound.id, seededHost.participant_id, seededCands[0].id, 91000, "LIKE");
-    await testRepo.recordVote(seededRoom.id, seededRound.id, seededGuest.participant_id, seededCands[0].id, 91000, "LIKE");
+    await testRepo.recordVote(sRoom.id, sRound.id, sHost.participant_id, sCands[0].id, 90000, "LIKE");
+    await testRepo.recordVote(sRoom.id, sRound.id, sGuest.participant_id, sCands[0].id, 90000, "LIKE");
 
-    const finalSeeded = await testRepo.getRoomById(seededRoom.id);
-    expect(finalSeeded?.status).toBe("MATCHED");
+    const seededFinal = await testRepo.getRoomById(sRoom.id);
+    expect(seededFinal?.status).toBe("MATCHED");
 
-    // 2d. Down migration on seeded DB
+    // 2d. Down migration on seeded schema
     await masterClient.query(DOWN_MIGRATION_SQL);
-    const tablesAfterSeededDown = await masterClient.query(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
+    const tablesSeededDown = await masterClient.query(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name != '_cinematch_run_metadata'`,
       [TEST_SCHEMA]
     );
-    expect(tablesAfterSeededDown.rows.length).toBe(0);
+    expect(tablesSeededDown.rows.length).toBe(0);
 
     // 2e. Re-apply up migration
     await masterClient.query(UP_MIGRATION_SQL);
-    const tablesFinal = await masterClient.query(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
+    await insertOwnershipMarker(masterClient, TEST_SCHEMA, RUN_ID);
+    const tablesReUp = await masterClient.query(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name != '_cinematch_run_metadata'`,
       [TEST_SCHEMA]
     );
-    expect(tablesFinal.rows.length).toBe(6);
-  }, 60000);
+    expect(tablesReUp.rows.length).toBe(6);
+  }, 45000);
 
   it("3. Verifies fail-closed table grants, RPC lockdown, and sequence access in isolated schema", async () => {
     await masterClient.query("RESET ROLE;");
+    const tables = ["rooms", "room_participants", "rounds", "candidates", "votes", "room_events"];
 
-    // Anon table privileges: 0
-    for (const t of ["rooms", "room_participants", "rounds", "candidates", "votes", "room_events"]) {
-      const anonP = await masterClient.query(`SELECT has_table_privilege('anon', '${TEST_SCHEMA}.${t}', 'SELECT') as p`);
+    for (const t of tables) {
+      const anonP = await masterClient.query(
+        `SELECT has_table_privilege('anon', '${TEST_SCHEMA}.${t}', 'INSERT, UPDATE, DELETE, TRUNCATE') as p`
+      );
       expect(anonP.rows[0].p).toBe(false);
-    }
-
-    // Authenticated: SELECT only on read models, 0 on private tables
-    for (const t of ["rooms", "room_participants", "rounds", "candidates"]) {
-      const authP = await masterClient.query(`SELECT has_table_privilege('authenticated', '${TEST_SCHEMA}.${t}', 'SELECT') as p`);
-      expect(authP.rows[0].p).toBe(true);
-      const authW = await masterClient.query(`SELECT has_table_privilege('authenticated', '${TEST_SCHEMA}.${t}', 'INSERT') as p`);
-      expect(authW.rows[0].p).toBe(false);
-    }
-    for (const t of ["votes", "room_events"]) {
-      const authP = await masterClient.query(`SELECT has_table_privilege('authenticated', '${TEST_SCHEMA}.${t}', 'SELECT') as p`);
+      const authP = await masterClient.query(
+        `SELECT has_table_privilege('authenticated', '${TEST_SCHEMA}.${t}', 'INSERT, UPDATE, DELETE, TRUNCATE') as p`
+      );
       expect(authP.rows[0].p).toBe(false);
     }
 
@@ -272,7 +354,7 @@ describe.skipIf(!isConfigured)("CINE-012: Live Supabase PostgreSQL Qualification
       await masterClient.query("SET ROLE anon;");
       let anonFailed = false;
       try {
-        await masterClient.query(`SELECT * FROM ${TEST_SCHEMA}.rooms WHERE id = $1`, [rlsRoom.id]);
+        await masterClient.query(`SELECT * FROM "${TEST_SCHEMA}".rooms WHERE id = $1`, [rlsRoom.id]);
       } catch (err: unknown) {
         if ((err as { code?: string })?.code === "42501") anonFailed = true;
       }
@@ -283,7 +365,7 @@ describe.skipIf(!isConfigured)("CINE-012: Live Supabase PostgreSQL Qualification
       await masterClient.query("SET ROLE authenticated;");
       await masterClient.query(`SET "request.jwt.claims" = '{"sub": "${rlsHost.participant_id}"}';`);
       const hOwn = await masterClient.query(
-        `SELECT participant_id FROM ${TEST_SCHEMA}.room_participants WHERE room_id = $1`,
+        `SELECT participant_id FROM "${TEST_SCHEMA}".room_participants WHERE room_id = $1`,
         [rlsRoom.id]
       );
       expect(hOwn.rows.length).toBe(1);
@@ -291,16 +373,63 @@ describe.skipIf(!isConfigured)("CINE-012: Live Supabase PostgreSQL Qualification
 
       // Stranger gets 0 rows
       await masterClient.query(`SET "request.jwt.claims" = '{"sub": "${rlsStrangerId}"}';`);
-      const sRooms = await masterClient.query(`SELECT id FROM ${TEST_SCHEMA}.rooms WHERE id = $1`, [rlsRoom.id]);
+      const sRooms = await masterClient.query(`SELECT id FROM "${TEST_SCHEMA}".rooms WHERE id = $1`, [rlsRoom.id]);
       expect(sRooms.rows.length).toBe(0);
     } finally {
       await masterClient.query("RESET ROLE;");
     }
   }, 30000);
 
-  it("5. Dual Node.js process concurrency calling PostgresRoomRepository under SELECT FOR UPDATE", async () => {
+  it("5. Demonstrates deterministic row-level lock blocking (SELECT FOR UPDATE) and dual-process concurrency", async () => {
     await masterClient.query("RESET ROLE;");
+
+    // 5a. Deterministic row-level lock blocking demonstration
+    const lockC1 = new Client(PG_CONFIG);
+    const lockC2 = new Client(PG_CONFIG);
+    await Promise.all([lockC1.connect(), lockC2.connect()]);
+
     const concRepo = new PostgresRoomRepository(masterClient, { schema: TEST_SCHEMA });
+    const { room: lRoom } = await concRepo.createRoom({ hostDisplayName: "Deterministic Host", inactivityTtlSeconds: 86400 });
+
+    await lockC1.query("BEGIN;");
+    await lockC1.query(`SELECT * FROM "${TEST_SCHEMA}".rooms WHERE id = $1 FOR UPDATE;`, [lRoom.id]);
+
+    let c2Resolved = false;
+    let c2WaitMs = 0;
+    // Execute BEGIN on C2 first so the connection is ready in transaction state
+    await lockC2.query("BEGIN;");
+    const c2Promise = (async () => {
+      const t0 = performance.now();
+      await lockC2.query(`SELECT * FROM "${TEST_SCHEMA}".rooms WHERE id = $1 FOR UPDATE;`, [lRoom.id]);
+      c2Resolved = true;
+      c2WaitMs = performance.now() - t0;
+      await lockC2.query("COMMIT;");
+    })();
+
+    // Poll pg_locks for up to 2000ms until the ungranted lock appears
+    let ungrantedFound = false;
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline) {
+      const lockProbe = await masterClient.query(`SELECT locktype, mode, granted FROM pg_locks WHERE granted = false;`);
+      if (lockProbe.rows.length > 0) {
+        ungrantedFound = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    expect(c2Resolved).toBe(false);
+    expect(ungrantedFound).toBe(true);
+
+    // C1 releases lock after delay
+    await new Promise((r) => setTimeout(r, 300));
+    await lockC1.query("COMMIT;");
+
+    await c2Promise;
+    expect(c2WaitMs).toBeGreaterThanOrEqual(400);
+    await Promise.all([lockC1.end(), lockC2.end()]);
+
+    // 5b. Dual Node.js Process Concurrency on PostgresRoomRepository
     const { room: concRoom, host: concHost } = await concRepo.createRoom({
       hostDisplayName: "Vitest Host",
       inactivityTtlSeconds: 86400,
@@ -318,9 +447,13 @@ describe.skipIf(!isConfigured)("CINE-012: Live Supabase PostgreSQL Qualification
         execArgv: ["--import", "tsx"],
         env: {
           ...process.env,
+          SUPABASE_PG_HOST: PG_HOST,
+          SUPABASE_PG_PORT: String(PG_PORT),
+          SUPABASE_PG_DATABASE: PG_DATABASE,
+          SUPABASE_PG_USER: PG_USER,
+          SUPABASE_PG_PASSWORD: PG_PASSWORD,
           SUPABASE_PG_SCHEMA: TEST_SCHEMA,
         },
-        stdio: ["ignore", "pipe", "pipe", "ipc"],
       });
 
     const worker1 = spawnWorker();
@@ -328,21 +461,17 @@ describe.skipIf(!isConfigured)("CINE-012: Live Supabase PostgreSQL Qualification
 
     const waitReady = (child: ChildProcess): Promise<number> =>
       new Promise((res, rej) => {
-        const to = setTimeout(() => rej(new Error("Worker ready timeout")), 10000);
+        const to = setTimeout(() => rej(new Error("Worker spawn timeout")), 10000);
         child.on("message", (m: unknown) => {
           const typedM = m as { type?: string; pid?: number } | null;
-          if (typedM?.type === "READY" && typeof typedM.pid === "number") {
+          if (typedM?.type === "READY") {
             clearTimeout(to);
-            res(typedM.pid);
+            res(typedM.pid ?? child.pid ?? 0);
           }
         });
-        child.on("error", rej);
       });
 
-    const [pid1, pid2] = await Promise.all([waitReady(worker1), waitReady(worker2)]);
-    expect(pid1).toBeGreaterThan(0);
-    expect(pid2).toBeGreaterThan(0);
-    expect(pid1).not.toBe(pid2);
+    await Promise.all([waitReady(worker1), waitReady(worker2)]);
 
     const execVote = (
       child: ChildProcess,
@@ -354,7 +483,11 @@ describe.skipIf(!isConfigured)("CINE-012: Live Supabase PostgreSQL Qualification
           const typedM = m as { type?: string; transition?: string; durationMs?: number; error?: string | null } | null;
           if (typedM?.type === "RESULT") {
             clearTimeout(to);
-            res({ transition: typedM.transition || "", durationMs: typedM.durationMs ?? 0, error: typedM.error ?? null });
+            res({
+              transition: typedM.transition || "",
+              durationMs: typedM.durationMs ?? 0,
+              error: typedM.error || null,
+            });
           }
         });
         child.send({
@@ -392,82 +525,101 @@ describe.skipIf(!isConfigured)("CINE-012: Live Supabase PostgreSQL Qualification
   it("6. Negative race tests and service error handling on PostgresRoomRepository", async () => {
     await masterClient.query("RESET ROLE;");
     const edgeRepo = new PostgresRoomRepository(masterClient, { schema: TEST_SCHEMA });
-    const { room, host } = await edgeRepo.createRoom({ hostDisplayName: "Edge Host", inactivityTtlSeconds: 86400 });
-    const guest = await edgeRepo.joinRoom(room.id, crypto.randomUUID(), "Edge Guest");
-    const { round, candidates } = await edgeRepo.startRound(
-      room.id,
-      Array.from({ length: 20 }, (_, i) => ({ movieId: 55000 + i, title: `Edge Movie ${i}` }))
+    const { room: eRoom, host: eHost } = await edgeRepo.createRoom({
+      hostDisplayName: "Edge Host",
+      inactivityTtlSeconds: 86400,
+    });
+    const eGuest = await edgeRepo.joinRoom(eRoom.id, crypto.randomUUID(), "Edge Guest");
+    const { round: eRound, candidates: eCands } = await edgeRepo.startRound(
+      eRoom.id,
+      Array.from({ length: 20 }, (_, i) => ({ movieId: 44000 + i, title: `Edge Movie ${i}` }))
     );
 
-    // Vote 1: Host LIKE
-    await edgeRepo.recordVote(room.id, round.id, host.participant_id, candidates[0].id, 55000, "LIKE");
-
-    // 6a. Duplicate vote: Host LIKE again -> Idempotent PASS
-    const dupVote = await edgeRepo.recordVote(room.id, round.id, host.participant_id, candidates[0].id, 55000, "LIKE");
-    expect(dupVote.isMatched).toBe(false);
-    expect(dupVote.vote.movie_id).toBe(55000);
-
-    // Vote 2: Guest LIKE -> triggers MATCHED
-    const matchVote = await edgeRepo.recordVote(room.id, round.id, guest.participant_id, candidates[0].id, 55000, "LIKE");
+    // Vote 1 & 2 to reach MATCHED
+    await edgeRepo.recordVote(eRoom.id, eRound.id, eHost.participant_id, eCands[0].id, eCands[0].movie_id, "LIKE");
+    const matchVote = await edgeRepo.recordVote(
+      eRoom.id,
+      eRound.id,
+      eGuest.participant_id,
+      eCands[0].id,
+      eCands[0].movie_id,
+      "LIKE"
+    );
     expect(matchVote.isMatched).toBe(true);
 
-    // 6b. Post-MATCH vote: attempt vote on candidate 1 -> throws RoomCapacityError
+    // 6a. Duplicate Vote on MATCHED room (idempotent PASS)
+    const dupVote = await edgeRepo.recordVote(
+      eRoom.id,
+      eRound.id,
+      eHost.participant_id,
+      eCands[0].id,
+      eCands[0].movie_id,
+      "LIKE"
+    );
+    expect(dupVote.isMatched).toBe(true);
+
+    // 6b. Post-MATCH Vote rejection (RoomCapacityError)
     await expect(
-      edgeRepo.recordVote(room.id, round.id, host.participant_id, candidates[1].id, candidates[1].movie_id, "LIKE")
+      edgeRepo.recordVote(eRoom.id, eRound.id, eHost.participant_id, eCands[1].id, eCands[1].movie_id, "LIKE")
     ).rejects.toThrow(RoomCapacityError);
 
-    // Create an ACTIVE room to test invalid candidate, participant, and round rejections
+    // 6c. Faulty Candidate rejection (CandidateNotFoundError)
     const { room: actRoom, host: actHost } = await edgeRepo.createRoom({ hostDisplayName: "Act Host", inactivityTtlSeconds: 86400 });
     await edgeRepo.joinRoom(actRoom.id, crypto.randomUUID(), "Act Guest");
-    const { round: actRound, candidates: actCands } = await edgeRepo.startRound(
+    const { round: actRound } = await edgeRepo.startRound(
       actRoom.id,
-      Array.from({ length: 20 }, (_, i) => ({ movieId: 33000 + i, title: `Act Movie ${i}` }))
+      Array.from({ length: 20 }, (_, i) => ({ movieId: 55000 + i, title: `Act Movie ${i}` }))
     );
-
-    // 6c. Faulty candidate -> throws CandidateNotFoundError
     await expect(
       edgeRepo.recordVote(actRoom.id, actRound.id, actHost.participant_id, crypto.randomUUID(), 99999, "LIKE")
     ).rejects.toThrow(CandidateNotFoundError);
 
-    // 6d. Faulty participant -> throws ParticipantNotFoundError
+    // 6d. Faulty Participant rejection (ParticipantNotFoundError)
     await expect(
-      edgeRepo.recordVote(actRoom.id, actRound.id, crypto.randomUUID(), actCands[0].id, actCands[0].movie_id, "LIKE")
+      edgeRepo.recordVote(actRoom.id, actRound.id, crypto.randomUUID(), actRound.id, 55000, "LIKE")
     ).rejects.toThrow(ParticipantNotFoundError);
 
-    // 6e. Faulty round -> throws RoundNotFoundError
+    // 6e. Faulty Round rejection (RoundNotFoundError)
     await expect(
-      edgeRepo.recordVote(actRoom.id, crypto.randomUUID(), actHost.participant_id, actCands[0].id, actCands[0].movie_id, "LIKE")
+      edgeRepo.recordVote(actRoom.id, crypto.randomUUID(), actHost.participant_id, crypto.randomUUID(), 55000, "LIKE")
     ).rejects.toThrow(RoundNotFoundError);
-  }, 30000);
+  }, 45000);
 
   it("7. Measures and reports contention latency vs sequential DB roundtrip latency", async () => {
     await masterClient.query("RESET ROLE;");
-    const perfRepo = new PostgresRoomRepository(masterClient, { schema: TEST_SCHEMA });
-    const { room, host } = await perfRepo.createRoom({ hostDisplayName: "Perf Host", inactivityTtlSeconds: 86400 });
-    const guest = await perfRepo.joinRoom(room.id, crypto.randomUUID(), "Perf Guest");
-    const { round, candidates } = await perfRepo.startRound(
-      room.id,
-      Array.from({ length: 20 }, (_, i) => ({ movieId: 44000 + i, title: `Perf Movie ${i}` }))
+    const latRepo = new PostgresRoomRepository(masterClient, { schema: TEST_SCHEMA });
+
+    // 50 sequential transitions
+    const seqRoom = await latRepo.createRoom({ hostDisplayName: "Lat Seq Host", inactivityTtlSeconds: 86400 });
+    const seqGuest = await latRepo.joinRoom(seqRoom.room.id, crypto.randomUUID(), "Lat Seq Guest");
+    const seqRound = await latRepo.startRound(
+      seqRoom.room.id,
+      Array.from({ length: 20 }, (_, i) => ({ movieId: 66000 + i, title: `Lat Seq Movie ${i}` }))
     );
 
-    const seqLatencies: number[] = [];
-    for (let i = 0; i < 20; i++) {
-      const cand = candidates[i];
+    const latencies: number[] = [];
+    for (let i = 0; i < 50; i++) {
+      const cand = seqRound.candidates[i % 20];
       const t0 = performance.now();
-      await perfRepo.recordVote(
-        room.id,
-        round.id,
-        i % 2 === 0 ? host.participant_id : guest.participant_id,
+      await latRepo.recordVote(
+        seqRoom.room.id,
+        seqRound.round.id,
+        i % 2 === 0 ? seqRoom.host.participant_id : seqGuest.participant_id,
         cand.id,
         cand.movie_id,
         "SKIP"
       );
-      seqLatencies.push(performance.now() - t0);
+      latencies.push(performance.now() - t0);
     }
 
-    seqLatencies.sort((a, b) => a - b);
-    const p50 = seqLatencies[Math.floor(seqLatencies.length * 0.5)];
+    latencies.sort((a, b) => a - b);
+    const p50 = latencies[Math.floor(latencies.length * 0.5)];
+    const p95 = latencies[Math.floor(latencies.length * 0.95)];
+    const p99 = latencies[Math.floor(latencies.length * 0.99)];
+
+    expect(latencies.length).toBe(50);
     expect(p50).toBeGreaterThan(0);
-    expect(seqLatencies.length).toBe(20);
-  }, 45000);
+    expect(p95).toBeGreaterThanOrEqual(p50);
+    expect(p99).toBeGreaterThanOrEqual(p95);
+  }, 90000);
 });

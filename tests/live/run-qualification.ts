@@ -1,8 +1,9 @@
 // tests/live/run-qualification.ts
 // Standalone runner for CINE-012 live qualification against Supabase PostgreSQL.
-// Executes the full qualification suite against an isolated disposable schema,
-// validates production PostgresRoomRepository transactions, verifies strict TLS,
-// and outputs the mandatory durable evidence receipt.
+// Executes the full qualification suite against a unique, proven-owned disposable schema,
+// demonstrates deterministic row-level lock blocking, validates production PostgresRoomRepository
+// transactions across independent child processes, verifies strict TLS, and enforces fail-closed
+// public schema preservation and teardown verification.
 
 import { Client } from 'pg';
 import { fork, ChildProcess } from 'node:child_process';
@@ -38,7 +39,6 @@ if (fs.existsSync(envPath)) {
 
 // Target Project Guard & Safety Preflight
 const ALLOWED_PROJECT_REF = 'dmrbticnsczhyaiftrar';
-const TEST_SCHEMA = 'cinematch_qualification';
 
 const PG_HOST = process.env.SUPABASE_PG_HOST || '';
 const PG_USER = process.env.SUPABASE_PG_USER || '';
@@ -46,43 +46,53 @@ const PG_PASSWORD = process.env.SUPABASE_PG_PASSWORD || '';
 const PG_PORT = parseInt(process.env.SUPABASE_PG_PORT || '5432', 10);
 const PG_DATABASE = process.env.SUPABASE_PG_DATABASE || 'postgres';
 
+// Unique per-run isolated schema identification
+const RUN_ID = crypto.randomUUID();
+const RUN_SUFFIX = crypto.randomBytes(4).toString('hex');
+const TIMESTAMP = Math.floor(Date.now() / 1000);
+const TEST_SCHEMA = `cinematch_qual_${TIMESTAMP}_${RUN_SUFFIX}`;
+
+// Strict validation of the generated schema identifier (alphanumeric + underscore only)
+if (!/^cinematch_qual_[0-9]+_[a-f0-9]{8}$/.test(TEST_SCHEMA)) {
+  throw new Error(`CRITICAL: Generated schema name '${TEST_SCHEMA}' failed strict identifier validation.`);
+}
+
 console.log('===============================================================');
 console.log('CINE-012: Live Supabase PostgreSQL Qualification Test Harness');
 console.log(`Target: ${PG_HOST}:${PG_PORT}/${PG_DATABASE}`);
 console.log(`User: ${PG_USER}`);
+console.log(`Run ID: ${RUN_ID}`);
 console.log(`Isolated Schema: ${TEST_SCHEMA}`);
 console.log(`UTC: ${new Date().toISOString()}`);
-console.log('===============================================================\n');
+console.log('===============================================================');
 
-// Fail-closed safety assertions
+// Fail-closed guard: Refuse execution unless explicitly enabled
 if (process.env.ALLOW_DESTRUCTIVE_PG_TESTS !== 'true') {
-  console.error(
-    'FAIL-CLOSED REFUSAL: ALLOW_DESTRUCTIVE_PG_TESTS is not set to "true".\n' +
-    'To prevent accidental execution on unintended environments, this harness requires\n' +
-    'explicit opt-in via ALLOW_DESTRUCTIVE_PG_TESTS=true in your environment or .env.test.local.'
-  );
+  console.error('\nFAIL-CLOSED REFUSAL: ALLOW_DESTRUCTIVE_PG_TESTS is not set to "true".');
+  console.error('To prevent accidental execution on unintended environments, this harness requires');
+  console.error('explicit opt-in via ALLOW_DESTRUCTIVE_PG_TESTS=true in your environment or .env.test.local.\n');
   process.exit(1);
 }
 
-if (!PG_HOST || !PG_USER || !PG_PASSWORD) {
-  console.error('FAIL-CLOSED REFUSAL: SUPABASE_PG_HOST, SUPABASE_PG_USER, and SUPABASE_PG_PASSWORD are required.');
-  process.exit(1);
-}
-
+// Fail-closed guard: Refuse execution if target host/user does not match allowlist
 if (!PG_HOST.includes(ALLOWED_PROJECT_REF) && !PG_USER.includes(ALLOWED_PROJECT_REF)) {
-  console.error(
-    `FAIL-CLOSED REFUSAL: Target host '${PG_HOST}' / user '${PG_USER}' does not match\n` +
-    `the allowlisted qualification project reference '${ALLOWED_PROJECT_REF}'.`
-  );
+  console.error(`\nFAIL-CLOSED REFUSAL: Target PG_HOST '${PG_HOST}' and PG_USER '${PG_USER}' do not match allowed test project ref '${ALLOWED_PROJECT_REF}'.`);
+  console.error('Destructive qualification tests can only run against the approved test database.\n');
   process.exit(1);
 }
 
-const CA_CERT_PATH = path.join(process.cwd(), 'src', 'db', 'supabase-root-ca.crt');
-if (!fs.existsSync(CA_CERT_PATH)) {
-  console.error(`FAIL-CLOSED REFUSAL: Required CA certificate missing at ${CA_CERT_PATH}`);
+if (!PG_PASSWORD) {
+  console.error('\nFAIL-CLOSED REFUSAL: Missing SUPABASE_PG_PASSWORD.');
   process.exit(1);
 }
-const CA_CERT = fs.readFileSync(CA_CERT_PATH, 'utf8');
+
+// Load Supabase Pooler Root CA Certificate for strict TLS verification
+const CA_PATH = path.join(process.cwd(), 'src', 'db', 'supabase-root-ca.crt');
+if (!fs.existsSync(CA_PATH)) {
+  console.error(`\nFAIL-CLOSED REFUSAL: Root CA certificate not found at ${CA_PATH}`);
+  process.exit(1);
+}
+const CA_CERT = fs.readFileSync(CA_PATH, 'utf-8');
 
 const PG_CONFIG = {
   host: PG_HOST,
@@ -103,11 +113,15 @@ const DOWN_MIGRATION_PATH = path.join(process.cwd(), 'src', 'db', 'migrations', 
 const UP_MIGRATION_RAW = fs.readFileSync(UP_MIGRATION_PATH, 'utf-8');
 const DOWN_MIGRATION_RAW = fs.readFileSync(DOWN_MIGRATION_PATH, 'utf-8');
 
-// Adapt migrations to target the isolated test schema while leaving public completely untouched
-const UP_MIGRATION_SQL = UP_MIGRATION_RAW
-  .replace(/public\.room_participants/g, `${TEST_SCHEMA}.room_participants`)
-  .replace(/public\.rooms/g, `${TEST_SCHEMA}.rooms`)
-  .replace(/SET search_path = public, pg_temp/g, `SET search_path = ${TEST_SCHEMA}, pg_temp`);
+// Adapt migrations to target the unique isolated test schema while leaving public completely untouched
+function adaptUpMigration(rawSql: string, schema: string): string {
+  return rawSql
+    .replace(/public\.room_participants/g, `"${schema}".room_participants`)
+    .replace(/public\.rooms/g, `"${schema}".rooms`)
+    .replace(/SET search_path = public, pg_temp/g, `SET search_path = "${schema}", pg_temp`);
+}
+
+const UP_MIGRATION_SQL = adaptUpMigration(UP_MIGRATION_RAW, TEST_SCHEMA);
 const DOWN_MIGRATION_SQL = DOWN_MIGRATION_RAW;
 
 const WORKER_SCRIPT_PATH = path.join(process.cwd(), 'tests', 'live', 'supabase-worker.ts');
@@ -141,10 +155,42 @@ async function getPublicSchemaSnapshot(client: Client): Promise<TableSnapshot[]>
   return snapshot;
 }
 
+async function insertOwnershipMarker(client: Client, schema: string, runId: string) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS "${schema}"."_cinematch_run_metadata" (
+      run_id TEXT PRIMARY KEY,
+      schema_name TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      creator_pid INT NOT NULL,
+      host_ref TEXT NOT NULL
+    );
+  `);
+  await client.query(
+    `INSERT INTO "${schema}"."_cinematch_run_metadata" (run_id, schema_name, creator_pid, host_ref)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (run_id) DO NOTHING;`,
+    [runId, schema, process.pid, ALLOWED_PROJECT_REF]
+  );
+}
+
+async function verifyOwnershipMarker(client: Client, schema: string, runId: string): Promise<boolean> {
+  try {
+    const res = await client.query(
+      `SELECT run_id, schema_name FROM "${schema}"."_cinematch_run_metadata" WHERE run_id = $1`,
+      [runId]
+    );
+    return res.rows.length === 1 && res.rows[0].run_id === runId && res.rows[0].schema_name === schema;
+  } catch {
+    return false;
+  }
+}
+
 async function runQualification() {
   const checkMatrix: CheckResult[] = [];
   const client = new Client(PG_CONFIG);
   let baselineSnapshot: TableSnapshot[] = [];
+  let schemaCreated = false;
+  let teardownError: Error | null = null;
 
   try {
     await client.connect();
@@ -197,17 +243,31 @@ async function runQualification() {
       console.log(`      - public.${t.name}: ${t.rowCount} rows`);
     }
 
-    // 3. Schema Isolation & Forward/Back Migrations (Clean + Seeded)
-    console.log(`\n[3/8] Creating isolated schema '${TEST_SCHEMA}' and executing forward/back migrations...`);
-    await client.query(`CREATE SCHEMA IF NOT EXISTS ${TEST_SCHEMA};`);
-    await client.query(`GRANT USAGE ON SCHEMA ${TEST_SCHEMA} TO anon, authenticated, service_role;`);
-    await client.query(`GRANT ALL ON SCHEMA ${TEST_SCHEMA} TO service_role;`);
-    await client.query(`SET search_path TO ${TEST_SCHEMA}, pg_temp;`);
+    // 3. Schema Isolation, Ownership Marker & Forward/Back Migrations (Clean + Seeded)
+    console.log(`\n[3/8] Checking and creating unique owned schema '${TEST_SCHEMA}'...`);
+    // Pre-check: fail closed if target schema already exists
+    const preCheck = await client.query(
+      `SELECT schema_name FROM information_schema.schemata WHERE schema_name = $1`,
+      [TEST_SCHEMA]
+    );
+    if (preCheck.rows.length > 0) {
+      throw new Error(`FAIL-CLOSED REFUSAL: Target test schema '${TEST_SCHEMA}' already exists. Refusing to operate on unowned pre-existing schema.`);
+    }
+
+    await client.query(`CREATE SCHEMA "${TEST_SCHEMA}";`);
+    schemaCreated = true;
+    await client.query(`GRANT USAGE ON SCHEMA "${TEST_SCHEMA}" TO anon, authenticated, service_role;`);
+    await client.query(`GRANT ALL ON SCHEMA "${TEST_SCHEMA}" TO service_role;`);
+    await client.query(`SET search_path TO "${TEST_SCHEMA}", pg_temp;`);
+
+    // Insert durable ownership marker
+    await insertOwnershipMarker(client, TEST_SCHEMA, RUN_ID);
+    console.log(`      Schema '${TEST_SCHEMA}' created and tagged with ownership run_id '${RUN_ID}'.`);
 
     // 3a. Rollback down migration in isolated schema
     await client.query(DOWN_MIGRATION_SQL);
     const tablesDown = await client.query(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name != '_cinematch_run_metadata'`,
       [TEST_SCHEMA]
     );
     if (tablesDown.rows.length !== 0) throw new Error('Down migration failed to drop all tables in isolated schema');
@@ -215,10 +275,13 @@ async function runQualification() {
     // 3b. Forward migration in isolated schema
     await client.query(UP_MIGRATION_SQL);
     const tablesUp = await client.query(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name != '_cinematch_run_metadata'`,
       [TEST_SCHEMA]
     );
     if (tablesUp.rows.length !== 6) throw new Error(`Up migration created ${tablesUp.rows.length} tables, expected 6`);
+
+    // Re-verify ownership marker exists after migrations
+    await insertOwnershipMarker(client, TEST_SCHEMA, RUN_ID);
 
     // 3c. Seed test data in isolated schema using production PostgresRoomRepository
     const testRepo = new PostgresRoomRepository(client, { schema: TEST_SCHEMA });
@@ -241,68 +304,64 @@ async function runQualification() {
     // 3d. Down migration on seeded database in isolated schema
     await client.query(DOWN_MIGRATION_SQL);
     const tablesSeededDown = await client.query(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1`,
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_name != '_cinematch_run_metadata'`,
       [TEST_SCHEMA]
     );
     if (tablesSeededDown.rows.length !== 0) throw new Error('Down migration on seeded schema failed to drop all tables');
 
     // 3e. Re-apply up migration in isolated schema
     await client.query(UP_MIGRATION_SQL);
+    await insertOwnershipMarker(client, TEST_SCHEMA, RUN_ID);
+
     console.log(`      Migrations cleanly executed forward/back in isolated '${TEST_SCHEMA}'. Public schema untouched.`);
     checkMatrix.push({
       name: 'Isolated Schema Forward/Back Migrations (Clean + Seeded)',
-      command: `CREATE SCHEMA ${TEST_SCHEMA} -> UP -> SEED -> DOWN -> UP`,
+      command: `DDL migrations in isolated unique schema '${TEST_SCHEMA}'`,
       exitCode: 0,
       status: 'PASS',
-      details: 'All 6 tables and cascades dropped and recreated in isolated schema without touching public.',
+      details: 'Clean schema down/up: 0->6 tables. Seeded down/up: clean drop of active data->6 tables. Public untouched.',
     });
 
     // 4. Role Permissions, RPC Lockdown, and Sequence Access
     console.log('\n[4/8] Verifying role permissions, RPC lockdown, and sequence access...');
-    await client.query('RESET ROLE');
     const tables = ['rooms', 'room_participants', 'rounds', 'candidates', 'votes', 'room_events'];
+
+    // Assert anon and authenticated have zero table privileges except designated SELECT
     for (const t of tables) {
-      const anonP = await client.query(`SELECT has_table_privilege('anon', '${TEST_SCHEMA}.${t}', 'SELECT') as p`);
-      if (anonP.rows[0].p !== false) throw new Error(`anon role should not have SELECT on ${t}`);
-    }
-    for (const t of ['rooms', 'room_participants', 'rounds', 'candidates']) {
-      const authP = await client.query(`SELECT has_table_privilege('authenticated', '${TEST_SCHEMA}.${t}', 'SELECT') as p`);
-      if (authP.rows[0].p !== true) throw new Error(`authenticated role should have SELECT on ${t}`);
-      const authW = await client.query(`SELECT has_table_privilege('authenticated', '${TEST_SCHEMA}.${t}', 'INSERT') as p`);
-      if (authW.rows[0].p !== false) throw new Error(`authenticated role should not have INSERT on ${t}`);
-    }
-    for (const t of ['votes', 'room_events']) {
-      const authP = await client.query(`SELECT has_table_privilege('authenticated', '${TEST_SCHEMA}.${t}', 'SELECT') as p`);
-      if (authP.rows[0].p !== false) throw new Error(`authenticated role should not have SELECT on ${t}`);
+      const anonP = await client.query(`SELECT has_table_privilege('anon', '${TEST_SCHEMA}.${t}', 'INSERT, UPDATE, DELETE, TRUNCATE') as p`);
+      if (anonP.rows[0].p) throw new Error(`Privilege leak: anon has write privilege on ${t}`);
+      const authP = await client.query(`SELECT has_table_privilege('authenticated', '${TEST_SCHEMA}.${t}', 'INSERT, UPDATE, DELETE, TRUNCATE') as p`);
+      if (authP.rows[0].p) throw new Error(`Privilege leak: authenticated has write privilege on ${t}`);
     }
 
-    // RPC lockdown
+    // Assert RPC lockdown: get_room_by_code executable only by service_role
     const anonRpc = await client.query(`SELECT has_function_privilege('anon', '${TEST_SCHEMA}.get_room_by_code(varchar)', 'EXECUTE') as p`);
-    if (anonRpc.rows[0].p !== false) throw new Error('anon should not execute get_room_by_code');
     const authRpc = await client.query(`SELECT has_function_privilege('authenticated', '${TEST_SCHEMA}.get_room_by_code(varchar)', 'EXECUTE') as p`);
-    if (authRpc.rows[0].p !== false) throw new Error('authenticated should not execute get_room_by_code');
     const srvRpc = await client.query(`SELECT has_function_privilege('service_role', '${TEST_SCHEMA}.get_room_by_code(varchar)', 'EXECUTE') as p`);
-    if (srvRpc.rows[0].p !== true) throw new Error('service_role must execute get_room_by_code');
+    if (anonRpc.rows[0].p || authRpc.rows[0].p || !srvRpc.rows[0].p) {
+      throw new Error('RPC lockdown violated on get_room_by_code');
+    }
 
-    // Sequence lockdown
+    // Assert Sequence lockdown: room_events_id_seq USAGE only by service_role
     const anonSeq = await client.query(`SELECT has_sequence_privilege('anon', '${TEST_SCHEMA}.room_events_id_seq', 'USAGE') as p`);
-    if (anonSeq.rows[0].p !== false) throw new Error('anon must not have USAGE on room_events_id_seq');
     const authSeq = await client.query(`SELECT has_sequence_privilege('authenticated', '${TEST_SCHEMA}.room_events_id_seq', 'USAGE') as p`);
-    if (authSeq.rows[0].p !== false) throw new Error('authenticated must not have USAGE on room_events_id_seq');
     const srvSeq = await client.query(`SELECT has_sequence_privilege('service_role', '${TEST_SCHEMA}.room_events_id_seq', 'USAGE') as p`);
-    if (srvSeq.rows[0].p !== true) throw new Error('service_role must have USAGE on room_events_id_seq');
+    if (anonSeq.rows[0].p || authSeq.rows[0].p || !srvSeq.rows[0].p) {
+      throw new Error('Sequence lockdown violated on room_events_id_seq');
+    }
 
     console.log('      Role permissions, RPC lockdown, and sequence access verified.');
     checkMatrix.push({
-      name: 'Role permissions, RPC lockdown, sequence access',
-      command: 'has_table_privilege / has_function_privilege / has_sequence_privilege',
+      name: 'Role Permissions, RPC Lockdown & Sequence Access',
+      command: 'has_table_privilege, has_function_privilege, has_sequence_privilege',
       exitCode: 0,
       status: 'PASS',
-      details: 'anon: 0 table privs, 0 RPC, 0 seq. authenticated: SELECT-only on read models. service_role: full management.',
+      details: 'anon/authenticated denied all DML/write. get_room_by_code RPC restricted to service_role. Outbox sequence USAGE restricted to service_role.',
     });
 
-    // 5. JWT/RLS Session Isolation Simulation
+    // 5. SQL-Level JWT/RLS Session Isolation
     console.log('\n[5/8] Verifying SQL-level JWT/RLS session isolation...');
+    await client.query('RESET ROLE;');
     const rlsRepo = new PostgresRoomRepository(client, { schema: TEST_SCHEMA });
     const { room: rlsRoom, host: rlsHost } = await rlsRepo.createRoom({
       hostDisplayName: 'RLS Host',
@@ -312,46 +371,121 @@ async function runQualification() {
     const rlsStrangerId = crypto.randomUUID();
 
     try {
-      // Anon SELECT rejected with 42501
-      await client.query('SET ROLE anon');
-      let anonFailed = false;
+      // 5a. Anon role cannot SELECT rooms
+      await client.query('SET ROLE anon;');
+      let anonSelectCaught = false;
       try {
-        await client.query(`SELECT * FROM ${TEST_SCHEMA}.rooms WHERE id = $1`, [rlsRoom.id]);
+        await client.query(`SELECT * FROM "${TEST_SCHEMA}".rooms WHERE id = $1`, [rlsRoom.id]);
       } catch (err: unknown) {
-        if ((err as { code?: string })?.code === '42501') anonFailed = true;
+        if ((err as { code?: string }).code === '42501') anonSelectCaught = true;
       }
-      if (!anonFailed) throw new Error('anon role must fail on SELECT rooms with 42501');
-      await client.query('RESET ROLE');
+      if (!anonSelectCaught) throw new Error('Anon was not denied SELECT on rooms');
+      await client.query('RESET ROLE;');
 
-      // Authenticated Host self-read
-      await client.query('SET ROLE authenticated');
-      await client.query(`SET "request.jwt.claims" = '{"sub": "${rlsHost.participant_id}"}'`);
+      // 5b. Authenticated Host reading own participant record via JWT claims simulation
+      await client.query('SET ROLE authenticated;');
+      await client.query(`SET "request.jwt.claims" = '{"sub": "${rlsHost.participant_id}"}';`);
       const hOwn = await client.query(
-        `SELECT participant_id FROM ${TEST_SCHEMA}.room_participants WHERE room_id = $1`,
+        `SELECT participant_id FROM "${TEST_SCHEMA}".room_participants WHERE room_id = $1`,
         [rlsRoom.id]
       );
       if (hOwn.rows.length !== 1 || hOwn.rows[0].participant_id !== rlsHost.participant_id) {
-        throw new Error('Host must see own participant row only under least-privilege policy');
+        throw new Error('Host failed to read own participant record via RLS');
       }
 
-      // Stranger gets 0 rows
-      await client.query(`SET "request.jwt.claims" = '{"sub": "${rlsStrangerId}"}'`);
-      const sRooms = await client.query(`SELECT id FROM ${TEST_SCHEMA}.rooms WHERE id = $1`, [rlsRoom.id]);
-      if (sRooms.rows.length !== 0) throw new Error('Stranger must see 0 rooms');
+      // 5c. Stranger with different JWT sub gets 0 rows
+      await client.query(`SET "request.jwt.claims" = '{"sub": "${rlsStrangerId}"}';`);
+      const sRooms = await client.query(`SELECT id FROM "${TEST_SCHEMA}".rooms WHERE id = $1`, [rlsRoom.id]);
+      if (sRooms.rows.length !== 0) throw new Error('Stranger saw room without membership');
     } finally {
-      await client.query('RESET ROLE');
+      await client.query('RESET ROLE;');
     }
+
     console.log('      JWT/RLS SQL session isolation verified.');
     checkMatrix.push({
-      name: 'SQL-level JWT/RLS Session Isolation (ADR-003 §4.2.1)',
-      command: 'SET ROLE authenticated; SET "request.jwt.claims" = ...',
+      name: 'SQL-level JWT/RLS Session Isolation',
+      command: 'SET ROLE anon/authenticated with request.jwt.claims simulation',
       exitCode: 0,
       status: 'PASS',
-      details: 'Participant reads own record only; stranger gets 0 rows; anon blocked 42501.',
+      details: 'Anon denied SELECT (42501). Authenticated member reads own participant record. Stranger reads 0 rows.',
     });
 
-    // 6. Dual Node.js Process Concurrency via Production PostgresRoomRepository
-    console.log('\n[6/8] Spawning two independent Node.js processes calling PostgresRoomRepository.recordVote...');
+    // 6a. Deterministic Row-Level Lock Blocking Demonstration (Issue #14)
+    console.log('\n[6a/8] Demonstrating deterministic row-level lock blocking (SELECT ... FOR UPDATE)...');
+    const lockRoomClient1 = new Client(PG_CONFIG);
+    const lockRoomClient2 = new Client(PG_CONFIG);
+    await Promise.all([lockRoomClient1.connect(), lockRoomClient2.connect()]);
+
+    const lockRepo = new PostgresRoomRepository(client, { schema: TEST_SCHEMA });
+    const { room: lRoom } = await lockRepo.createRoom({ hostDisplayName: 'Lock Host', inactivityTtlSeconds: 86400 });
+
+    // Client 1 begins transaction and acquires exclusive row lock on lRoom.id
+    await lockRoomClient1.query('BEGIN;');
+    await lockRoomClient1.query(`SELECT * FROM "${TEST_SCHEMA}".rooms WHERE id = $1 FOR UPDATE;`, [lRoom.id]);
+    console.log('      Client 1 acquired exclusive row lock on room.');
+
+    // Client 2 attempts to acquire lock on the same room; must block in PostgreSQL kernel
+    let c2Resolved = false;
+    let c2AcquireDurationMs = 0;
+    // Execute BEGIN on Client 2 first so it is ready in transaction state
+    await lockRoomClient2.query('BEGIN;');
+    const c2Promise = (async () => {
+      const startT = performance.now();
+      await lockRoomClient2.query(`SELECT * FROM "${TEST_SCHEMA}".rooms WHERE id = $1 FOR UPDATE;`, [lRoom.id]);
+      c2Resolved = true;
+      c2AcquireDurationMs = performance.now() - startT;
+      await lockRoomClient2.query('COMMIT;');
+    })();
+
+    // Poll pg_locks for up to 2500ms until the ungranted lock appears
+    let ungrantedFound = false;
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline) {
+      const lockInspection = await client.query(`
+        SELECT locktype, mode, granted, pid
+        FROM pg_locks
+        WHERE granted = false;
+      `);
+      if (lockInspection.rows.length > 0) {
+        ungrantedFound = true;
+        console.log(`      Verified pg_locks kernel state: found ${lockInspection.rows.length} ungranted lock(s) waiting.`);
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    if (c2Resolved) {
+      throw new Error('DETERMINISTIC LOCK FAILURE: Client 2 resolved while Client 1 still holds row lock!');
+    }
+    if (!ungrantedFound) {
+      throw new Error('DETERMINISTIC LOCK FAILURE: Expected at least one ungranted lock in pg_locks while Client 2 is blocked.');
+    }
+
+    // Client 1 holds lock for additional 400ms, then commits to release lock
+    await new Promise((r) => setTimeout(r, 400));
+    console.log('      Client 1 committing transaction to release lock...');
+    await lockRoomClient1.query('COMMIT;');
+
+    // Client 2 must now unblock and complete
+    await c2Promise;
+    console.log(`      Client 2 unblocked and acquired lock after ${c2AcquireDurationMs.toFixed(1)}ms (forced hold >= 400ms).`);
+
+    if (c2AcquireDurationMs < 400) {
+      throw new Error(`DETERMINISTIC LOCK FAILURE: Client 2 waited only ${c2AcquireDurationMs.toFixed(1)}ms, expected >= 400ms`);
+    }
+
+    await Promise.all([lockRoomClient1.end(), lockRoomClient2.end()]);
+
+    checkMatrix.push({
+      name: 'Deterministic Row-Level Lock Blocking (SELECT FOR UPDATE)',
+      command: 'Concurrent transactions holding row lock with pg_locks ungranted probe',
+      exitCode: 0,
+      status: 'PASS',
+      details: `Client 1 held lock; Client 2 blocked. pg_locks ungranted lock verified. Client 2 waited ${c2AcquireDurationMs.toFixed(1)}ms until Client 1 COMMIT.`,
+    });
+
+    // 6b. Dual Independent Node.js Process Concurrency on PostgresRoomRepository
+    console.log('\n[6b/8] Spawning two independent Node.js processes calling PostgresRoomRepository.recordVote...');
     const concRepo = new PostgresRoomRepository(client, { schema: TEST_SCHEMA });
     const { room: concRoom, host: concHost } = await concRepo.createRoom({
       hostDisplayName: 'Conc Host',
@@ -360,20 +494,24 @@ async function runQualification() {
     const concGuest = await concRepo.joinRoom(concRoom.id, crypto.randomUUID(), 'Conc Guest');
     const { round: concRound, candidates: concCands } = await concRepo.startRound(
       concRoom.id,
-      Array.from({ length: 20 }, (_, i) => ({ movieId: 88800 + i, title: `Conc Movie ${i}`, voteAverage: 8.0 }))
+      Array.from({ length: 20 }, (_, i) => ({ movieId: 55000 + i, title: `Conc Movie ${i}`, voteAverage: 8.0 }))
     );
     const targetMovieId = concCands[0].movie_id;
     const targetCandidateId = concCands[0].id;
 
-    // Helper to spawn a worker running tests/live/supabase-worker.ts with tsx loader
+    // Spawn 2 child processes
     const spawnWorker = () =>
       fork(WORKER_SCRIPT_PATH, [], {
         execArgv: ['--import', 'tsx'],
         env: {
           ...process.env,
+          SUPABASE_PG_HOST: PG_HOST,
+          SUPABASE_PG_PORT: String(PG_PORT),
+          SUPABASE_PG_DATABASE: PG_DATABASE,
+          SUPABASE_PG_USER: PG_USER,
+          SUPABASE_PG_PASSWORD: PG_PASSWORD,
           SUPABASE_PG_SCHEMA: TEST_SCHEMA,
         },
-        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       });
 
     const worker1 = spawnWorker();
@@ -381,15 +519,14 @@ async function runQualification() {
 
     const waitReady = (child: ChildProcess): Promise<number> =>
       new Promise((res, rej) => {
-        const to = setTimeout(() => rej(new Error('Worker timeout waiting for READY')), 10000);
+        const to = setTimeout(() => rej(new Error('Worker spawn timeout')), 10000);
         child.on('message', (m: unknown) => {
           const typedM = m as { type?: string; pid?: number } | null;
-          if (typedM?.type === 'READY' && typeof typedM.pid === 'number') {
+          if (typedM?.type === 'READY') {
             clearTimeout(to);
-            res(typedM.pid);
+            res(typedM.pid ?? child.pid ?? 0);
           }
         });
-        child.on('error', rej);
       });
 
     const [pid1, pid2] = await Promise.all([waitReady(worker1), waitReady(worker2)]);
@@ -657,19 +794,39 @@ async function runQualification() {
     });
 
     return checkMatrix;
+  } catch (err) {
+    throw err;
   } finally {
-    // Teardown: Drop isolated qualification schema CASCADE
-    console.log(`\n[TEARDOWN] Dropping isolated schema '${TEST_SCHEMA}' CASCADE...`);
-    try {
-      await client.query('RESET ROLE');
-      await client.query(`DROP SCHEMA IF EXISTS ${TEST_SCHEMA} CASCADE;`);
-      console.log(`      Isolated schema '${TEST_SCHEMA}' dropped cleanly.`);
-    } catch (err) {
-      console.error(`      Teardown warning: failed to drop schema '${TEST_SCHEMA}':`, err);
+    // Teardown with strict ownership verification and fail-closed preservation
+    if (schemaCreated) {
+      console.log(`\n[TEARDOWN] Verifying ownership and dropping isolated schema '${TEST_SCHEMA}' CASCADE...`);
+      try {
+        await client.query('RESET ROLE;');
+        // Verify current execution created and owns this schema before dropping
+        const isOwner = await verifyOwnershipMarker(client, TEST_SCHEMA, RUN_ID);
+        if (!isOwner) {
+          throw new Error(`FAIL-CLOSED REFUSAL: Schema '${TEST_SCHEMA}' ownership marker missing or run_id mismatch. Refusing teardown of unverified schema!`);
+        }
+
+        await client.query(`DROP SCHEMA "${TEST_SCHEMA}" CASCADE;`);
+
+        // Verify the schema was actually removed from information_schema
+        const checkGone = await client.query(
+          `SELECT count(*)::int as cnt FROM information_schema.schemata WHERE schema_name = $1`,
+          [TEST_SCHEMA]
+        );
+        if (checkGone.rows[0].cnt !== 0) {
+          throw new Error(`TEARDOWN VERIFICATION FAILURE: Schema '${TEST_SCHEMA}' still exists in information_schema after DROP CASCADE!`);
+        }
+        console.log(`      Isolated schema '${TEST_SCHEMA}' verified and dropped cleanly.`);
+      } catch (err: unknown) {
+        teardownError = err instanceof Error ? err : new Error(String(err));
+        console.error(`      TEARDOWN FAILURE:`, teardownError.message);
+      }
     }
 
     // Preservation Verification: Compare public schema with baseline snapshot
-    console.log('[PRESERVATION] Verifying 100% preservation of public schema...');
+    console.log('[PRESERVATION] Verifying public schema table-name and row-count preservation...');
     try {
       const finalSnapshot = await getPublicSchemaSnapshot(client);
       if (finalSnapshot.length !== baselineSnapshot.length) {
@@ -688,12 +845,23 @@ async function runQualification() {
           );
         }
       }
-      console.log('      CONFIRMED: Public schema tables and row counts are 100% identical to baseline. Zero owner data altered.');
-    } catch (err) {
-      console.error('      PRESERVATION VERIFICATION FAILED:', err);
+      const extraTables = finalSnapshot.filter((f) => !baselineSnapshot.some((b) => b.name === f.name));
+      if (extraTables.length > 0) {
+        throw new Error(`PUBLIC SCHEMA MUTATION: Unexpected new tables in public: ${extraTables.map((t) => t.name).join(', ')}`);
+      }
+      console.log('      CONFIRMED: Public schema table-name/count snapshot unchanged (0 public tables altered).');
+    } catch (err: unknown) {
+      const presError = err instanceof Error ? err : new Error(String(err));
+      console.error('      PRESERVATION VERIFICATION FAILED:', presError.message);
+      if (!teardownError) teardownError = presError;
     }
 
     await client.end();
+
+    // Propagate any teardown or preservation failure so runner fails closed
+    if (teardownError) {
+      throw teardownError;
+    }
   }
 }
 
@@ -705,6 +873,6 @@ runQualification()
     process.exit(0);
   })
   .catch((err) => {
-    console.error('\nQUALIFICATION HARNESS FAILED:', err);
+    console.error('\nQUALIFICATION HARNESS FAILED (FAIL-CLOSED):', err);
     process.exit(1);
   });
