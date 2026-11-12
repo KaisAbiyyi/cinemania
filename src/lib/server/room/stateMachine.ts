@@ -1,4 +1,4 @@
-import { RoomStatus, DEFAULT_INACTIVITY_TTL_SECONDS, MIN_PARTICIPANTS, MAX_PARTICIPANTS, DECK_SIZE } from "@/db/schema";
+import { RoomStatus, DEFAULT_INACTIVITY_TTL_SECONDS, MIN_PARTICIPANTS, MAX_PARTICIPANTS, DECK_SIZE } from "../../../db/schema";
 
 export class InvalidStateTransitionError extends Error {
   readonly status = 409;

@@ -745,3 +745,9 @@ export class SqliteRoomRepository {
     return rows as unknown as RoomEvent[];
   }
 }
+
+export {
+  PostgresRoomRepository,
+  type PostgresRepositoryOptions,
+} from "./postgresRoomRepository";
+
