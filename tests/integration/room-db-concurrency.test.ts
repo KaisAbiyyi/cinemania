@@ -688,8 +688,8 @@ describe("CINE-012: Parallel Transition Contention & Deterministic Concurrency",
 });
 
 describe("CINE-012: PostgreSQL DDL Security & RLS Policy Assertions", () => {
-  it("verifies get_room_by_code is revoked from anon and authenticated, granted exclusively to service_role", () => {
-    // get_room_by_code revoked from anon and authenticated
+  it("verifies fail-closed table permissions, RPC lockdown, and ADR-003 §4.2.1 least-privilege policies", () => {
+    // 1. get_room_by_code revoked from anon and authenticated, granted exclusively to service_role
     expect(PG_UP_MIGRATION_SQL).toMatch(
       /REVOKE ALL ON FUNCTION get_room_by_code\(VARCHAR\(6\)\) FROM PUBLIC, anon, authenticated;/
     );
@@ -700,32 +700,55 @@ describe("CINE-012: PostgreSQL DDL Security & RLS Policy Assertions", () => {
       /GRANT EXECUTE ON FUNCTION get_room_by_code\(VARCHAR\(6\)\) TO.*anon/
     );
 
-    // room_participants self-read policy per ADR-003 §4.2.1
+    // 2. is_current_user_room_participant revoked from PUBLIC and anon
     expect(PG_UP_MIGRATION_SQL).toMatch(
-      /CREATE POLICY participants_self_read_policy ON room_participants/
+      /REVOKE ALL ON FUNCTION is_current_user_room_participant\(UUID\) FROM PUBLIC;/
     );
     expect(PG_UP_MIGRATION_SQL).toMatch(
-      /USING \(participant_id = \(auth\.jwt\(\) ->> 'sub'\)::uuid\);/
+      /GRANT EXECUTE ON FUNCTION is_current_user_room_participant\(UUID\) TO authenticated, service_role;/
+    );
+    expect(PG_UP_MIGRATION_SQL).not.toMatch(
+      /GRANT EXECUTE ON FUNCTION is_current_user_room_participant\(UUID\) TO.*anon/
+    );
+
+    // 3. Fail-closed table permissions: anon has zero read or write privileges on any table
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /REVOKE ALL ON TABLE rooms, room_participants, rounds, candidates, votes, room_events FROM PUBLIC, anon;/
+    );
+    expect(PG_UP_MIGRATION_SQL).not.toMatch(
+      /GRANT (SELECT|ALL|INSERT|UPDATE|DELETE) ON TABLE.*TO.*anon/
+    );
+
+    // 4. Authenticated role granted minimal SELECT on public models, subject to RLS
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /GRANT SELECT ON TABLE rooms, room_participants, rounds, candidates TO authenticated;/
+    );
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /REVOKE ALL ON TABLE votes, room_events FROM authenticated;/
+    );
+
+    // 5. Service role granted full management access
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /GRANT ALL ON TABLE rooms, room_participants, rounds, candidates, votes, room_events TO service_role;/
+    );
+
+    // 6. RLS Policies explicitly scoped TO authenticated
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /CREATE POLICY rooms_participant_read_policy ON rooms\s+FOR SELECT TO authenticated/
+    );
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /CREATE POLICY rounds_read_policy ON rounds\s+FOR SELECT TO authenticated/
+    );
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /CREATE POLICY candidates_read_policy ON candidates\s+FOR SELECT TO authenticated/
+    );
+
+    // 7. room_participants self-read policy per ADR-003 §4.2.1
+    expect(PG_UP_MIGRATION_SQL).toMatch(
+      /CREATE POLICY participants_self_read_policy ON room_participants\s+FOR SELECT TO authenticated\s+USING \(participant_id = \(auth\.jwt\(\) ->> 'sub'\)::uuid\);/
     );
     expect(PG_UP_MIGRATION_SQL).not.toMatch(
       /CREATE POLICY participants_room_member_read_policy/
     );
-
-    // Private tables votes and room_events locked down
-    expect(PG_UP_MIGRATION_SQL).toMatch(
-      /REVOKE ALL ON TABLE votes, room_events FROM anon, authenticated, PUBLIC;/
-    );
-    expect(PG_UP_MIGRATION_SQL).toMatch(
-      /GRANT ALL ON TABLE votes, room_events TO service_role;/
-    );
   });
-});
-
-describe("CINE-012: Live PostgreSQL Qualification Gate", () => {
-  it.skipIf(!process.env.DATABASE_URL)(
-    "evaluates live PostgreSQL qualification status against real database",
-    () => {
-      expect(process.env.DATABASE_URL).toBeDefined();
-    }
-  );
 });

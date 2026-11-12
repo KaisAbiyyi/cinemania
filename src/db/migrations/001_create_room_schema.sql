@@ -207,9 +207,10 @@ ALTER TABLE candidates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE votes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE room_events ENABLE ROW LEVEL SECURITY;
 
--- P1-A Fix: Rooms are only viewable by verified room participants (no unrestricted SELECT * FROM rooms)
+-- Rooms: viewable only by verified room participants with authenticated role
 CREATE POLICY rooms_participant_read_policy ON rooms
-  FOR SELECT USING (is_current_user_room_participant(id));
+  FOR SELECT TO authenticated
+  USING (is_current_user_room_participant(id));
 
 -- ADR-003 §4.2.1 Least-Privilege Privacy Policy:
 -- Participants can ONLY read their own participant record (prevents guest UUID/identity enumeration)
@@ -217,17 +218,26 @@ CREATE POLICY participants_self_read_policy ON room_participants
   FOR SELECT TO authenticated
   USING (participant_id = (auth.jwt() ->> 'sub')::uuid);
 
--- Rounds: viewable only by room participants
+-- Rounds: viewable only by room participants with authenticated role
 CREATE POLICY rounds_read_policy ON rounds
-  FOR SELECT USING (is_current_user_room_participant(room_id));
+  FOR SELECT TO authenticated
+  USING (is_current_user_room_participant(room_id));
 
--- Candidates: viewable only by room participants
+-- Candidates: viewable only by room participants with authenticated role
 CREATE POLICY candidates_read_policy ON candidates
-  FOR SELECT USING (is_current_user_room_participant(room_id));
+  FOR SELECT TO authenticated
+  USING (is_current_user_room_participant(room_id));
 
--- 11. Explicit Table Permissions (P1-D Fix)
--- Lock down private tables: votes and room_events are never directly selectable or writable by clients
-REVOKE ALL ON TABLE votes, room_events FROM anon, authenticated, PUBLIC;
-GRANT ALL ON TABLE votes, room_events TO service_role;
+-- 11. Explicit Table Permissions (Fail-Closed Least-Privilege Hardening)
+-- Revoke all table privileges from PUBLIC and anon.
+-- Unauthenticated clients (anon) have zero table-level read or write permissions.
+REVOKE ALL ON TABLE rooms, room_participants, rounds, candidates, votes, room_events FROM PUBLIC, anon;
 
-GRANT SELECT ON TABLE rooms, room_participants, rounds, candidates TO anon, authenticated, service_role;
+-- Authenticated guests can only SELECT rooms, room_participants, rounds, candidates subject to RLS
+GRANT SELECT ON TABLE rooms, room_participants, rounds, candidates TO authenticated;
+
+-- Private tables (votes, room_events) are completely inaccessible to authenticated clients
+REVOKE ALL ON TABLE votes, room_events FROM authenticated;
+
+-- Server authority (service_role) has full management access across all tables
+GRANT ALL ON TABLE rooms, room_participants, rounds, candidates, votes, room_events TO service_role;
