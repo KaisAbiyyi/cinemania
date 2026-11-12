@@ -1,31 +1,30 @@
 import { NextResponse } from "next/server";
 import tmdbApi from "@/services/tmdbApi";
+import { handleApiError } from "@/lib/api/errorResponse";
+import {
+  ALLOWED_SEARCH_KEYWORD_KEYS,
+  extractAndGuardQueryParams,
+  searchKeywordSchema,
+} from "@/lib/schemas/discoverSearch";
 
 /**
- * API Route untuk mencari film berdasarkan query.
+ * Validated API Route for TMDB Keyword Search.
  */
 export async function GET(request: Request) {
-    const { searchParams } = new URL(request.url);
-    const query = searchParams.get("q");
+  try {
+    const url = new URL(request.url);
+    const rawParams = extractAndGuardQueryParams(url.searchParams, ALLOWED_SEARCH_KEYWORD_KEYS);
+    const validated = searchKeywordSchema.parse(rawParams);
 
-    if (!query) {
-        return NextResponse.json(
-            { error: "Query parameter 'q' is required" },
-            { status: 400 }
-        );
-    }
+    const query = validated.q || validated.query;
+    const upstreamParams = {
+      query,
+      page: validated.page,
+    };
 
-    try {
-        // Fetch data dari TMDB API menggunakan instance tmdbApi
-        const { data } = await tmdbApi.get(`/search/tv`, {
-            params: { query },
-        });
-        return NextResponse.json(data);
-    } catch (error: unknown) {
-        console.error("Error fetching tv search results:", error);
-        return NextResponse.json(
-            { error: "Failed to fetch tv search results" },
-            { status: 500 }
-        );
-    }
+    const { data } = await tmdbApi.get("/search/keyword", { params: upstreamParams });
+    return NextResponse.json(data);
+  } catch (error: unknown) {
+    return handleApiError(error);
+  }
 }
