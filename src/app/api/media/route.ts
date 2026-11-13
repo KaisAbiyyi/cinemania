@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
 import tmdbApi from "@/services/tmdbApi";
 import { handleApiError } from "@/lib/api/errorResponse";
+import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
+import { cachedServerFetch, jsonWithCachePolicy } from "@/lib/server/cache/serverCache";
 import {
   ALLOWED_DISCOVER_KEYS,
   discoverMediaSchema,
@@ -18,6 +19,7 @@ import {
  * - Protocol injection protection
  * - Explicit adult policy (default: false)
  * - Normalized error mapping (400 for invalid input, 502/503/429 for upstream)
+ * - Bounded server caching & singleflight request deduplication (CINE-008)
  */
 export async function GET(request: Request) {
   try {
@@ -39,8 +41,16 @@ export async function GET(request: Request) {
       }
     }
 
-    const { data } = await tmdbApi.get(endpoint, { params: upstreamParams });
-    return NextResponse.json(data);
+    const policy = ENDPOINT_CACHE_POLICIES.media_discover;
+    const { data, cacheStatus } = await cachedServerFetch(
+      policy,
+      { mediaType, ...upstreamParams },
+      async () => {
+        const res = await tmdbApi.get(endpoint, { params: upstreamParams });
+        return res.data;
+      }
+    );
+    return jsonWithCachePolicy(data, policy, cacheStatus);
   } catch (error: unknown) {
     return handleApiError(error);
   }

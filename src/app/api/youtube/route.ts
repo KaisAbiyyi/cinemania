@@ -1,10 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
+import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
+import {
+    cacheConcurrencyLimitResponse,
+    cachedServerFetch,
+    jsonWithCachePolicy,
+} from "@/lib/server/cache/serverCache";
 
 // Rate limiting setup
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
 const MAX_REQUESTS_PER_WINDOW = 10;
 const ipRequestCounts = new Map<string, { count: number; resetTime: number }>();
+
+class YoutubeUpstreamError extends Error {
+    readonly status: number;
+    constructor(status: number, message: string) {
+        super(message);
+        this.status = status;
+    }
+}
 
 export async function GET(request: NextRequest) {
     try {
@@ -17,7 +31,7 @@ export async function GET(request: NextRequest) {
         if (!isRateLimitOk(clientIp)) {
             return NextResponse.json(
                 { error: "Too many requests, please try again later" },
-                { status: 429 }
+                { status: 429, headers: { "Cache-Control": "no-store" } }
             );
         }
 
@@ -26,7 +40,10 @@ export async function GET(request: NextRequest) {
         const videoId = searchParams.get("videoId");
 
         if (!videoId) {
-            return NextResponse.json({ error: "Missing videoId parameter" }, { status: 400 });
+            return NextResponse.json(
+                { error: "Missing videoId parameter" },
+                { status: 400, headers: { "Cache-Control": "no-store" } }
+            );
         }
 
         // Fetch YouTube video data
@@ -34,46 +51,57 @@ export async function GET(request: NextRequest) {
         if (!youtubeApiKey) {
             return NextResponse.json(
                 { error: "Server configuration error" },
-                { status: 500 }
+                { status: 500, headers: { "Cache-Control": "no-store" } }
             );
         }
 
-        const youtubeApiUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${videoId}&key=${youtubeApiKey}`;
+        const policy = ENDPOINT_CACHE_POLICIES.youtube_video;
+        const { data: videoDetails, cacheStatus } = await cachedServerFetch(
+            policy,
+            { videoId },
+            async () => {
+                const youtubeApiUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${encodeURIComponent(videoId)}&key=${youtubeApiKey}`;
+                const response = await fetch(youtubeApiUrl);
 
-        const response = await fetch(youtubeApiUrl, {
-            next: { revalidate: 3600 } // Cache for 1 hour
-        });
+                if (!response.ok) {
+                    throw new YoutubeUpstreamError(response.status, "Failed to fetch video data");
+                }
 
-        if (!response.ok) {
-            return NextResponse.json(
-                { error: "Failed to fetch video data" },
-                { status: response.status }
-            );
-        }
+                const data = await response.json();
+                if (!data.items || data.items.length === 0) {
+                    throw new YoutubeUpstreamError(404, "Video not found");
+                }
 
-        const data = await response.json();
+                return {
+                    id: data.items[0].id,
+                    title: data.items[0].snippet.title,
+                    description: data.items[0].snippet.description,
+                    thumbnails: data.items[0].snippet.thumbnails,
+                    channelTitle: data.items[0].snippet.channelTitle,
+                    publishedAt: data.items[0].snippet.publishedAt,
+                    duration: data.items[0].contentDetails.duration,
+                    viewCount: data.items[0].statistics.viewCount,
+                };
+            }
+        );
 
-        // Return simplified video details
-        if (data.items && data.items.length > 0) {
-            const videoDetails = {
-                id: data.items[0].id,
-                title: data.items[0].snippet.title,
-                description: data.items[0].snippet.description,
-                thumbnails: data.items[0].snippet.thumbnails,
-                channelTitle: data.items[0].snippet.channelTitle,
-                publishedAt: data.items[0].snippet.publishedAt,
-                duration: data.items[0].contentDetails.duration,
-                viewCount: data.items[0].statistics.viewCount,
-            };
-
-            return NextResponse.json(videoDetails);
-        } else {
-            return NextResponse.json({ error: "Video not found" }, { status: 404 });
-        }
-
+        return jsonWithCachePolicy(videoDetails, policy, cacheStatus);
     } catch (error) {
+        const overloadResponse = cacheConcurrencyLimitResponse(error);
+        if (overloadResponse) {
+            return overloadResponse;
+        }
+        if (error instanceof YoutubeUpstreamError) {
+            return NextResponse.json(
+                { error: error.message },
+                { status: error.status, headers: { "Cache-Control": "no-store" } }
+            );
+        }
         console.error("Error fetching YouTube video:", error);
-        return NextResponse.json({ error: "Failed to fetch video data" }, { status: 500 });
+        return NextResponse.json(
+            { error: "Failed to fetch video data" },
+            { status: 500, headers: { "Cache-Control": "no-store" } }
+        );
     }
 }
 

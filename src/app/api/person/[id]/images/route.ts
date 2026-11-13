@@ -1,25 +1,15 @@
-import { NextResponse } from "next/server";
-import tmdbApi from "@/services/tmdbApi";
+import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
+import { handleCachedTmdbEntityResource } from "@/lib/server/cache/tmdbRouteHelper";
 
-/**
- * API Route untuk mendapatkan images person berdasarkan ID.
- */
 export async function GET(
-    request: Request,
-   context: { params: Promise<{ id: string }> }
+  _request: Request,
+  context: { params: Promise<{ id: string }> }
 ) {
-    // Await params sebelum mendestructure
-    const { id } = await context.params;
-
-    try {
-        // Fetch data dari TMDB API menggunakan instance tmdbApi
-        const { data } = await tmdbApi.get(`/person/${id}/images`);
-        return NextResponse.json(data);
-    } catch (error: unknown) {
-        console.error("Error fetching person images:", error);
-        return NextResponse.json(
-            { error: "Failed to fetch person images" },
-            { status: 500 }
-        );
-    }
+  const { id } = await context.params;
+  return handleCachedTmdbEntityResource({
+    id,
+    policy: ENDPOINT_CACHE_POLICIES.person_images,
+    endpoint: `/person/${id}/images`,
+    errorMessage: "Failed to fetch person images",
+  });
 }

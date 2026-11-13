@@ -1,0 +1,440 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import axios from "axios";
+import { NextRequest } from "next/server";
+import { GET as getDiscoverMedia } from "@/app/api/media/route";
+import { GET as getTrendingMedia } from "@/app/api/media/trending/route";
+import { GET as getKeywords } from "@/app/api/keywords/route";
+import { GET as searchKeyword } from "@/app/api/search/keyword/route";
+import { GET as searchMovie } from "@/app/api/search/movie/route";
+import { GET as searchPerson } from "@/app/api/search/person/route";
+import { GET as searchTv } from "@/app/api/search/tv/route";
+import { GET as getGenres } from "@/app/api/genres/route";
+import { GET as getLanguages } from "@/app/api/languages/route";
+import { GET as getProviderMedia } from "@/app/api/providers/[mediaType]/route";
+import { GET as getProviderRegions } from "@/app/api/providers/region/route";
+import { GET as getMediaDetail } from "@/app/api/media/[id]/route";
+import { GET as getPersonDetail } from "@/app/api/person/[id]/route";
+import { GET as getYoutube } from "@/app/api/youtube/route";
+import { GET as getGeolocation } from "@/app/api/geolocation/route";
+import tmdbApi, { TmdbApiError } from "@/services/tmdbApi";
+import { getServerCacheMetrics } from "@/lib/server/cache/serverCache";
+import { mockGenres, mockLanguages, mockMoviesList } from "../fixtures/tmdb-fixtures";
+
+vi.mock("next/headers", () => ({
+  headers: vi.fn(async () => new Headers({ "x-forwarded-for": "203.0.113.77" })),
+}));
+
+function percentile(sortedValues: number[], p: number): number {
+  if (sortedValues.length === 0) return 0;
+  const index = Math.ceil((p / 100) * sortedValues.length) - 1;
+  return sortedValues[Math.max(0, Math.min(index, sortedValues.length - 1))];
+}
+
+describe("CINE-008: Server Caching & Request Deduplication API Integration + Latency Benchmark", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("coalesces concurrent discover requests and serves repeat queries from warm cache with public headers", async () => {
+    const spy = vi.spyOn(tmdbApi, "get").mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      return { data: mockMoviesList } as never;
+    });
+
+    // 10 concurrent identical discover requests -> 1 upstream call
+    const concurrentResponses = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        getDiscoverMedia(
+          new Request(
+            "http://localhost:3000/api/media?mediaType=movie&page=1&language=en-US&with_genres=28"
+          )
+        )
+      )
+    );
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const statuses = concurrentResponses.map((r) => r.headers.get("X-Cache"));
+    expect(statuses.filter((s) => s === "MISS")).toHaveLength(1);
+    expect(statuses.filter((s) => s === "DEDUP")).toHaveLength(9);
+
+    for (const res of concurrentResponses) {
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Cache-Control")).toContain("s-maxage=300");
+      expect(res.headers.get("X-Cache-Tier")).toBe("SEMISTATIC");
+    }
+
+    // Reordered query params hit the exact same canonical cache key -> HIT (0 additional upstream calls)
+    const warmRes = await getDiscoverMedia(
+      new Request(
+        "http://localhost:3000/api/media?with_genres=28&language=en-US&page=1&mediaType=movie"
+      )
+    );
+    expect(warmRes.status).toBe(200);
+    expect(warmRes.headers.get("X-Cache")).toBe("HIT");
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("prevents language, filter, and adult policy cross-key leakage across all public endpoints", async () => {
+    const spy = vi.spyOn(tmdbApi, "get").mockImplementation(async (url, config) => {
+      const params = (config as { params?: Record<string, unknown> } | undefined)?.params ?? {};
+      return {
+        data: {
+          endpoint: url,
+          language: params.language ?? null,
+          genres: params.with_genres ?? null,
+          include_adult: params.include_adult ?? null,
+        },
+      } as never;
+    });
+
+    const resEn = await getDiscoverMedia(
+      new Request("http://localhost:3000/api/media?mediaType=movie&language=en-US&with_genres=28")
+    );
+    const resId = await getDiscoverMedia(
+      new Request("http://localhost:3000/api/media?mediaType=movie&language=id-ID&with_genres=28")
+    );
+    const resComedy = await getDiscoverMedia(
+      new Request("http://localhost:3000/api/media?mediaType=movie&language=en-US&with_genres=35")
+    );
+    const resAdult = await getDiscoverMedia(
+      new Request(
+        "http://localhost:3000/api/media?mediaType=movie&language=en-US&with_genres=28&include_adult=true"
+      )
+    );
+
+    expect(await resEn.json()).toMatchObject({ language: "en-US", genres: "28", include_adult: false });
+    expect(await resId.json()).toMatchObject({ language: "id-ID", genres: "28", include_adult: false });
+    expect(await resComedy.json()).toMatchObject({ language: "en-US", genres: "35", include_adult: false });
+    expect(await resAdult.json()).toMatchObject({ language: "en-US", genres: "28", include_adult: true });
+    expect(spy).toHaveBeenCalledTimes(4);
+
+    // Media detail route isolates language query parameter
+    const detailEn = await getMediaDetail(
+      new Request("http://localhost:3000/api/media/550?mediaType=movie&language=en-US"),
+      { params: Promise.resolve({ id: "550" }) }
+    );
+    const detailFr = await getMediaDetail(
+      new Request("http://localhost:3000/api/media/550?mediaType=movie&language=fr-FR"),
+      { params: Promise.resolve({ id: "550" }) }
+    );
+    expect(await detailEn.json()).toMatchObject({ endpoint: "/movie/550", language: "en-US" });
+    expect(await detailFr.json()).toMatchObject({ endpoint: "/movie/550", language: "fr-FR" });
+    expect(spy).toHaveBeenCalledTimes(6);
+  });
+
+  it("never caches upstream errors (429/500) and recovers immediately when provider succeeds", async () => {
+    const spy = vi
+      .spyOn(tmdbApi, "get")
+      .mockRejectedValueOnce(new TmdbApiError(429, "TMDB_RATE_LIMIT", "Rate limited", 15))
+      .mockResolvedValueOnce({ data: mockMoviesList } as never);
+
+    const failedRes = await getTrendingMedia(
+      new Request("http://localhost:3000/api/media/trending?mediaType=movie&timeWindow=day")
+    );
+    expect(failedRes.status).toBe(429);
+    expect(failedRes.headers.get("Retry-After")).toBe("15");
+
+    // Second request must hit upstream again (error was NOT cached) and succeed
+    const recoveredRes = await getTrendingMedia(
+      new Request("http://localhost:3000/api/media/trending?mediaType=movie&timeWindow=day")
+    );
+    expect(recoveredRes.status).toBe(200);
+    expect(recoveredRes.headers.get("X-Cache")).toBe("MISS");
+    expect(await recoveredRes.json()).toEqual(mockMoviesList);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("strictly bypasses shared cache for PRIVATE /api/geolocation across different caller IPs", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const axiosSpy = vi
+      .spyOn(axios, "get")
+      .mockResolvedValueOnce({ data: { country: "ID" } } as never)
+      .mockResolvedValueOnce({ data: { country: "JP" } } as never);
+
+    const res1 = await getGeolocation(
+      new Request("http://localhost:3000/api/geolocation", {
+        headers: { "x-forwarded-for": "203.0.113.10" },
+      })
+    );
+    const res2 = await getGeolocation(
+      new Request("http://localhost:3000/api/geolocation", {
+        headers: { "x-forwarded-for": "198.51.100.22" },
+      })
+    );
+
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+    expect(await res1.json()).toEqual({ region: "ID" });
+    expect(await res2.json()).toEqual({ region: "JP" });
+
+    for (const res of [res1, res2]) {
+      expect(res.headers.get("Cache-Control")).toBe(
+        "private, no-store, no-cache, must-revalidate"
+      );
+      expect(res.headers.get("X-Cache")).toBe("BYPASS");
+      expect(res.headers.get("X-Cache-Tier")).toBe("PRIVATE");
+      expect(res.headers.get("Vary")).toContain("X-Forwarded-For");
+    }
+    expect(axiosSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("applies STATIC caching headers and reduces upstream calls on genres, languages, and providers", async () => {
+    const spy = vi.spyOn(tmdbApi, "get").mockImplementation(async (endpoint) => {
+      if (endpoint === "/genre/movie/list") return { data: { genres: mockGenres.movie } } as never;
+      if (endpoint === "/configuration/languages") return { data: mockLanguages } as never;
+      if (endpoint === "/watch/providers/movie") return { data: { results: [] } } as never;
+      return { data: {} } as never;
+    });
+
+    await getGenres(new Request("http://localhost:3000/api/genres?type=movie"));
+    const g2 = await getGenres(new Request("http://localhost:3000/api/genres?type=movie"));
+    expect(g2.headers.get("X-Cache")).toBe("HIT");
+    expect(g2.headers.get("X-Cache-Tier")).toBe("STATIC");
+    expect(g2.headers.get("Cache-Control")).toContain("s-maxage=86400");
+
+    await getLanguages();
+    const l2 = await getLanguages();
+    expect(l2.headers.get("X-Cache")).toBe("HIT");
+
+    await getProviderMedia(
+      new Request("http://localhost:3000/api/providers/movie?language=en-US&watch_region=US"),
+      { params: Promise.resolve({ mediaType: "movie" }) }
+    );
+    const p2 = await getProviderMedia(
+      new Request("http://localhost:3000/api/providers/movie?language=en-US&watch_region=US"),
+      { params: Promise.resolve({ mediaType: "movie" }) }
+    );
+    expect(p2.headers.get("X-Cache")).toBe("HIT");
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  it("measures and reports matched same-workload (150 vs 150) upstream calls and p95 latency in local mocked microbenchmark", async () => {
+    const UPSTREAM_LATENCY_MS = 10;
+    let upstreamCalls = 0;
+
+    vi.spyOn(tmdbApi, "get").mockImplementation(async () => {
+      upstreamCalls += 1;
+      await new Promise((r) => setTimeout(r, UPSTREAM_LATENCY_MS));
+      return { data: mockMoviesList } as never;
+    });
+
+    // BEFORE baseline (uncached direct tmdbApi.get): exact same 150-request 3-wave workload:
+    // - Wave 1: 5 concurrent discover calls
+    // - Wave 2: 100 sequential repeat discover calls
+    // - Wave 3: 45 sequential search calls
+    const beforeDurations: number[] = [];
+    const beforeCallsStart = upstreamCalls;
+
+    await Promise.all(
+      Array.from({ length: 5 }, async () => {
+        const start = performance.now();
+        await tmdbApi.get("/discover/movie", { params: { page: 1 } });
+        beforeDurations.push(performance.now() - start);
+      })
+    );
+    for (let i = 0; i < 100; i++) {
+      const start = performance.now();
+      await tmdbApi.get("/discover/movie", { params: { page: 1 } });
+      beforeDurations.push(performance.now() - start);
+    }
+    for (let i = 0; i < 45; i++) {
+      const start = performance.now();
+      await tmdbApi.get("/search/movie", { params: { query: "Inception", page: 1 } });
+      beforeDurations.push(performance.now() - start);
+    }
+
+    const beforeUpstreamCalls = upstreamCalls - beforeCallsStart;
+    beforeDurations.sort((a, b) => a - b);
+    const beforeP95Ms = percentile(beforeDurations, 95);
+
+    // AFTER: identical 150-request 3-wave workload routed through cached API handlers:
+    // - Wave 1: 5 concurrent identical discover requests (1 miss + 4 deduped)
+    // - Wave 2: 100 sequential repeat discover requests (100 warm hits)
+    // - Wave 3: 45 sequential search requests (1 miss + 44 warm hits)
+    upstreamCalls = 0;
+    const afterDurations: number[] = [];
+
+    const wave1 = await Promise.all(
+      Array.from({ length: 5 }, async () => {
+        const start = performance.now();
+        const res = await getDiscoverMedia(
+          new Request("http://localhost:3000/api/media?mediaType=movie&page=1")
+        );
+        afterDurations.push(performance.now() - start);
+        return res;
+      })
+    );
+    expect(wave1.every((r) => r.status === 200)).toBe(true);
+
+    for (let i = 0; i < 100; i++) {
+      const start = performance.now();
+      const res = await getDiscoverMedia(
+        new Request("http://localhost:3000/api/media?mediaType=movie&page=1")
+      );
+      afterDurations.push(performance.now() - start);
+      expect(res.headers.get("X-Cache")).toBe("HIT");
+    }
+
+    for (let i = 0; i < 45; i++) {
+      const start = performance.now();
+      const res = await searchMovie(
+        new Request("http://localhost:3000/api/search/movie?q=Inception&page=1")
+      );
+      afterDurations.push(performance.now() - start);
+      expect(res.status).toBe(200);
+    }
+
+    const afterUpstreamCalls = upstreamCalls;
+    afterDurations.sort((a, b) => a - b);
+    const afterP95Ms = percentile(afterDurations, 95);
+    const metrics = getServerCacheMetrics();
+
+    console.info(
+      `[CINE-008 LOCAL MICROBENCHMARK (mocked upstream, matched 150-request workload — NOT production Vercel latency)] ` +
+        `beforeRequests=${beforeDurations.length}, afterRequests=${afterDurations.length}, ` +
+        `beforeUpstreamCalls=${beforeUpstreamCalls}, afterUpstreamCalls=${afterUpstreamCalls}, ` +
+        `beforeP95Ms=${beforeP95Ms.toFixed(2)}, afterP95Ms=${afterP95Ms.toFixed(2)}, ` +
+        `hits=${metrics.hits}, deduped=${metrics.dedupedInFlight}, misses=${metrics.misses}`
+    );
+
+    expect(beforeDurations).toHaveLength(150);
+    expect(afterDurations).toHaveLength(150);
+    expect(beforeUpstreamCalls).toBe(150);
+    expect(afterUpstreamCalls).toBe(2); // 1 discover + 1 search across 150 identical-workload requests
+    expect(afterP95Ms).toBeLessThan(beforeP95Ms);
+    expect(metrics.hits).toBe(144);
+    expect(metrics.dedupedInFlight).toBe(4);
+    expect(metrics.misses).toBe(2);
+  });
+
+  it("returns HTTP 503 with no-store and Retry-After consistently across all cached routes when cache concurrency limit is saturated", async () => {
+    const releaseHolders: Array<() => void> = [];
+    vi.spyOn(tmdbApi, "get").mockImplementation(async (endpoint) => {
+      if (endpoint === "/discover/movie" && releaseHolders.length < 256) {
+        await new Promise<void>((resolve) => {
+          releaseHolders.push(resolve);
+        });
+        return { data: mockMoviesList } as never;
+      }
+      if (endpoint === "/genre/movie/list") {
+        return { data: { genres: mockGenres.movie } } as never;
+      }
+      return { data: mockMoviesList } as never;
+    });
+    vi.spyOn(axios, "get").mockResolvedValue({ data: { country: "SG" } } as never);
+
+    // Occupy all 256 in-flight slots cleanly using distinct valid /api/media pages (1..256)
+    const activeHolders = Array.from({ length: 256 }, (_, idx) =>
+      getDiscoverMedia(
+        new Request(`http://localhost:3000/api/media?mediaType=movie&page=${idx + 1}`)
+      )
+    );
+
+    for (let tick = 0; tick < 20 && getServerCacheMetrics().inFlightCount < 256; tick += 1) {
+      await Promise.resolve();
+    }
+    expect(getServerCacheMetrics().inFlightCount).toBe(256);
+
+    const saturatedCalls: Array<{ name: string; run: () => Promise<Response> }> = [
+      // handleApiError routes
+      {
+        name: "GET /api/media",
+        run: () => getDiscoverMedia(new Request("http://localhost:3000/api/media?mediaType=movie&page=300")),
+      },
+      {
+        name: "GET /api/media/trending",
+        run: () => getTrendingMedia(new Request("http://localhost:3000/api/media/trending?mediaType=movie&timeWindow=day")),
+      },
+      {
+        name: "GET /api/keywords",
+        run: () => getKeywords(new Request("http://localhost:3000/api/keywords?q=matrix")),
+      },
+      {
+        name: "GET /api/search/keyword",
+        run: () => searchKeyword(new Request("http://localhost:3000/api/search/keyword?q=scifi")),
+      },
+      {
+        name: "GET /api/search/movie",
+        run: () => searchMovie(new Request("http://localhost:3000/api/search/movie?q=Inception")),
+      },
+      {
+        name: "GET /api/search/person",
+        run: () => searchPerson(new Request("http://localhost:3000/api/search/person?q=Nolan")),
+      },
+      {
+        name: "GET /api/search/tv",
+        run: () => searchTv(new Request("http://localhost:3000/api/search/tv?q=Dark")),
+      },
+      // Custom catch routes
+      {
+        name: "GET /api/genres",
+        run: () => getGenres(new Request("http://localhost:3000/api/genres?type=movie")),
+      },
+      {
+        name: "GET /api/languages",
+        run: () => getLanguages(),
+      },
+      {
+        name: "GET /api/providers/[mediaType]",
+        run: () =>
+          getProviderMedia(new Request("http://localhost:3000/api/providers/movie"), {
+            params: Promise.resolve({ mediaType: "movie" }),
+          }),
+      },
+      {
+        name: "GET /api/providers/region",
+        run: () => getProviderRegions(new Request("http://localhost:3000/api/providers/region")),
+      },
+      {
+        name: "GET /api/youtube",
+        run: () => getYoutube(new NextRequest("http://localhost:3000/api/youtube?videoId=dQw4w9WgXcQ")),
+      },
+      // tmdbRouteHelper routes
+      {
+        name: "GET /api/media/[id]",
+        run: () =>
+          getMediaDetail(new Request("http://localhost:3000/api/media/550?mediaType=movie"), {
+            params: Promise.resolve({ id: "550" }),
+          }),
+      },
+      {
+        name: "GET /api/person/[id]",
+        run: () =>
+          getPersonDetail(new Request("http://localhost:3000/api/person/1"), {
+            params: Promise.resolve({ id: "1" }),
+          }),
+      },
+    ];
+
+    try {
+      for (const entry of saturatedCalls) {
+        const res = await entry.run();
+        expect(res.status, `${entry.name} should return 503 under saturation, not 500`).toBe(503);
+        expect(res.headers.get("Cache-Control")).toBe("no-store");
+        expect(res.headers.get("Retry-After")).toBe("1");
+        const body = await res.json();
+        expect(body).toMatchObject({ code: "CACHE_IN_FLIGHT_LIMIT_EXCEEDED" });
+      }
+
+      // PRIVATE routes still bypass shared concurrency capacity cleanly
+      const geoRes = await getGeolocation(
+        new Request("http://localhost:3000/api/geolocation", {
+          headers: { "x-forwarded-for": "203.0.113.10" },
+        })
+      );
+      expect(geoRes.status).toBe(200);
+      expect(geoRes.headers.get("X-Cache")).toBe("BYPASS");
+    } finally {
+      for (const resolve of releaseHolders) {
+        resolve();
+      }
+      await Promise.all(activeHolders);
+    }
+
+    // Recovery after slots drain
+    const recoveredGenres = await getGenres(
+      new Request("http://localhost:3000/api/genres?type=movie")
+    );
+    expect(recoveredGenres.status).toBe(200);
+  });
+});

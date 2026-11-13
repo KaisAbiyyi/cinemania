@@ -1,38 +1,44 @@
 import axios from "axios";
-import { NextResponse } from "next/server";
+import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
+import {
+    cacheConcurrencyLimitResponse,
+    cachedServerFetch,
+    jsonWithCachePolicy,
+} from "@/lib/server/cache/serverCache";
 
 /**
  * API Route untuk mendapatkan region berdasarkan IP menggunakan ipinfo.io.
- * Contoh request:
- * GET /api/geolocation
- *
- * Pastikan untuk mengatur environment variable IPINFO_TOKEN dengan token yang valid.
+ * Classified PRIVATE: strictly bypassed from shared caching (private, no-store).
  */
 export async function GET(request: Request) {
-    // Ambil IP dari header (fallback ke "127.0.0.1")
+    const policy = ENDPOINT_CACHE_POLICIES.geolocation;
     const ip = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "127.0.0.1";
-
-    // Ambil token dari environment (jangan lupa atur IPINFO_TOKEN di environment Anda)
-    console.log("Ini adalah IP" + ip)
     const token = process.env.IPINFO_TOKEN || "YOUR_TOKEN";
 
-    // Jika IP adalah localhost, langsung kembalikan region default
     if (ip === "127.0.0.1" || ip === "::1") {
-        return NextResponse.json({ region: "US" });
+        return jsonWithCachePolicy({ region: "US" }, policy, "BYPASS");
     }
     if (!token) {
-        return NextResponse.json({ region: "US" }, { status: 500 });
+        return jsonWithCachePolicy({ region: "US" }, policy, "BYPASS", { status: 500 });
     }
     try {
-        // Panggil API geolokasi menggunakan axios
-        const { data } = await axios.get(`https://ipinfo.io/${ip}`, {
-            params: { token },
-        });
-        const region = data.country || "US";
-        console.log("Ini adalah region" + region)
-        return NextResponse.json({ region });
+        const { data, cacheStatus } = await cachedServerFetch(
+            policy,
+            {},
+            async () => {
+                const res = await axios.get(`https://ipinfo.io/${ip}`, {
+                    params: { token },
+                });
+                return { region: res.data.country || "US" };
+            }
+        );
+        return jsonWithCachePolicy(data, policy, cacheStatus);
     } catch (error) {
+        const overloadResponse = cacheConcurrencyLimitResponse(error);
+        if (overloadResponse) {
+            return overloadResponse;
+        }
         console.error("Error fetching geolocation:", error);
-        return NextResponse.json({ region: "US" }, { status: 500 });
+        return jsonWithCachePolicy({ region: "US" }, policy, "BYPASS", { status: 500 });
     }
 }

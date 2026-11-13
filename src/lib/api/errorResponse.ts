@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { TmdbApiError, isTmdbError, TmdbConfigurationError, TmdbHostValidationError } from "@/services/tmdbApi";
+import { cacheConcurrencyLimitResponse } from "@/lib/server/cache/serverCache";
 
 export interface ApiErrorPayload {
   error: string;
@@ -56,7 +57,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
         code: "INVALID_REQUEST",
         details: fieldErrors,
       },
-      { status: 400 }
+      { status: 400, headers: { "Cache-Control": "no-store" } }
     );
   }
 
@@ -68,7 +69,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
         code: error.code,
         ...(error.details !== undefined ? { details: error.details } : {}),
       },
-      { status: 400 }
+      { status: 400, headers: { "Cache-Control": "no-store" } }
     );
   }
 
@@ -79,8 +80,14 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
         error: error.message,
         code: "INVALID_REQUEST",
       },
-      { status: 400 }
+      { status: 400, headers: { "Cache-Control": "no-store" } }
     );
+  }
+
+  // Server Cache In-Flight Concurrency Saturation
+  const cacheOverloadResponse = cacheConcurrencyLimitResponse(error);
+  if (cacheOverloadResponse) {
+    return cacheOverloadResponse;
   }
 
   // TMDB Upstream Missing / Invalid Server Configuration
@@ -91,7 +98,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
         error: "Upstream service configuration error",
         code: "UPSTREAM_CONFIG_ERROR",
       },
-      { status: 502 }
+      { status: 502, headers: { "Cache-Control": "no-store" } }
     );
   }
 
@@ -114,6 +121,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
           status: 429,
           headers: {
             "Retry-After": retryAfter,
+            "Cache-Control": "no-store",
           },
         }
       );
@@ -133,6 +141,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
           status: 503,
           headers: {
             "Retry-After": retryAfter,
+            "Cache-Control": "no-store",
           },
         }
       );
@@ -144,7 +153,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
           error: "Upstream service timeout",
           code: "GATEWAY_TIMEOUT",
         },
-        { status: 504 }
+        { status: 504, headers: { "Cache-Control": "no-store" } }
       );
     }
 
@@ -154,7 +163,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
           error: "Requested resource was not found on TMDB",
           code: "NOT_FOUND",
         },
-        { status: 404 }
+        { status: 404, headers: { "Cache-Control": "no-store" } }
       );
     }
 
@@ -165,7 +174,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
           error: "Upstream service authentication failure",
           code: "UPSTREAM_AUTH_ERROR",
         },
-        { status: 502 }
+        { status: 502, headers: { "Cache-Control": "no-store" } }
       );
     }
 
@@ -175,7 +184,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
           error: "Upstream service unavailable",
           code: "BAD_GATEWAY",
         },
-        { status: 502 }
+        { status: 502, headers: { "Cache-Control": "no-store" } }
       );
     }
 
@@ -185,7 +194,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
           error: "Unable to reach upstream TMDB service",
           code: "BAD_GATEWAY",
         },
-        { status: 502 }
+        { status: 502, headers: { "Cache-Control": "no-store" } }
       );
     }
 
@@ -194,7 +203,7 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
         error: "Upstream TMDB request failed",
         code: "BAD_GATEWAY",
       },
-      { status: 502 }
+      { status: 502, headers: { "Cache-Control": "no-store" } }
     );
   }
 
@@ -205,6 +214,6 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
       error: "Internal server error",
       code: "INTERNAL_ERROR",
     },
-    { status: 500 }
+    { status: 500, headers: { "Cache-Control": "no-store" } }
   );
 }

@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
 import tmdbApi from "@/services/tmdbApi";
 import { handleApiError } from "@/lib/api/errorResponse";
+import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
+import { cachedServerFetch, jsonWithCachePolicy } from "@/lib/server/cache/serverCache";
 import {
   ALLOWED_SEARCH_PERSON_KEYS,
   extractAndGuardQueryParams,
@@ -24,8 +25,16 @@ export async function GET(request: Request) {
       include_adult: validated.include_adult,
     };
 
-    const { data } = await tmdbApi.get("/search/person", { params: upstreamParams });
-    return NextResponse.json(data);
+    const policy = ENDPOINT_CACHE_POLICIES.search_person;
+    const { data, cacheStatus } = await cachedServerFetch(
+      policy,
+      upstreamParams,
+      async () => {
+        const res = await tmdbApi.get("/search/person", { params: upstreamParams });
+        return res.data;
+      }
+    );
+    return jsonWithCachePolicy(data, policy, cacheStatus);
   } catch (error: unknown) {
     return handleApiError(error);
   }

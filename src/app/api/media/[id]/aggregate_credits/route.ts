@@ -1,22 +1,15 @@
-// eslint-disable 
-import { NextResponse } from "next/server";
-import tmdbApi from "@/services/tmdbApi";
+import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
+import { handleCachedTmdbEntityResource } from "@/lib/server/cache/tmdbRouteHelper";
 
 export async function GET(
-    request: Request,
-    context: { params: Promise<{ id: string }> }
+  _request: Request,
+  context: { params: Promise<{ id: string }> }
 ) {
-    const { id } = await context.params;
-    const endpoint = `/tv/${id}/aggregate_credits`;
-
-    try {
-        const { data } = await tmdbApi.get(endpoint);
-        return NextResponse.json(data);
-    } catch (error: unknown) {
-        console.error("Error fetching TV aggregate credits:", error);
-        return NextResponse.json(
-            { error: "Failed to fetch TV aggregate credits." },
-            { status: 500 }
-        );
-    }
+  const { id } = await context.params;
+  return handleCachedTmdbEntityResource({
+    id,
+    policy: ENDPOINT_CACHE_POLICIES.media_aggregate_credits,
+    endpoint: `/tv/${id}/aggregate_credits`,
+    errorMessage: "Failed to fetch TV aggregate credits.",
+  });
 }
