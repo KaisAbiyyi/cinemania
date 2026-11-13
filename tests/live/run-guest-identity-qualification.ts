@@ -8,6 +8,25 @@ import path from "node:path";
 import { Client, Pool } from "pg";
 import { PostgresRoomAuthorityStore } from "../../src/lib/server/room/roomStore";
 
+// Load .env.test.local automatically when running manually in non-production qualification
+const envPath = path.join(process.cwd(), ".env.test.local");
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, "utf8");
+  for (const line of envContent.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith("#")) {
+      const idx = trimmed.indexOf("=");
+      if (idx > 0) {
+        const key = trimmed.slice(0, idx).trim();
+        const val = trimmed.slice(idx + 1).trim();
+        if (!process.env[key]) {
+          process.env[key] = val;
+        }
+      }
+    }
+  }
+}
+
 const ALLOWED_PROJECT_REF = "dmrbticnsczhyaiftrar";
 
 const PG_HOST = process.env.SUPABASE_PG_HOST || "";
@@ -88,6 +107,10 @@ async function main() {
       fs.readFileSync(path.join(process.cwd(), "src/db/migrations/002_guest_capability_sessions.sql"), "utf8"),
       TEST_SCHEMA
     );
+    const sql002Down = fs.readFileSync(
+      path.join(process.cwd(), "src/db/migrations/002_down_guest_capability_sessions.sql"),
+      "utf8"
+    );
 
     await adminClient.query(`CREATE SCHEMA "${TEST_SCHEMA}";`);
     await adminClient.query(`GRANT USAGE ON SCHEMA "${TEST_SCHEMA}" TO anon, authenticated, service_role;`);
@@ -95,19 +118,26 @@ async function main() {
     await adminClient.query(sql001);
     await adminClient.query(sql002);
 
-    // Dual independent pools simulating two serverless instances sharing PostgreSQL
-    const poolA = new Pool({ ...POOL_CONFIG, max: 3 });
-    const poolB = new Pool({ ...POOL_CONFIG, max: 3 });
-    const setSchema = async (pool: Pool) => {
-      pool.on("connect", (c) => {
-        void c.query(`SET search_path TO "${TEST_SCHEMA}", pg_temp;`);
-      });
-    };
-    await setSchema(poolA);
-    await setSchema(poolB);
+    // Confirm RLS is enabled on guest_capability_sessions
+    const rlsRes = await adminClient.query(
+      `SELECT c.relrowsecurity
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = $1 AND c.relname = 'guest_capability_sessions';`,
+      [TEST_SCHEMA]
+    );
+    if (rlsRes.rows[0]?.relrowsecurity !== true) {
+      throw new Error("SECURITY FAILURE: RLS is not enabled on guest_capability_sessions.");
+    }
+
+    // Three independent Pool instances simulating multiple serverless workers
+    const poolA = new Pool({ ...POOL_CONFIG, max: 6 });
+    const poolB = new Pool({ ...POOL_CONFIG, max: 6 });
+    const poolC = new Pool({ ...POOL_CONFIG, max: 2 });
 
     const storeA = new PostgresRoomAuthorityStore(poolA, { schema: TEST_SCHEMA });
     const storeB = new PostgresRoomAuthorityStore(poolB, { schema: TEST_SCHEMA });
+    const storeC = new PostgresRoomAuthorityStore(poolC, { schema: TEST_SCHEMA });
 
     try {
       const hostId = crypto.randomUUID();
@@ -118,45 +148,93 @@ async function main() {
       const expiresAt = new Date(Date.now() + 3600_000).toISOString();
       await storeA.setMinGeneration(room.id, hostId, 1, expiresAt);
 
-      // Concurrent CAS rotations across independent Pool instances (storeA vs storeB)
-      const [resA, resB] = await Promise.all([
-        storeA.rotateGeneration(room.id, hostId, 1, expiresAt),
-        storeB.rotateGeneration(room.id, hostId, 1, expiresAt),
-      ]);
-
-      const winners = [resA, resB].filter((v) => v === 2);
-      const losers = [resA, resB].filter((v) => v === null);
-      if (winners.length !== 1 || losers.length !== 1) {
-        throw new Error(`Expected exactly 1 CAS winner (2) and 1 loser (null), got: ${resA}, ${resB}`);
+      // Cross-instance baseline read from separate Pool B
+      const initialOnB = await storeB.getMinGeneration(room.id, hostId);
+      if (initialOnB !== 1) {
+        throw new Error(`Expected initial min_generation=1 on Pool B, got ${initialOnB}`);
       }
 
-      // Cross-instance visibility check on separate Pool B after Pool A committed
-      const visibleGen = await storeB.getMinGeneration(room.id, hostId);
-      if (visibleGen !== 2) {
-        throw new Error(`Expected persistent min_generation=2 across independent pool, got ${visibleGen}`);
+      // 10-way concurrent CAS rotation race spanning independent Pool A & Pool B
+      const raceCalls = Array.from({ length: 10 }, (_, idx) =>
+        (idx % 2 === 0 ? storeA : storeB).rotateGeneration(room.id, hostId, 1, expiresAt)
+      );
+      const raceResults = await Promise.all(raceCalls);
+      const winners = raceResults.filter((v) => v === 2);
+      const losers = raceResults.filter((v) => v === null);
+      if (winners.length !== 1 || losers.length !== 9) {
+        throw new Error(
+          `Expected exactly 1 CAS winner (2) and 9 losers (null), got: ${JSON.stringify(raceResults)}`
+        );
       }
 
-      // Verify RLS/REVOKE denial for anon and authenticated roles on guest_capability_sessions
+      // Fresh third Pool C observes durable min_generation=2 and rejects stale expectedGeneration=1
+      const visibleOnC = await storeC.getMinGeneration(room.id, hostId);
+      if (visibleOnC !== 2) {
+        throw new Error(`Expected persistent min_generation=2 across independent Pool C, got ${visibleOnC}`);
+      }
+      const staleRetry = await storeC.rotateGeneration(room.id, hostId, 1, expiresAt);
+      if (staleRetry !== null) {
+        throw new Error(`Expected stale expectedGeneration=1 rejection (null), got ${staleRetry}`);
+      }
+
+      // Verify RLS/REVOKE denial across SELECT/INSERT/UPDATE/DELETE for anon and authenticated
       for (const roleName of ["anon", "authenticated"]) {
-        await adminClient.query("BEGIN;");
-        try {
-          await adminClient.query(`SET LOCAL ROLE ${roleName};`);
-          await adminClient.query(`SELECT * FROM "${TEST_SCHEMA}".guest_capability_sessions;`);
-          throw new Error(`SECURITY FAILURE: role '${roleName}' was permitted to SELECT guest_capability_sessions`);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (!msg.includes("permission denied")) {
-            throw err;
+        const deniedQueries = [
+          `SELECT * FROM "${TEST_SCHEMA}".guest_capability_sessions;`,
+          `INSERT INTO "${TEST_SCHEMA}".guest_capability_sessions (room_id, participant_id, min_generation, expires_at) VALUES ('${room.id}', '${hostId}', 99, NOW());`,
+          `UPDATE "${TEST_SCHEMA}".guest_capability_sessions SET min_generation = 99 WHERE room_id = '${room.id}';`,
+          `DELETE FROM "${TEST_SCHEMA}".guest_capability_sessions WHERE room_id = '${room.id}';`,
+        ];
+        for (const sql of deniedQueries) {
+          await adminClient.query("BEGIN;");
+          try {
+            await adminClient.query(`SET LOCAL ROLE ${roleName};`);
+            await adminClient.query(sql);
+            throw new Error(`SECURITY FAILURE: role '${roleName}' was permitted to run: ${sql}`);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (!msg.includes("permission denied")) {
+              throw err;
+            }
+          } finally {
+            await adminClient.query("ROLLBACK;");
           }
-        } finally {
-          await adminClient.query("ROLLBACK;");
         }
       }
 
-      console.log(`PASS [CINE-013 PG QUAL]: CAS winner=${winners[0]}, persistent min_generation=${visibleGen}, anon/authenticated denied cleanly.`);
+      // Positive check: service_role retains explicit authority
+      await adminClient.query("BEGIN;");
+      try {
+        await adminClient.query("SET LOCAL ROLE service_role;");
+        const srRes = await adminClient.query(
+          `SELECT min_generation FROM "${TEST_SCHEMA}".guest_capability_sessions WHERE room_id = $1 AND participant_id = $2;`,
+          [room.id, hostId]
+        );
+        if (Number(srRes.rows[0]?.min_generation) !== 2) {
+          throw new Error("SECURITY/CONTRACT FAILURE: service_role could not read min_generation=2.");
+        }
+      } finally {
+        await adminClient.query("ROLLBACK;");
+      }
+
+      // Verify reversible down migration 002_down inside isolated schema
+      await adminClient.query(`SET search_path TO "${TEST_SCHEMA}", pg_temp;`);
+      await adminClient.query(sql002Down);
+      const downCheck = await adminClient.query(
+        `SELECT COUNT(*)::int AS cnt FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'guest_capability_sessions';`,
+        [TEST_SCHEMA]
+      );
+      if (Number(downCheck.rows[0].cnt) !== 0) {
+        throw new Error("Down migration 002 failed to drop guest_capability_sessions.");
+      }
+
+      console.log(
+        `PASS [CINE-013 PG QUAL]: schema=${TEST_SCHEMA}, RLS=true, CAS_race=1/10_winner(${winners[0]}), cross_pool_visible=${visibleOnC}, anon/auth_denied=true, service_role=true, down_migration=clean.`
+      );
     } finally {
       await poolA.end();
       await poolB.end();
+      await poolC.end();
     }
   } catch (err) {
     failure = err;

@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from "vitest";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { assertSameOriginCsrf } from "@/lib/server/auth/csrfGuard";
 import {
   CapabilityAuthError,
@@ -12,6 +14,7 @@ import {
 import { mintSupabaseRealtimeJwt } from "@/lib/server/auth/roomAuth";
 import {
   getRoomAuthorityStore,
+  PostgresRoomAuthorityStore,
   resetRoomAuthorityStoreForTests,
   resolvePostgresPoolConfig,
 } from "@/lib/server/room/roomStore";
@@ -324,5 +327,83 @@ describe("CINE-013: Guest Capability Token Unit Tests", () => {
     expect(resolved?.poolConfig.host).toBe("aws-1-ap-northeast-2.pooler.supabase.com");
     expect(resolved?.poolConfig.password).toBe("dummy-password");
     expect(resolved?.poolConfig.ssl).toBeDefined();
+  });
+
+  it("enforces PostgresRoomAuthorityStore schema search_path and transactional CAS rotation contract (mock Pool)", async () => {
+    // Rejects invalid schema identifier fail-closed
+    expect(
+      () => new PostgresRoomAuthorityStore({} as never, { schema: "bad; DROP TABLE rooms;" })
+    ).toThrowError(/Invalid PostgreSQL schema identifier/);
+
+    let currentGen = 1;
+    let releasedCount = 0;
+    const executedQueries: string[] = [];
+
+    const mockPool = {
+      connect: async () => {
+        let inTx = false;
+        return {
+          query: async (sql: string, params?: unknown[]) => {
+            executedQueries.push(sql.trim().split("\n")[0]);
+            if (sql.startsWith("BEGIN")) {
+              inTx = true;
+              return { rows: [] };
+            }
+            if (sql.includes("ON CONFLICT (room_id, participant_id) DO NOTHING")) {
+              return { rows: [] };
+            }
+            if (sql.includes("SET min_generation = min_generation + 1")) {
+              const expectedGen = Number(params?.[2]);
+              if (currentGen === expectedGen) {
+                currentGen += 1;
+                return { rows: [{ min_generation: currentGen }] };
+              }
+              return { rows: [] };
+            }
+            if (sql.startsWith("COMMIT") || sql.startsWith("ROLLBACK")) {
+              inTx = false;
+              return { rows: [] };
+            }
+            if (sql.includes("SELECT min_generation")) {
+              return { rows: [{ min_generation: currentGen }] };
+            }
+            return { rows: [] };
+          },
+          release: () => {
+            if (!inTx) releasedCount += 1;
+          },
+        };
+      },
+    };
+
+    const storeA = new PostgresRoomAuthorityStore(mockPool as never, { schema: "cinematch_qual_test" });
+    const storeB = new PostgresRoomAuthorityStore(mockPool as never, { schema: "cinematch_qual_test" });
+
+    // Two concurrent CAS calls across independent store instances racing on expectedGen=1
+    const [winnerOrNullA, winnerOrNullB] = await Promise.all([
+      storeA.rotateGeneration(ROOM_A, PARTICIPANT_1, 1, "2027-01-01T00:00:00.000Z"),
+      storeB.rotateGeneration(ROOM_A, PARTICIPANT_1, 1, "2027-01-01T00:00:00.000Z"),
+    ]);
+
+    expect([winnerOrNullA, winnerOrNullB].sort()).toEqual([2, null]);
+    expect(await storeB.getMinGeneration(ROOM_A, PARTICIPANT_1)).toBe(2);
+    expect(executedQueries.some((q) => q.includes('SET search_path TO "cinematch_qual_test", pg_temp'))).toBe(
+      true
+    );
+    expect(releasedCount).toBe(3);
+
+    // Static contract check on migration 002 RLS/grants and down migration
+    const up002 = fs.readFileSync(
+      path.join(process.cwd(), "src/db/migrations/002_guest_capability_sessions.sql"),
+      "utf8"
+    );
+    const down002 = fs.readFileSync(
+      path.join(process.cwd(), "src/db/migrations/002_down_guest_capability_sessions.sql"),
+      "utf8"
+    );
+    expect(up002).toContain("ENABLE ROW LEVEL SECURITY");
+    expect(up002).toContain("REVOKE ALL ON TABLE guest_capability_sessions FROM PUBLIC, anon, authenticated");
+    expect(up002).toContain("GRANT ALL ON TABLE guest_capability_sessions TO service_role");
+    expect(down002).toContain("DROP TABLE IF EXISTS guest_capability_sessions CASCADE");
   });
 });

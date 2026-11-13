@@ -305,10 +305,29 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
 export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
   private readonly pool: Pool;
   private readonly repo: PostgresRoomRepository;
+  private readonly schema?: string;
 
   constructor(pool: Pool, options?: { schema?: string }) {
+    if (options?.schema && !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(options.schema)) {
+      throw new CapabilityAuthError(500, "DATABASE_CONFIG_INVALID", "Invalid PostgreSQL schema identifier.");
+    }
     this.pool = pool;
+    this.schema = options?.schema;
     this.repo = new PostgresRoomRepository(pool, options);
+  }
+
+  private async withClient<T>(
+    fn: (client: import("pg").PoolClient) => Promise<T>
+  ): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      if (this.schema) {
+        await client.query(`SET search_path TO "${this.schema}", pg_temp;`);
+      }
+      return await fn(client);
+    } finally {
+      client.release();
+    }
   }
 
   async createRoom(options: CreateRoomOptions): Promise<{ room: Room; host: RoomParticipant }> {
@@ -325,19 +344,21 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
 
   async getRoomByCode(code: string): Promise<Room | null> {
     const normalized = code.trim().toUpperCase();
-    const res = await this.pool.query("SELECT * FROM rooms WHERE code = $1 LIMIT 1;", [normalized]);
-    if (res.rows.length === 0) return null;
-    const row = res.rows[0] as Room;
-    return {
-      ...row,
-      state_version: Number(row.state_version),
-      participant_count: Number(row.participant_count),
-      inactivity_ttl_seconds: Number(row.inactivity_ttl_seconds),
-      last_activity_at: new Date(row.last_activity_at).toISOString(),
-      expires_at: new Date(row.expires_at).toISOString(),
-      created_at: new Date(row.created_at).toISOString(),
-      updated_at: new Date(row.updated_at).toISOString(),
-    };
+    return this.withClient(async (client) => {
+      const res = await client.query("SELECT * FROM rooms WHERE code = $1 LIMIT 1;", [normalized]);
+      if (res.rows.length === 0) return null;
+      const row = res.rows[0] as Room;
+      return {
+        ...row,
+        state_version: Number(row.state_version),
+        participant_count: Number(row.participant_count),
+        inactivity_ttl_seconds: Number(row.inactivity_ttl_seconds),
+        last_activity_at: new Date(row.last_activity_at).toISOString(),
+        expires_at: new Date(row.expires_at).toISOString(),
+        created_at: new Date(row.created_at).toISOString(),
+        updated_at: new Date(row.updated_at).toISOString(),
+      };
+    });
   }
 
   async getParticipant(roomId: string, participantId: string): Promise<RoomParticipant | null> {
@@ -345,12 +366,14 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
   }
 
   async getMinGeneration(roomId: string, participantId: string): Promise<number> {
-    const res = await this.pool.query(
-      "SELECT min_generation FROM guest_capability_sessions WHERE room_id = $1 AND participant_id = $2 LIMIT 1;",
-      [roomId, participantId]
-    );
-    if (res.rows.length === 0) return 1;
-    return Number((res.rows[0] as { min_generation: number }).min_generation);
+    return this.withClient(async (client) => {
+      const res = await client.query(
+        "SELECT min_generation FROM guest_capability_sessions WHERE room_id = $1 AND participant_id = $2 LIMIT 1;",
+        [roomId, participantId]
+      );
+      if (res.rows.length === 0) return 1;
+      return Number((res.rows[0] as { min_generation: number }).min_generation);
+    });
   }
 
   async setMinGeneration(
@@ -360,15 +383,17 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     expiresAt: string
   ): Promise<void> {
     const rotatedAt = new Date().toISOString();
-    await this.pool.query(
-      `INSERT INTO guest_capability_sessions (room_id, participant_id, min_generation, rotated_at, expires_at)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (room_id, participant_id) DO UPDATE SET
-         min_generation = GREATEST(guest_capability_sessions.min_generation, EXCLUDED.min_generation),
-         rotated_at = EXCLUDED.rotated_at,
-         expires_at = EXCLUDED.expires_at;`,
-      [roomId, participantId, minGeneration, rotatedAt, expiresAt]
-    );
+    await this.withClient(async (client) => {
+      await client.query(
+        `INSERT INTO guest_capability_sessions (room_id, participant_id, min_generation, rotated_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (room_id, participant_id) DO UPDATE SET
+           min_generation = GREATEST(guest_capability_sessions.min_generation, EXCLUDED.min_generation),
+           rotated_at = EXCLUDED.rotated_at,
+           expires_at = EXCLUDED.expires_at;`,
+        [roomId, participantId, minGeneration, rotatedAt, expiresAt]
+      );
+    });
   }
 
   async rotateGeneration(
@@ -382,39 +407,38 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     }
 
     const rotatedAt = new Date().toISOString();
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN;");
-      await client.query(
-        `INSERT INTO guest_capability_sessions (room_id, participant_id, min_generation, rotated_at, expires_at)
-         VALUES ($1, $2, 1, $3, $4)
-         ON CONFLICT (room_id, participant_id) DO NOTHING;`,
-        [roomId, participantId, rotatedAt, expiresAt]
-      );
+    return this.withClient(async (client) => {
+      try {
+        await client.query("BEGIN;");
+        await client.query(
+          `INSERT INTO guest_capability_sessions (room_id, participant_id, min_generation, rotated_at, expires_at)
+           VALUES ($1, $2, 1, $3, $4)
+           ON CONFLICT (room_id, participant_id) DO NOTHING;`,
+          [roomId, participantId, rotatedAt, expiresAt]
+        );
 
-      const res = await client.query(
-        `UPDATE guest_capability_sessions
-         SET min_generation = min_generation + 1,
-             rotated_at = $4,
-             expires_at = $5
-         WHERE room_id = $1
-           AND participant_id = $2
-           AND min_generation = $3
-         RETURNING min_generation;`,
-        [roomId, participantId, expectedGeneration, rotatedAt, expiresAt]
-      );
+        const res = await client.query(
+          `UPDATE guest_capability_sessions
+           SET min_generation = min_generation + 1,
+               rotated_at = $4,
+               expires_at = $5
+           WHERE room_id = $1
+             AND participant_id = $2
+             AND min_generation = $3
+           RETURNING min_generation;`,
+          [roomId, participantId, expectedGeneration, rotatedAt, expiresAt]
+        );
 
-      await client.query("COMMIT;");
-      if (res.rows.length === 0) {
-        return null;
+        await client.query("COMMIT;");
+        if (res.rows.length === 0) {
+          return null;
+        }
+        return Number((res.rows[0] as { min_generation: number }).min_generation);
+      } catch (err) {
+        await client.query("ROLLBACK;").catch(() => {});
+        throw err;
       }
-      return Number((res.rows[0] as { min_generation: number }).min_generation);
-    } catch (err) {
-      await client.query("ROLLBACK;").catch(() => {});
-      throw err;
-    } finally {
-      client.release();
-    }
+    });
   }
 }
 
