@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
 import {
+  CacheConcurrencyLimitError,
   ServerDataCache,
   buildCanonicalCacheKey,
 } from "@/lib/server/cache/serverCache";
@@ -278,5 +279,139 @@ describe("CINE-008: ServerDataCache Unit Tests (Mock Clock, Singleflight, SWR, V
     expect(checkB.cacheStatus).toBe("MISS");
     expect(checkB.data).toBe("B2");
     expect(cache.getMetrics().evictions).toBeGreaterThanOrEqual(1);
+  });
+
+  it("evicts the globally least-recently-used entry across multiple policy buckets under global cap", async () => {
+    const cache = new ServerDataCache({ defaultMaxEntries: 3 });
+    const policyA = {
+      ...ENDPOINT_CACHE_POLICIES.genres,
+      id: "policy_a",
+      maxEntries: 10,
+    };
+    const policyB = {
+      ...ENDPOINT_CACHE_POLICIES.languages,
+      id: "policy_b",
+      maxEntries: 10,
+    };
+    const policyC = {
+      ...ENDPOINT_CACHE_POLICIES.providers_region,
+      id: "policy_c",
+      maxEntries: 10,
+    };
+
+    // Populate across buckets: a1 (seq 1), a2 (seq 2), b1 (seq 3) -> total = 3
+    await cache.fetchWithPolicy(policyA, { k: "a1" }, async () => "A1");
+    await cache.fetchWithPolicy(policyA, { k: "a2" }, async () => "A2");
+    await cache.fetchWithPolicy(policyB, { k: "b1" }, async () => "B1");
+
+    // Touch a1 (seq 4) and a2 (seq 5); now b1 (seq 3) is the global oldest across all buckets!
+    expect((await cache.fetchWithPolicy(policyA, { k: "a1" }, async () => "A1-new")).cacheStatus).toBe("HIT");
+    expect((await cache.fetchWithPolicy(policyA, { k: "a2" }, async () => "A2-new")).cacheStatus).toBe("HIT");
+
+    // Writing into a third policy should evict globally oldest b1 — NOT policy_a's warm entries!
+    await cache.fetchWithPolicy(policyC, { k: "c1" }, async () => "C1");
+
+    expect(cache.getMetrics().entryCount).toBe(3);
+    expect((await cache.fetchWithPolicy(policyA, { k: "a1" }, async () => "A1-miss")).cacheStatus).toBe("HIT");
+    expect((await cache.fetchWithPolicy(policyA, { k: "a2" }, async () => "A2-miss")).cacheStatus).toBe("HIT");
+    expect((await cache.fetchWithPolicy(policyC, { k: "c1" }, async () => "C1-miss")).cacheStatus).toBe("HIT");
+
+    // Checking b1 proves it was evicted globally (MISS), which now evicts whichever entry is oldest globally
+    const b1Reload = await cache.fetchWithPolicy(policyB, { k: "b1" }, async () => "B1-reloaded");
+    expect(b1Reload.cacheStatus).toBe("MISS");
+    expect(b1Reload.data).toBe("B1-reloaded");
+    expect(cache.getMetrics().entryCount).toBe(3);
+  });
+
+  it("bounds inFlight and revalidating maps under high-cardinality bursts while preserving duplicate coalescing", async () => {
+    let now = 1_700_000_000_000;
+    const scheduledTasks: Promise<void>[] = [];
+    const scheduleSpy = vi.fn((task: Promise<void>) => {
+      scheduledTasks.push(task);
+    });
+
+    const cache = new ServerDataCache({
+      clock: () => now,
+      defaultMaxEntries: 10,
+      maxInFlight: 3,
+      maxRevalidations: 2,
+      scheduleBackgroundTask: scheduleSpy,
+    });
+    const policy = ENDPOINT_CACHE_POLICIES.search_movie; // ttl 300s, swr 300s
+
+    let peakObservedInFlight = 0;
+    const slowFetchers: Array<() => void> = [];
+    const startSlowFetch = (q: string) =>
+      cache.fetchWithPolicy(policy, { q }, () => {
+        peakObservedInFlight = Math.max(peakObservedInFlight, cache.getMetrics().inFlightCount + 1);
+        return new Promise<string>((resolve) => {
+          slowFetchers.push(() => resolve(`result-${q}`));
+        });
+      });
+
+    // Admit 3 unique in-flight cold misses
+    const p1 = startSlowFetch("k1");
+    const p2 = startSlowFetch("k2");
+    const p3 = startSlowFetch("k3");
+    // Coalesce 4 duplicate requests on k1 -> must succeed without consuming new slots!
+    const dupes = [
+      startSlowFetch("k1"),
+      startSlowFetch("k1"),
+      startSlowFetch("k1"),
+      startSlowFetch("k1"),
+    ];
+    // High-cardinality burst of 4 additional distinct uncached keys must fail closed immediately
+    const overflowPromises = ["over1", "over2", "over3", "over4"].map((q) =>
+      startSlowFetch(q).then(
+        () => ({ ok: true as const }),
+        (err) => ({ ok: false as const, err })
+      )
+    );
+
+    const overflowResults = await Promise.all(overflowPromises);
+    expect(overflowResults.every((r) => !r.ok && r.err instanceof CacheConcurrencyLimitError)).toBe(
+      true
+    );
+    expect(cache.getMetrics().inFlightCount).toBe(3);
+    expect(cache.getMetrics().rejectedInFlight).toBe(4);
+    expect(peakObservedInFlight).toBeLessThanOrEqual(3);
+
+    // Release the 3 active fetches
+    for (const resolve of slowFetchers) resolve();
+    const [r1, r2, r3, ...dupeResults] = await Promise.all([p1, p2, p3, ...dupes]);
+    expect([r1.cacheStatus, r2.cacheStatus, r3.cacheStatus]).toEqual(["MISS", "MISS", "MISS"]);
+    expect(dupeResults.every((r) => r.cacheStatus === "DEDUP" && r.data === "result-k1")).toBe(true);
+    expect(cache.getMetrics().inFlightCount).toBe(0);
+
+    // Seed k4 so we have 4 cached keys to push into SWR simultaneously
+    await cache.fetchWithPolicy(policy, { q: "k4" }, async () => "result-k4");
+    expect(cache.getMetrics().entryCount).toBe(4);
+
+    // Advance into SWR window for all 4 keys, then trigger 4 concurrent stale refreshes with maxRevalidations=2
+    now += policy.ttlMs + 10;
+    const swrResolvers: Array<() => void> = [];
+    const staleResults = await Promise.all(
+      ["k1", "k2", "k3", "k4"].map((q) =>
+        cache.fetchWithPolicy(
+          policy,
+          { q },
+          () =>
+            new Promise<string>((resolve) => {
+              swrResolvers.push(() => resolve(`refreshed-${q}`));
+            })
+        )
+      )
+    );
+
+    expect(staleResults.every((r) => r.cacheStatus === "STALE")).toBe(true);
+    expect(cache.getMetrics().revalidatingCount).toBeLessThanOrEqual(2);
+    expect(cache.getMetrics().revalidations).toBe(2);
+    expect(cache.getMetrics().droppedRevalidations).toBe(2);
+    expect(scheduleSpy).toHaveBeenCalledTimes(2);
+    expect(scheduledTasks).toHaveLength(2);
+
+    for (const resolve of swrResolvers) resolve();
+    await cache.flushRevalidations();
+    expect(cache.getMetrics().revalidatingCount).toBe(0);
   });
 });

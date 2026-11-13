@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import tmdbApi from "@/services/tmdbApi";
 import type { EndpointCachePolicy } from "./cachePolicies";
-import { cachedServerFetch, jsonWithCachePolicy } from "./serverCache";
+import {
+  CacheConcurrencyLimitError,
+  cachedServerFetch,
+  jsonWithCachePolicy,
+} from "./serverCache";
 
 const NUMERIC_ID_REGEX = /^\d+$/;
 
@@ -56,6 +60,12 @@ export async function handleCachedMediaSubresource(options: {
     );
     return jsonWithCachePolicy(data, policy, cacheStatus);
   } catch (error: unknown) {
+    if (error instanceof CacheConcurrencyLimitError) {
+      return NextResponse.json(
+        { error: "Upstream cache capacity saturated; please retry briefly." },
+        { status: 503, headers: { "Cache-Control": "no-store" } }
+      );
+    }
     console.error(errorMessage, error);
     return NextResponse.json(
       { error: errorMessage },
@@ -90,6 +100,12 @@ export async function handleCachedTmdbEntityResource(options: {
     );
     return jsonWithCachePolicy(data, policy, cacheStatus);
   } catch (error: unknown) {
+    if (error instanceof CacheConcurrencyLimitError) {
+      return NextResponse.json(
+        { error: "Upstream cache capacity saturated; please retry briefly." },
+        { status: 503, headers: { "Cache-Control": "no-store" } }
+      );
+    }
     console.error(errorMessage, error);
     return NextResponse.json(
       { error: errorMessage },

@@ -78,3 +78,16 @@
 | `geolocation` | `GET /api/geolocation` | `X-Forwarded-For, X-Real-Ip` | IP-derived caller region; must never bleed across users. |
 | `guest_session` | `/api/guest/**` | `Cookie` | Guest capability cookies and session identity state. |
 | `room_state` | `/api/rooms/**` | `Cookie` | Authoritative CineMatch room snapshots, roster, votes, and events. |
+
+---
+
+## 3. Serverless SWR Execution Model & Bounded Capacity
+
+1. **Best-Effort Post-Response Revalidation (`after()`):**
+   - When serving within the `STALE` window inside a Next.js App Router request lifecycle, `ServerDataCache` schedules the coalesced background upstream refresh via Next.js `after()` so the serverless runtime can complete the refresh after sending the stale response.
+   - Outside a Next.js request scope (such as direct Route Handler unit/integration tests), scheduling falls back cleanly to in-process execution tracked by `flushRevalidations()`.
+   - Because `ServerDataCache` is per-instance in-memory state, serverless background SWR is **best-effort**: if an instance is recycled before `after()` finishes, or subsequent traffic lands on a cold instance, requests degrade safely to synchronous `MISS` + singleflight upstream fetch while shared edge caches respect the emitted `Cache-Control: ..., stale-while-revalidate=...` headers.
+2. **True Global LRU & Concurrency Caps:**
+   - Every policy bucket enforces its `maxEntries` LRU limit (`bucket` Map access order), and `ServerDataCache` enforces a global entry cap (`defaultMaxEntries`, default `1000`) by evicting the **globally least-recently-accessed** entry across all policy buckets using monotonic access sequence numbers.
+   - High-cardinality uncached bursts are bounded by explicit global admission limits on concurrent distinct keys (`maxInFlight`, default `256` — coalesced duplicates on active keys remain allowed) and concurrent background SWR tasks (`maxRevalidations`, default `128` — excess stale refreshes are dropped safely while stale responses continue serving).
+

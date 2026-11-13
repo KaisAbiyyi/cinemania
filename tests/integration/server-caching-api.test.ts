@@ -196,8 +196,8 @@ describe("CINE-008: Server Caching & Request Deduplication API Integration + Lat
     expect(spy).toHaveBeenCalledTimes(3);
   });
 
-  it("measures and reports upstream call counts and p95 latency before (uncached) vs after (cached + deduped)", async () => {
-    const UPSTREAM_LATENCY_MS = 20;
+  it("measures and reports matched same-workload (150 vs 150) upstream calls and p95 latency in local mocked microbenchmark", async () => {
+    const UPSTREAM_LATENCY_MS = 10;
     let upstreamCalls = 0;
 
     vi.spyOn(tmdbApi, "get").mockImplementation(async () => {
@@ -206,26 +206,42 @@ describe("CINE-008: Server Caching & Request Deduplication API Integration + Lat
       return { data: mockMoviesList } as never;
     });
 
-    // BEFORE baseline: 30 uncached requests across 3 distinct queries (10 concurrent + 10 repeat + 10 search)
+    // BEFORE baseline (uncached direct tmdbApi.get): exact same 150-request 3-wave workload:
+    // - Wave 1: 5 concurrent discover calls
+    // - Wave 2: 100 sequential repeat discover calls
+    // - Wave 3: 45 sequential search calls
     const beforeDurations: number[] = [];
     const beforeCallsStart = upstreamCalls;
-    for (let i = 0; i < 30; i++) {
+
+    await Promise.all(
+      Array.from({ length: 5 }, async () => {
+        const start = performance.now();
+        await tmdbApi.get("/discover/movie", { params: { page: 1 } });
+        beforeDurations.push(performance.now() - start);
+      })
+    );
+    for (let i = 0; i < 100; i++) {
       const start = performance.now();
-      await tmdbApi.get("/discover/movie", { params: { page: (i % 3) + 1 } });
+      await tmdbApi.get("/discover/movie", { params: { page: 1 } });
       beforeDurations.push(performance.now() - start);
     }
+    for (let i = 0; i < 45; i++) {
+      const start = performance.now();
+      await tmdbApi.get("/search/movie", { params: { query: "Inception", page: 1 } });
+      beforeDurations.push(performance.now() - start);
+    }
+
     const beforeUpstreamCalls = upstreamCalls - beforeCallsStart;
     beforeDurations.sort((a, b) => a - b);
     const beforeP95Ms = percentile(beforeDurations, 95);
 
-    // AFTER: 150 requests through cached API handlers (only 6/150 = 4.0% touch upstream wait):
+    // AFTER: identical 150-request 3-wave workload routed through cached API handlers:
     // - Wave 1: 5 concurrent identical discover requests (1 miss + 4 deduped)
     // - Wave 2: 100 sequential repeat discover requests (100 warm hits)
     // - Wave 3: 45 sequential search requests (1 miss + 44 warm hits)
     upstreamCalls = 0;
     const afterDurations: number[] = [];
 
-    // Wave 1: 5 concurrent identical discover requests
     const wave1 = await Promise.all(
       Array.from({ length: 5 }, async () => {
         const start = performance.now();
@@ -238,7 +254,6 @@ describe("CINE-008: Server Caching & Request Deduplication API Integration + Lat
     );
     expect(wave1.every((r) => r.status === 200)).toBe(true);
 
-    // Wave 2: 100 sequential repeat discover requests
     for (let i = 0; i < 100; i++) {
       const start = performance.now();
       const res = await getDiscoverMedia(
@@ -248,7 +263,6 @@ describe("CINE-008: Server Caching & Request Deduplication API Integration + Lat
       expect(res.headers.get("X-Cache")).toBe("HIT");
     }
 
-    // Wave 3: 45 sequential search requests (1 miss + 44 hits)
     for (let i = 0; i < 45; i++) {
       const start = performance.now();
       const res = await searchMovie(
@@ -264,13 +278,17 @@ describe("CINE-008: Server Caching & Request Deduplication API Integration + Lat
     const metrics = getServerCacheMetrics();
 
     console.info(
-      `[CINE-008 BENCHMARK] beforeUpstreamCalls=${beforeUpstreamCalls} (30 requests), afterUpstreamCalls=${afterUpstreamCalls} (150 requests), ` +
+      `[CINE-008 LOCAL MICROBENCHMARK (mocked upstream, matched 150-request workload — NOT production Vercel latency)] ` +
+        `beforeRequests=${beforeDurations.length}, afterRequests=${afterDurations.length}, ` +
+        `beforeUpstreamCalls=${beforeUpstreamCalls}, afterUpstreamCalls=${afterUpstreamCalls}, ` +
         `beforeP95Ms=${beforeP95Ms.toFixed(2)}, afterP95Ms=${afterP95Ms.toFixed(2)}, ` +
         `hits=${metrics.hits}, deduped=${metrics.dedupedInFlight}, misses=${metrics.misses}`
     );
 
-    expect(beforeUpstreamCalls).toBe(30);
-    expect(afterUpstreamCalls).toBe(2); // 1 discover + 1 search across 150 requests
+    expect(beforeDurations).toHaveLength(150);
+    expect(afterDurations).toHaveLength(150);
+    expect(beforeUpstreamCalls).toBe(150);
+    expect(afterUpstreamCalls).toBe(2); // 1 discover + 1 search across 150 identical-workload requests
     expect(afterP95Ms).toBeLessThan(beforeP95Ms);
     expect(metrics.hits).toBe(144);
     expect(metrics.dedupedInFlight).toBe(4);

@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import type { EndpointCachePolicy } from "./cachePolicies";
 
 export type CacheStatus = "HIT" | "MISS" | "STALE" | "DEDUP" | "BYPASS";
@@ -15,11 +15,42 @@ export interface CacheMetricsSnapshot {
   misses: number;
   dedupedInFlight: number;
   revalidations: number;
+  droppedRevalidations: number;
+  rejectedInFlight: number;
   upstreamCalls: number;
   upstreamErrors: number;
   evictions: number;
   bypassedPrivate: number;
   entryCount: number;
+  inFlightCount: number;
+  revalidatingCount: number;
+}
+
+export class CacheConcurrencyLimitError extends Error {
+  readonly code = "CACHE_IN_FLIGHT_LIMIT_EXCEEDED";
+
+  constructor(maxInFlight: number) {
+    super(`Server cache in-flight concurrency limit (${maxInFlight}) exceeded.`);
+    this.name = "CacheConcurrencyLimitError";
+  }
+}
+
+export type BackgroundTaskScheduler = (task: Promise<void>) => void;
+
+function defaultBackgroundTaskScheduler(task: Promise<void>): void {
+  try {
+    after(async () => {
+      await task;
+    });
+  } catch (err) {
+    // Next.js `after()` requires an active App Router request scope; outside request scope
+    // (e.g. unit/integration tests invoking handlers directly), the in-process promise remains
+    // tracked via `this.revalidating` and `flushRevalidations()`.
+    if (err instanceof Error && err.message.includes("outside a request scope")) {
+      return;
+    }
+    throw err;
+  }
 }
 
 interface CacheEntry<T> {
@@ -27,6 +58,7 @@ interface CacheEntry<T> {
   createdAt: number;
   freshUntil: number;
   staleUntil: number;
+  lastAccessedSeq: number;
 }
 
 const FORBIDDEN_PUBLIC_KEY_PARTS = new Set([
@@ -100,17 +132,24 @@ export function buildCanonicalCacheKey(
 export interface ServerDataCacheOptions {
   clock?: () => number;
   defaultMaxEntries?: number;
+  maxInFlight?: number;
+  maxRevalidations?: number;
+  scheduleBackgroundTask?: BackgroundTaskScheduler;
 }
 
 export class ServerDataCache {
   private readonly clock: () => number;
   private readonly defaultMaxEntries: number;
+  private readonly maxInFlight: number;
+  private readonly maxRevalidations: number;
+  private readonly scheduleBackgroundTask: BackgroundTaskScheduler;
   private readonly stores = new Map<string, Map<string, CacheEntry<unknown>>>();
   private readonly inFlight = new Map<
     string,
     { promise: Promise<unknown>; waiters: number }
   >();
   private readonly revalidating = new Map<string, Promise<void>>();
+  private accessCounter = 0;
 
   private metrics = {
     hits: 0,
@@ -118,6 +157,8 @@ export class ServerDataCache {
     misses: 0,
     dedupedInFlight: 0,
     revalidations: 0,
+    droppedRevalidations: 0,
+    rejectedInFlight: 0,
     upstreamCalls: 0,
     upstreamErrors: 0,
     evictions: 0,
@@ -126,7 +167,11 @@ export class ServerDataCache {
 
   constructor(options: ServerDataCacheOptions = {}) {
     this.clock = options.clock ?? (() => Date.now());
-    this.defaultMaxEntries = options.defaultMaxEntries ?? 1000;
+    this.defaultMaxEntries = Math.max(1, options.defaultMaxEntries ?? 1000);
+    this.maxInFlight = Math.max(1, options.maxInFlight ?? 256);
+    this.maxRevalidations = Math.max(1, options.maxRevalidations ?? 128);
+    this.scheduleBackgroundTask =
+      options.scheduleBackgroundTask ?? defaultBackgroundTaskScheduler;
   }
 
   /**
@@ -202,6 +247,11 @@ export class ServerDataCache {
       };
     }
 
+    if (this.inFlight.size >= this.maxInFlight) {
+      this.metrics.rejectedInFlight += 1;
+      throw new CacheConcurrencyLimitError(this.maxInFlight);
+    }
+
     this.metrics.misses += 1;
     this.metrics.upstreamCalls += 1;
 
@@ -237,6 +287,11 @@ export class ServerDataCache {
       return;
     }
 
+    if (this.revalidating.size >= this.maxRevalidations) {
+      this.metrics.droppedRevalidations += 1;
+      return;
+    }
+
     this.metrics.revalidations += 1;
     this.metrics.upstreamCalls += 1;
 
@@ -254,6 +309,7 @@ export class ServerDataCache {
     })();
 
     this.revalidating.set(key, task);
+    this.scheduleBackgroundTask(task);
   }
 
   private getBucket(policyId: string): Map<string, CacheEntry<unknown>> {
@@ -278,8 +334,37 @@ export class ServerDataCache {
     key: string,
     entry: CacheEntry<unknown>
   ): void {
+    entry.lastAccessedSeq = ++this.accessCounter;
     bucket.delete(key);
     bucket.set(key, entry);
+  }
+
+  private evictGlobalLeastRecentlyUsed(): boolean {
+    let oldestBucket: Map<string, CacheEntry<unknown>> | undefined;
+    let oldestKey: string | undefined;
+    let oldestSeq = Number.POSITIVE_INFINITY;
+
+    // Every policy bucket keeps insertion/touch LRU order, so each bucket's first entry
+    // is that bucket's least-recently-used candidate. Comparing candidates across buckets
+    // yields true global LRU eviction in O(number_of_buckets).
+    for (const candidateBucket of this.stores.values()) {
+      const first = candidateBucket.entries().next();
+      if (first.done) continue;
+      const [candidateKey, candidateEntry] = first.value;
+      if (candidateEntry.lastAccessedSeq < oldestSeq) {
+        oldestSeq = candidateEntry.lastAccessedSeq;
+        oldestBucket = candidateBucket;
+        oldestKey = candidateKey;
+      }
+    }
+
+    if (!oldestBucket || oldestKey === undefined) {
+      return false;
+    }
+
+    oldestBucket.delete(oldestKey);
+    this.metrics.evictions += 1;
+    return true;
   }
 
   private writeEntry<T>(
@@ -303,19 +388,9 @@ export class ServerDataCache {
         bucket.delete(oldestKey);
         this.metrics.evictions += 1;
       }
-      // Enforce global entry cap across all buckets if needed
+      // Enforce true global LRU eviction across all buckets
       while (this.getTotalEntryCount() >= this.defaultMaxEntries) {
-        let evictedAny = false;
-        for (const candidateBucket of this.stores.values()) {
-          const oldest = candidateBucket.keys().next().value;
-          if (oldest !== undefined) {
-            candidateBucket.delete(oldest);
-            this.metrics.evictions += 1;
-            evictedAny = true;
-            break;
-          }
-        }
-        if (!evictedAny) break;
+        if (!this.evictGlobalLeastRecentlyUsed()) break;
       }
     }
 
@@ -327,6 +402,7 @@ export class ServerDataCache {
       createdAt: now,
       freshUntil,
       staleUntil,
+      lastAccessedSeq: ++this.accessCounter,
     });
   }
 
@@ -342,6 +418,8 @@ export class ServerDataCache {
     return {
       ...this.metrics,
       entryCount: this.getTotalEntryCount(),
+      inFlightCount: this.inFlight.size,
+      revalidatingCount: this.revalidating.size,
     };
   }
 
@@ -349,12 +427,15 @@ export class ServerDataCache {
     this.stores.clear();
     this.inFlight.clear();
     this.revalidating.clear();
+    this.accessCounter = 0;
     this.metrics = {
       hits: 0,
       staleHits: 0,
       misses: 0,
       dedupedInFlight: 0,
       revalidations: 0,
+      droppedRevalidations: 0,
+      rejectedInFlight: 0,
       upstreamCalls: 0,
       upstreamErrors: 0,
       evictions: 0,
