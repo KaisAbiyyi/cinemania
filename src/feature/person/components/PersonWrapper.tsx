@@ -42,7 +42,7 @@ const PersonWrapper: FC<Props> = ({ personId }) => {
 
     return (
         <div className='flex flex-col gap-4 md:gap-6 lg:gap-8'>
-            <PersonBanner personCastData={PersonCombinedCredits.cast} data={PersonDetail} />
+            <PersonBanner personCastData={PersonCombinedCredits.cast ?? []} data={PersonDetail} />
             <div className="flex justify-end gap-4">
                 <div className="hidden w-3/12 lg:block"></div>
                 <div className="flex flex-col w-full gap-4 lg:w-9/12 md:gap-6 lg:gap-8">

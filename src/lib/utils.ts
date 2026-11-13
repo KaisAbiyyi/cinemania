@@ -39,9 +39,10 @@ export function parseQuery(queryString: string): Partial<Filters> {
   return result;
 }
 
-export function getInitials(name: string) {
+export function getInitials(name?: string | null) {
+  if (!name) return "";
   // Memisahkan nama menjadi array berdasarkan spasi
-  const nameArray = name.split(' ');
+  const nameArray = name.trim().split(/\s+/);
   // Mengambil huruf pertama dari setiap kata dan menggabungkannya
   const initials = nameArray.map(word => word.charAt(0).toUpperCase()).join('');
   return initials;
@@ -49,7 +50,7 @@ export function getInitials(name: string) {
 
 const DEFAULT_TMDB_POSTER_BASE = "https://image.tmdb.org/t/p";
 
-export function getProfileImageUrl(profilePath: string) {
+export function getProfileImageUrl(profilePath?: string | null) {
   const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL || DEFAULT_TMDB_POSTER_BASE;
   const baseImageUrl = `${imagePath}/w200`;
 
@@ -60,14 +61,14 @@ export function getProfileImageUrl(profilePath: string) {
   return `${baseImageUrl}${normalizedPath}`;
 }
 
-export function getPosterImageUrl(profilePath: string) {
+export function getPosterImageUrl(posterPath?: string | null) {
   const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL || DEFAULT_TMDB_POSTER_BASE;
   const baseImageUrl = `${imagePath}/w500`;
 
-  if (!profilePath) {
+  if (!posterPath) {
     return "/placeholder.jpg";
   }
-  const normalizedPath = profilePath.startsWith("/") ? profilePath : `/${profilePath}`;
+  const normalizedPath = posterPath.startsWith("/") ? posterPath : `/${posterPath}`;
   return `${baseImageUrl}${normalizedPath}`;
 }
 

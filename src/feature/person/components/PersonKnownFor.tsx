@@ -14,8 +14,8 @@ interface Props {
     // Add more props as needed
 }
 
-const PersonKnownFor: FC<Props> = ({ className, data }) => {
-    const knownFor = data
+const PersonKnownFor: FC<Props> = ({ className, data = [] }) => {
+    const knownFor = (data ?? [])
         .filter((item) =>
             item.poster_path &&
             (item.media_type === "movie" || item.media_type === "tv") &&
@@ -35,30 +35,40 @@ const PersonKnownFor: FC<Props> = ({ className, data }) => {
         <div className={cn("flex flex-col gap-4", className)}>
             <h2 className="text-sm font-semibold md:text-base lg:text-lg xl:text-xl">Known For</h2>
             <div className="grid grid-cols-2 gap-4">
-                {knownFor.map((item) => (
-                    <Card key={item.id} className="flex flex-row gap-0 p-0 overflow-hidden bg-transparent rounded-md shadow-none md:gap-0 lg:gap-0 xl:gap-0">
-                        <Link href={`/${item.media_type}/${item.id}-${slugify(item.title || item.name)}`} className='w-1/3 max-h-36'>
-                            <Image
-                                width={200}
-                                height={300}
-                                src={`${getPosterImageUrl(item.poster_path)}}`}
-                                alt={item.title || item.name}
-                                className="object-cover w-full h-full rounded-l-lg"
-                            />
-                        </Link>
-                        <CardContent className='flex flex-col w-2/3 gap-2 px-4 py-2'>
-                            <Link href={`/${item.media_type}/${item.id}-${slugify(item.title || item.name)}`}>
-                                <CardTitle className='hover:underline'>{item.title || item.name}</CardTitle>
+                {knownFor.map((item) => {
+                    const itemTitle = item.title || item.name || "Untitled";
+                    const itemDateStr = item.release_date || item.first_air_date;
+                    const itemDate = itemDateStr ? new Date(itemDateStr) : null;
+                    const formattedDate =
+                        itemDate && !Number.isNaN(itemDate.getTime())
+                            ? formatDate(itemDate, "MMMM dd, yyyy")
+                            : "Unknown";
+
+                    return (
+                        <Card key={item.id} className="flex flex-row gap-0 p-0 overflow-hidden bg-transparent rounded-md shadow-none md:gap-0 lg:gap-0 xl:gap-0">
+                            <Link href={`/${item.media_type}/${item.id}-${slugify(itemTitle)}`} className='w-1/3 max-h-36'>
+                                <Image
+                                    width={200}
+                                    height={300}
+                                    src={getPosterImageUrl(item.poster_path)}
+                                    alt={itemTitle}
+                                    className="object-cover w-full h-full rounded-l-lg"
+                                />
                             </Link>
-                            <div className="flex items-center gap-1">
-                                <Star fill='currentColor' className='text-yellow-400' size={14} />
-                                <p className="text-sm font-semibold text-muted-foreground">{(item.vote_average as number).toFixed(1)}</p>
-                            </div>
-                            <CardDescription>{item.character}</CardDescription>
-                            <CardDescription>{formatDate(new Date(item.release_date || item.first_air_date), "MMMM dd, yyyy")}</CardDescription>
-                        </CardContent>
-                    </Card>
-                ))}
+                            <CardContent className='flex flex-col w-2/3 gap-2 px-4 py-2'>
+                                <Link href={`/${item.media_type}/${item.id}-${slugify(itemTitle)}`}>
+                                    <CardTitle className='hover:underline'>{itemTitle}</CardTitle>
+                                </Link>
+                                <div className="flex items-center gap-1">
+                                    <Star fill='currentColor' className='text-yellow-400' size={14} />
+                                    <p className="text-sm font-semibold text-muted-foreground">{(item.vote_average ?? 0).toFixed(1)}</p>
+                                </div>
+                                <CardDescription>{item.character}</CardDescription>
+                                <CardDescription>{formattedDate}</CardDescription>
+                            </CardContent>
+                        </Card>
+                    );
+                })}
             </div>
         </div>
     );
