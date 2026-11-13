@@ -163,6 +163,14 @@ describe("CINE-007: discoverMediaSchema table-driven validation", () => {
     expect(parsed.include_adult).toBe(expected);
   });
 
+  it("accepts include_adults alias and normalizes safely", () => {
+    const params = new URLSearchParams("mediaType=movie&include_adults=false");
+    const extracted = extractAndGuardQueryParams(params, ALLOWED_DISCOVER_KEYS);
+    expect(extracted.include_adults).toBe("false");
+    const parsed = discoverMediaSchema.parse(extracted);
+    expect(parsed.include_adults).toBe(false);
+  });
+
   it.each(["yes", "no", "1", "0", "maybe"])(
     "explicit adult policy: rejects invalid adult values: %s",
     (invalidAdult) => {

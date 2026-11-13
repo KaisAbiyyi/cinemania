@@ -25,7 +25,10 @@ export async function GET(request: Request) {
     const rawParams = extractAndGuardQueryParams(url.searchParams, ALLOWED_DISCOVER_KEYS);
     const validated = discoverMediaSchema.parse(rawParams);
 
-    const { mediaType, ...filterParams } = validated;
+    const { mediaType, include_adults, ...filterParams } = validated;
+    if (include_adults !== undefined && filterParams.include_adult === undefined) {
+      filterParams.include_adult = include_adults;
+    }
     const endpoint = mediaType === "movie" ? "/discover/movie" : "/discover/tv";
 
     // Clean up undefined / empty filter values for upstream TMDB request

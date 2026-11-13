@@ -17,6 +17,7 @@
     "test:integration": "vitest run tests/integration",
     "test:e2e": "playwright test",
     "test:mutation": "vitest run tests/unit/mutation.test.ts",
+    "test:live": "vitest run tests/live",
     "test:bundle-secrets": "vitest run tests/build/bundle-secret-scan.test.ts --config vitest.build.config.mts"
   },
   "dependencies": {
@@ -62,12 +63,15 @@
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "^16.4.5",
     "happy-dom": "^21.0.4",
+    "pg": "^8.23.1",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5",
     "vite-tsconfig-paths": "^6.1.1",
     "vitest": "^5.1.0"
