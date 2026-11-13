@@ -11,6 +11,7 @@ import {
   ParticipantNotFoundError,
   RoundNotFoundError,
 } from "../../src/lib/server/room/roomRepository";
+import { verifyScopedRowLockBlocking } from "./scoped-lock-probe";
 
 // Load .env.test.local if present
 const envPath = path.join(process.cwd(), ".env.test.local");
@@ -380,56 +381,30 @@ describe.skipIf(!isConfigured)("CINE-012: Live Supabase PostgreSQL Qualification
     }
   }, 30000);
 
-  it("5. Demonstrates deterministic row-level lock blocking (SELECT FOR UPDATE) and dual-process concurrency", async () => {
+  it("5. Demonstrates scoped deterministic row-level lock blocking (SELECT FOR UPDATE) and dual-process concurrent IPC vote serialization", async () => {
     await masterClient.query("RESET ROLE;");
 
-    // 5a. Deterministic row-level lock blocking demonstration
-    const lockC1 = new Client(PG_CONFIG);
-    const lockC2 = new Client(PG_CONFIG);
-    await Promise.all([lockC1.connect(), lockC2.connect()]);
-
+    // 5a. Scoped deterministic row-level lock blocking demonstration (pg_backend_pid, pg_blocking_pids, pg_stat_activity, scoped pg_locks)
     const concRepo = new PostgresRoomRepository(masterClient, { schema: TEST_SCHEMA });
     const { room: lRoom } = await concRepo.createRoom({ hostDisplayName: "Deterministic Host", inactivityTtlSeconds: 86400 });
 
-    await lockC1.query("BEGIN;");
-    await lockC1.query(`SELECT * FROM "${TEST_SCHEMA}".rooms WHERE id = $1 FOR UPDATE;`, [lRoom.id]);
+    const lockProbeResult = await verifyScopedRowLockBlocking({
+      pgConfig: PG_CONFIG,
+      observerClient: masterClient,
+      schema: TEST_SCHEMA,
+      roomId: lRoom.id,
+      holdMs: 400,
+      pollTimeoutMs: 3000,
+    });
 
-    let c2Resolved = false;
-    let c2WaitMs = 0;
-    // Execute BEGIN on C2 first so the connection is ready in transaction state
-    await lockC2.query("BEGIN;");
-    const c2Promise = (async () => {
-      const t0 = performance.now();
-      await lockC2.query(`SELECT * FROM "${TEST_SCHEMA}".rooms WHERE id = $1 FOR UPDATE;`, [lRoom.id]);
-      c2Resolved = true;
-      c2WaitMs = performance.now() - t0;
-      await lockC2.query("COMMIT;");
-    })();
+    expect(lockProbeResult.client1Pid).not.toBe(lockProbeResult.client2Pid);
+    expect(lockProbeResult.blockingPids).toContain(lockProbeResult.client1Pid);
+    expect(lockProbeResult.waitEventType).toBe("Lock");
+    expect(lockProbeResult.client2WaitDurationMs).toBeGreaterThanOrEqual(400);
 
-    // Poll pg_locks for up to 2000ms until the ungranted lock appears
-    let ungrantedFound = false;
-    const deadline = Date.now() + 2500;
-    while (Date.now() < deadline) {
-      const lockProbe = await masterClient.query(`SELECT locktype, mode, granted FROM pg_locks WHERE granted = false;`);
-      if (lockProbe.rows.length > 0) {
-        ungrantedFound = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 50));
-    }
-
-    expect(c2Resolved).toBe(false);
-    expect(ungrantedFound).toBe(true);
-
-    // C1 releases lock after delay
-    await new Promise((r) => setTimeout(r, 300));
-    await lockC1.query("COMMIT;");
-
-    await c2Promise;
-    expect(c2WaitMs).toBeGreaterThanOrEqual(400);
-    await Promise.all([lockC1.end(), lockC2.end()]);
-
-    // 5b. Dual Node.js Process Concurrency on PostgresRoomRepository
+    // 5b. Dual Node.js Process Concurrent IPC Vote Execution on PostgresRoomRepository
+    // (Dispatches simultaneous VOTE IPC commands after READY to validate outcome/outbox serialization;
+    //  does not itself hold a worker lock, which 5a proves deterministically.)
     const { room: concRoom, host: concHost } = await concRepo.createRoom({
       hostDisplayName: "Vitest Host",
       inactivityTtlSeconds: 86400,

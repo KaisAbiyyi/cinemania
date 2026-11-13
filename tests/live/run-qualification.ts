@@ -17,6 +17,7 @@ import {
   ParticipantNotFoundError,
   RoundNotFoundError,
 } from '../../src/lib/server/room/roomRepository';
+import { verifyScopedRowLockBlocking } from './scoped-lock-probe';
 
 // Load .env.test.local if present
 const envPath = path.join(process.cwd(), '.env.test.local');
@@ -410,82 +411,33 @@ async function runQualification() {
       details: 'Anon denied SELECT (42501). Authenticated member reads own participant record. Stranger reads 0 rows.',
     });
 
-    // 6a. Deterministic Row-Level Lock Blocking Demonstration (Issue #14)
-    console.log('\n[6a/8] Demonstrating deterministic row-level lock blocking (SELECT ... FOR UPDATE)...');
-    const lockRoomClient1 = new Client(PG_CONFIG);
-    const lockRoomClient2 = new Client(PG_CONFIG);
-    await Promise.all([lockRoomClient1.connect(), lockRoomClient2.connect()]);
-
+    // 6a. Deterministic Scoped Row-Level Lock Blocking Demonstration (Issue #14)
+    console.log('\n[6a/8] Demonstrating deterministic scoped row-level lock blocking (SELECT ... FOR UPDATE)...');
     const lockRepo = new PostgresRoomRepository(client, { schema: TEST_SCHEMA });
     const { room: lRoom } = await lockRepo.createRoom({ hostDisplayName: 'Lock Host', inactivityTtlSeconds: 86400 });
 
-    // Client 1 begins transaction and acquires exclusive row lock on lRoom.id
-    await lockRoomClient1.query('BEGIN;');
-    await lockRoomClient1.query(`SELECT * FROM "${TEST_SCHEMA}".rooms WHERE id = $1 FOR UPDATE;`, [lRoom.id]);
-    console.log('      Client 1 acquired exclusive row lock on room.');
-
-    // Client 2 attempts to acquire lock on the same room; must block in PostgreSQL kernel
-    let c2Resolved = false;
-    let c2AcquireDurationMs = 0;
-    // Execute BEGIN on Client 2 first so it is ready in transaction state
-    await lockRoomClient2.query('BEGIN;');
-    const c2Promise = (async () => {
-      const startT = performance.now();
-      await lockRoomClient2.query(`SELECT * FROM "${TEST_SCHEMA}".rooms WHERE id = $1 FOR UPDATE;`, [lRoom.id]);
-      c2Resolved = true;
-      c2AcquireDurationMs = performance.now() - startT;
-      await lockRoomClient2.query('COMMIT;');
-    })();
-
-    // Poll pg_locks for up to 2500ms until the ungranted lock appears
-    let ungrantedFound = false;
-    const deadline = Date.now() + 2500;
-    while (Date.now() < deadline) {
-      const lockInspection = await client.query(`
-        SELECT locktype, mode, granted, pid
-        FROM pg_locks
-        WHERE granted = false;
-      `);
-      if (lockInspection.rows.length > 0) {
-        ungrantedFound = true;
-        console.log(`      Verified pg_locks kernel state: found ${lockInspection.rows.length} ungranted lock(s) waiting.`);
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 50));
-    }
-
-    if (c2Resolved) {
-      throw new Error('DETERMINISTIC LOCK FAILURE: Client 2 resolved while Client 1 still holds row lock!');
-    }
-    if (!ungrantedFound) {
-      throw new Error('DETERMINISTIC LOCK FAILURE: Expected at least one ungranted lock in pg_locks while Client 2 is blocked.');
-    }
-
-    // Client 1 holds lock for additional 400ms, then commits to release lock
-    await new Promise((r) => setTimeout(r, 400));
-    console.log('      Client 1 committing transaction to release lock...');
-    await lockRoomClient1.query('COMMIT;');
-
-    // Client 2 must now unblock and complete
-    await c2Promise;
-    console.log(`      Client 2 unblocked and acquired lock after ${c2AcquireDurationMs.toFixed(1)}ms (forced hold >= 400ms).`);
-
-    if (c2AcquireDurationMs < 400) {
-      throw new Error(`DETERMINISTIC LOCK FAILURE: Client 2 waited only ${c2AcquireDurationMs.toFixed(1)}ms, expected >= 400ms`);
-    }
-
-    await Promise.all([lockRoomClient1.end(), lockRoomClient2.end()]);
-
-    checkMatrix.push({
-      name: 'Deterministic Row-Level Lock Blocking (SELECT FOR UPDATE)',
-      command: 'Concurrent transactions holding row lock with pg_locks ungranted probe',
-      exitCode: 0,
-      status: 'PASS',
-      details: `Client 1 held lock; Client 2 blocked. pg_locks ungranted lock verified. Client 2 waited ${c2AcquireDurationMs.toFixed(1)}ms until Client 1 COMMIT.`,
+    const lockProbeResult = await verifyScopedRowLockBlocking({
+      pgConfig: PG_CONFIG,
+      observerClient: client,
+      schema: TEST_SCHEMA,
+      roomId: lRoom.id,
+      holdMs: 400,
+      pollTimeoutMs: 3000,
+      onLog: (msg) => console.log(msg),
     });
 
-    // 6b. Dual Independent Node.js Process Concurrency on PostgresRoomRepository
-    console.log('\n[6b/8] Spawning two independent Node.js processes calling PostgresRoomRepository.recordVote...');
+    checkMatrix.push({
+      name: 'Deterministic Scoped Row-Level Lock Blocking (SELECT FOR UPDATE)',
+      command: 'Two connections on target room row with pg_backend_pid(), pg_blocking_pids(), pg_stat_activity, and scoped pg_locks',
+      exitCode: 0,
+      status: 'PASS',
+      details: `Client 1 PID ${lockProbeResult.client1Pid} (${lockProbeResult.roomRelationLockMode} on rooms) blocked Client 2 PID ${lockProbeResult.client2Pid} (wait_event=${lockProbeResult.waitEventType}:${lockProbeResult.waitEvent}, locktype=${lockProbeResult.waitingLockType}, pg_blocking_pids=[${lockProbeResult.blockingPids.join(', ')}]); waited ${lockProbeResult.client2WaitDurationMs.toFixed(1)}ms until Client 1 COMMIT.`,
+    });
+
+    // 6b. Dual Independent Node.js Process Concurrent IPC Execution on PostgresRoomRepository
+    // (Validates transactional serialization under simultaneous IPC votes: 1 MATCHED + 1 VOTE_RECORDED + 1 MATCH_ANNOUNCED;
+    //  distinct from 6a's kernel-attested forced hold contention proof.)
+    console.log('\n[6b/8] Spawning two independent Node.js processes calling concurrent PostgresRoomRepository.recordVote...');
     const concRepo = new PostgresRoomRepository(client, { schema: TEST_SCHEMA });
     const { room: concRoom, host: concHost } = await concRepo.createRoom({
       hostDisplayName: 'Conc Host',
@@ -596,11 +548,11 @@ async function runQualification() {
     console.log(`      Worker 1 duration: ${voteRes1.durationMs.toFixed(1)}ms, Worker 2 duration: ${voteRes2.durationMs.toFixed(1)}ms`);
 
     checkMatrix.push({
-      name: 'Dual-process PostgresRoomRepository Concurrency (SELECT FOR UPDATE)',
-      command: '2 independent Node.js processes invoking PostgresRoomRepository.recordVote',
+      name: 'Dual-Process Concurrent IPC Vote Serialization (PostgresRoomRepository)',
+      command: '2 independent Node.js worker processes sending concurrent VOTE IPC requests after READY',
       exitCode: 0,
       status: 'PASS',
-      details: `PIDs: ${pid1}, ${pid2}. Exactly 1 MATCHED, 1 MATCH_ANNOUNCED event. Durations: ${voteRes1.durationMs.toFixed(1)}ms, ${voteRes2.durationMs.toFixed(1)}ms`,
+      details: `PIDs: ${pid1}, ${pid2}. Simultaneous IPC votes serialized cleanly: 1 MATCHED, 1 VOTE_RECORDED, 1 MATCH_ANNOUNCED outbox event (separate from 6a forced row-lock hold). Durations: ${voteRes1.durationMs.toFixed(1)}ms, ${voteRes2.durationMs.toFixed(1)}ms`,
     });
 
     // 7. Negative Race & Faulty Input Edge Cases
