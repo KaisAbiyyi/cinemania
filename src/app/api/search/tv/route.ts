@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
 import tmdbApi from "@/services/tmdbApi";
 import { handleApiError } from "@/lib/api/errorResponse";
+import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
+import { cachedServerFetch, jsonWithCachePolicy } from "@/lib/server/cache/serverCache";
 import {
   ALLOWED_SEARCH_TV_KEYS,
   extractAndGuardQueryParams,
@@ -26,8 +27,16 @@ export async function GET(request: Request) {
 
     if (validated.year !== undefined) upstreamParams.first_air_date_year = validated.year;
 
-    const { data } = await tmdbApi.get("/search/tv", { params: upstreamParams });
-    return NextResponse.json(data);
+    const policy = ENDPOINT_CACHE_POLICIES.search_tv;
+    const { data, cacheStatus } = await cachedServerFetch(
+      policy,
+      upstreamParams,
+      async () => {
+        const res = await tmdbApi.get("/search/tv", { params: upstreamParams });
+        return res.data;
+      }
+    );
+    return jsonWithCachePolicy(data, policy, cacheStatus);
   } catch (error: unknown) {
     return handleApiError(error);
   }

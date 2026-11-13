@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import tmdbApi from "@/services/tmdbApi";
+import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
+import { cachedServerFetch, jsonWithCachePolicy } from "@/lib/server/cache/serverCache";
 
 /**
  * API Route untuk mengambil provider media dari TMDB berdasarkan mediaType.
@@ -25,24 +27,31 @@ export async function GET(
     if (!mediaType || (mediaType !== "movie" && mediaType !== "tv")) {
         return NextResponse.json(
             { error: "Invalid mediaType parameter" },
-            { status: 400 }
+            { status: 400, headers: { "Cache-Control": "no-store" } }
         );
     }
 
     try {
-        // Kirim language dan watch_region ke endpoint TMDB
-        const { data } = await tmdbApi.get(`/watch/providers/${mediaType}`, {
-            params: {
-                language,
-                watch_region: watchRegion,
-            },
-        });
-        return NextResponse.json(data);
+        const policy = ENDPOINT_CACHE_POLICIES.providers_media;
+        const { data, cacheStatus } = await cachedServerFetch(
+            policy,
+            { mediaType, language, watch_region: watchRegion },
+            async () => {
+                const res = await tmdbApi.get(`/watch/providers/${mediaType}`, {
+                    params: {
+                        language,
+                        watch_region: watchRegion,
+                    },
+                });
+                return res.data;
+            }
+        );
+        return jsonWithCachePolicy(data, policy, cacheStatus);
     } catch (error: unknown) {
         console.error("Error fetching provider media:", error);
         return NextResponse.json(
             { error: "Failed to fetch provider media" },
-            { status: 500 }
+            { status: 500, headers: { "Cache-Control": "no-store" } }
         );
     }
 }

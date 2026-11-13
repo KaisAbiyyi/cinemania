@@ -1,4 +1,5 @@
-import { vi } from "vitest";
+import { beforeEach, vi } from "vitest";
+import { clearServerDataCache } from "@/lib/server/cache/serverCache";
 
 // Test setup file for Vitest
 // Enforces offline defaults and dummy credentials to prevent live TMDB API calls
@@ -11,3 +12,8 @@ process.env.YOUTUBE_API_KEY = "mock-youtube-offline-key";
 
 // Allow server-only imports during test execution
 vi.mock("server-only", () => ({}));
+
+// Isolate shared server cache between test cases
+beforeEach(() => {
+  clearServerDataCache();
+});

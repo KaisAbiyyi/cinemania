@@ -1,21 +1,15 @@
-import { NextResponse } from "next/server";
-import tmdbApi from "@/services/tmdbApi";
+import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
+import { handleCachedTmdbEntityResource } from "@/lib/server/cache/tmdbRouteHelper";
 
 export async function GET(
-  request: Request,
+  _request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
-  const endpoint = `/tv/${id}/content_ratings`;
-
-  try {
-    const { data } = await tmdbApi.get(endpoint);
-    return NextResponse.json(data);
-  } catch (error: unknown) {
-    console.error("Error fetching TV content ratings:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch TV content ratings." },
-      { status: 500 }
-    );
-  }
+  return handleCachedTmdbEntityResource({
+    id,
+    policy: ENDPOINT_CACHE_POLICIES.media_content_ratings,
+    endpoint: `/tv/${id}/content_ratings`,
+    errorMessage: "Failed to fetch TV content ratings.",
+  });
 }
