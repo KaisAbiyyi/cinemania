@@ -16,6 +16,19 @@ const GRID_CLASSES: Record<"horizontal" | "vertical", string> = {
 
 const ITEMS_PER_PAGE = 20;
 
+function resolveTrendingMediaType(
+    item: { media_type?: string; first_air_date?: string; release_date?: string },
+    filterMediaType: "all" | "movie" | "tv"
+): "movie" | "tv" {
+    if (item.media_type === "movie" || item.media_type === "tv") {
+        return item.media_type;
+    }
+    if (filterMediaType === "movie" || filterMediaType === "tv") {
+        return filterMediaType;
+    }
+    return item.first_air_date && !item.release_date ? "tv" : "movie";
+}
+
 const TrendingContainer: FC = () => {
     const { mediaType, timeWindow, orientation } = useTrendingFilters();
 
@@ -64,7 +77,7 @@ const TrendingContainer: FC = () => {
                     <MediaCard
                         key={`${item.id}-${pageIndex}`}
                         id={item.id}
-                        mediaType={item.media_type}
+                        mediaType={resolveTrendingMediaType(item, mediaType)}
                         posterPath={item.poster_path}
                         rating={item.vote_average}
                         releaseDate={item.release_date || item.first_air_date}

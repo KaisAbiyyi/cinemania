@@ -1,5 +1,7 @@
 import MediaByGenre from "@/feature/media/components/genre/MediaByGenre";
+import { buildPageMetadata } from "@/lib/metadata";
 import { slugToTitle } from "@/lib/utils";
+import type { Metadata } from "next";
 import { FC } from "react";
 
 interface TVGenrePageProps {
@@ -8,22 +10,17 @@ interface TVGenrePageProps {
     }>;
 }
 
-export const generateMetadata = async ({ params }: TVGenrePageProps) => {
+export const generateMetadata = async ({ params }: TVGenrePageProps): Promise<Metadata> => {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
     const genreTitle = slugToTitle(decodedSlug);
 
-    return {
-        title: `${genreTitle} TV Shows | Cinemania`,
+    return buildPageMetadata({
+        title: `${genreTitle} TV Shows`,
         description: `Explore the genre of ${genreTitle} TV shows. Discover the best ${genreTitle} TV shows and series.`,
+        path: `/genre/${slug}/tv`,
         keywords: `${genreTitle}, TV shows, genre, Cinemania`,
-        openGraph: {
-            title: `Genre - ${genreTitle} - Cinemania`,
-            description: `Explore the genre of ${genreTitle} TV shows. Discover the best ${genreTitle} TV shows and series.`,
-            type: "website",
-            url: `https://yourdomain.com/genre/${slug}`,
-        },
-    };
+    });
 };
 
 const TVGenrePage: FC<TVGenrePageProps> = async ({ params }) => {
@@ -31,6 +28,7 @@ const TVGenrePage: FC<TVGenrePageProps> = async ({ params }) => {
     const decodedSlug = decodeURIComponent(slug);
     const genreTitle = slugToTitle(decodedSlug);
     const genreId = slug.split("-")[0];
+
     return (
         <div className="flex flex-col gap-4">
             <h1 className="text-2xl font-semibold">{genreTitle} TV Shows</h1>

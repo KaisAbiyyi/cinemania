@@ -1,6 +1,8 @@
 import DetailBackBanner from "@/feature/media/components/detail/DetailBackBanner";
 import MediaImagesWrapper from "@/feature/media/components/images/MediaImagesWrapper";
+import { buildPageMetadata } from "@/lib/metadata";
 import { slugToTitle } from "@/lib/utils";
+import type { Metadata } from "next";
 import { FC } from "react";
 
 interface ImagesPageProps {
@@ -9,22 +11,17 @@ interface ImagesPageProps {
     }>;
 }
 
-export const generateMetadata = async ({ params }: { params: Promise<{ slug: string }> }) => {
+export const generateMetadata = async ({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> => {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
     const tvTitle = slugToTitle(decodedSlug);
 
-    return {
-        title: `Images of ${tvTitle} - Cinemania`,
+    return buildPageMetadata({
+        title: `Images of ${tvTitle}`,
         description: `Explore images of ${tvTitle}. Discover behind-the-scenes, posters, and more.`,
+        path: `/tv/${slug}/images`,
         keywords: `${tvTitle}, tv images, posters, behind-the-scenes, Cinemania`,
-        openGraph: {
-            title: `Images of ${tvTitle} - Cinemania`,
-            description: `Explore images of ${tvTitle}. Discover behind-the-scenes, posters, and more.`,
-            type: "website",
-            url: `https://yourdomain.com/tv/${slug}/images`,
-        },
-    };
+    });
 }
 
 const ImagesPage: FC<ImagesPageProps> = async ({ params }) => {
@@ -32,7 +29,6 @@ const ImagesPage: FC<ImagesPageProps> = async ({ params }) => {
     const decodedSlug = decodeURIComponent(slug);
     const id = Number(decodedSlug.split("-")[0]);
     const title = slugToTitle(decodedSlug);
-
 
     return (
         <div className="flex flex-col gap-8">

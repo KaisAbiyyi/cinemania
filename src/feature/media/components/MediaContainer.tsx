@@ -24,7 +24,7 @@ interface MediaContainerProps {
 
 const MediaContainer: FC<MediaContainerProps> = ({ mediaType }) => {
     // Ambil filter dari global context
-    const { filters } = useFilterContext();
+    const { filters, isReady } = useFilterContext();
     const { orientation } = useTrendingFilters();
 
     // Bangun query dari global filter state
@@ -37,7 +37,7 @@ const MediaContainer: FC<MediaContainerProps> = ({ mediaType }) => {
         fetchNextPage,
         hasNextPage,
         isFetchingNextPage,
-    } = useInfiniteMedia(query);
+    } = useInfiniteMedia(query, { enabled: isReady });
 
     const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
@@ -60,7 +60,7 @@ const MediaContainer: FC<MediaContainerProps> = ({ mediaType }) => {
         };
     }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
-    if (isLoading) return <MediaContainerSkeleton orientation={orientation} />;
+    if (!isReady || isLoading) return <MediaContainerSkeleton orientation={orientation} />;
     if (error)
         return (
             <h1 className="text-xl text-center text-red-500">

@@ -24,7 +24,7 @@ test.describe("CineMatch E2E Smoke Tests (100% Offline & Deterministic TMDB Mock
     // Verify navbar and search bar
     const navbar = page.locator('nav[role="navigation"]');
     await expect(navbar).toBeVisible();
-    const searchInput = page.locator('input[placeholder*="Search" i], input[type="search"]');
+    const searchInput = navbar.locator('input[placeholder*="Search" i], input[type="search"]');
     await expect(searchInput).toBeVisible();
   });
 

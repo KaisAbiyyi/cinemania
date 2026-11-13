@@ -7,6 +7,7 @@ import apiClient from "../../../services/apiClient";
 export const useGenres = (type: "movie" | "tv") => {
     return useQuery({
         queryKey: ["genres", type],
+        enabled: type === "movie" || type === "tv",
         queryFn: async () => {
             const { data } = await apiClient.get(`/genres`, { params: { type } });
             return data;

@@ -1,54 +1,83 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, ReactNode, FC } from "react";
+import React, { createContext, useContext, useState, useMemo, useSyncExternalStore, ReactNode, FC } from "react";
 import { Filters, globalDefaultFilters } from "@/types/filters";
+import { DiscoveryDatePreset, resolveDiscoveryDatePresetFilters } from "@/lib/datePresets";
 import { parseQuery } from "@/lib/utils";
 import { MediaQueryParams } from "../../hooks/useMedia";
+
+const emptySubscribe = () => () => {};
 
 interface FilterContextProps {
     filters: Filters;
     setFilters: (update: Partial<Filters> | ((prev: Filters) => Partial<Filters>)) => void;
     resetFilters: () => void;
     baseDefaultFilters: Filters;
+    isReady: boolean;
 }
 
 interface FilterProviderProps {
     children: ReactNode;
     defaultFilters?: Filters;
+    datePreset?: DiscoveryDatePreset;
 }
 
 const FilterContext = createContext<FilterContextProps | undefined>(undefined);
 
-export const FilterProvider: FC<FilterProviderProps> = ({ children, defaultFilters }) => {
-    // Gunakan defaultFilters yang dikirimkan, atau globalDefaultFilters
-    const baseDefaultFilters: Filters = defaultFilters ?? globalDefaultFilters;
+export const FilterProvider: FC<FilterProviderProps> = ({ children, defaultFilters, datePreset }) => {
+    const isHydrated = useSyncExternalStore(
+        emptySubscribe,
+        () => true,
+        () => false
+    );
 
-    // Inisialisasi state dengan base default
-    const [filters, setFiltersState] = useState<Filters>(baseDefaultFilters);
+    const serializedDefaults = JSON.stringify(defaultFilters ?? globalDefaultFilters);
 
-    // Di client, gabungkan base default dengan URL filter
-    useEffect(() => {
-        if (typeof window !== "undefined") {
-            const parsedQuery = parseQuery(window.location.search);
-            const merged = { ...baseDefaultFilters, ...parsedQuery };
-            setFiltersState(merged);
+    const staticBaseDefaults = useMemo<Filters>(
+        () => JSON.parse(serializedDefaults) as Filters,
+        [serializedDefaults]
+    );
+
+    const isReady = !datePreset || isHydrated;
+
+    const baseDefaultFilters = useMemo<Filters>(() => {
+        if (!datePreset || !isHydrated) {
+            return staticBaseDefaults;
         }
-    }, [baseDefaultFilters]);
+        return {
+            ...staticBaseDefaults,
+            ...resolveDiscoveryDatePresetFilters(datePreset),
+        };
+    }, [staticBaseDefaults, datePreset, isHydrated]);
+
+    const initialUrlFilters = useMemo<Partial<Filters>>(() => {
+        if (!isHydrated || typeof window === "undefined") {
+            return {};
+        }
+        return parseQuery(window.location.search);
+    }, [isHydrated]);
+
+    const [customFilters, setCustomFilters] = useState<Filters | null>(null);
+
+    const filters = useMemo<Filters>(
+        () => customFilters ?? { ...baseDefaultFilters, ...initialUrlFilters },
+        [customFilters, baseDefaultFilters, initialUrlFilters]
+    );
 
     const setFilters = (update: Partial<Filters> | ((prev: Filters) => Partial<Filters>)) => {
-        setFiltersState((prev) => {
-            const updateObj = typeof update === "function" ? update(prev) : update;
-            return { ...prev, ...updateObj };
+        setCustomFilters((prev) => {
+            const current = prev ?? { ...baseDefaultFilters, ...initialUrlFilters };
+            const updateObj = typeof update === "function" ? update(current) : update;
+            return { ...current, ...updateObj };
         });
     };
 
-    // Reset mengembalikan ke base default, tanpa merge URL
     const resetFilters = () => {
-        setFiltersState(baseDefaultFilters);
+        setCustomFilters(baseDefaultFilters);
     };
 
     return (
-        <FilterContext.Provider value={{ filters, setFilters, resetFilters, baseDefaultFilters }}>
+        <FilterContext.Provider value={{ filters, setFilters, resetFilters, baseDefaultFilters, isReady }}>
             {children}
         </FilterContext.Provider>
     );
@@ -62,7 +91,7 @@ export const useFilterContext = (): FilterContextProps => {
     return context;
 };
 
-// Fungsi bantu untuk convert filter → query param
+// Fungsi bantu untuk convert filter -> query param
 export const buildMediaQueryParams = (
     mediaType: "movie" | "tv",
     filters: Filters

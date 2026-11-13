@@ -1,18 +1,29 @@
+"use client";
+
 import { Github, Instagram, Linkedin, Mail, Twitter } from "lucide-react";
-import { FC } from "react";
+import { FC, useSyncExternalStore } from "react";
 import { CardDescription, CardTitle } from "../ui/card";
 import { buttonVariants } from "../ui/button";
 import Link from "next/link";
 
+const emptySubscribe = () => () => {};
+
 const Footer: FC = () => {
+    const isHydrated = useSyncExternalStore(
+        emptySubscribe,
+        () => true,
+        () => false
+    );
+    const currentYear = isHydrated ? new Date().getFullYear() : 2026;
+
     const linkClass = "transition text-muted-foreground hover:text-secondary-foreground";
     const socialButtonClass = buttonVariants({ variant: "ghost", className: "!justify-start hover:bg-primary transition-all duration-75 ease-in hover:text-primary-foreground" });
 
     const navLinks = [
         { label: "Home", href: "/" },
+        { label: "Trending", href: "/trending" },
         { label: "Movies", href: "/movie" },
         { label: "TV Shows", href: "/tv" },
-        { label: "About", href: "/about" },
     ];
 
     const personalLinks = [
@@ -54,7 +65,7 @@ const Footer: FC = () => {
                     <CardTitle className="text-lg">Personal</CardTitle>
                     <div className="flex flex-col gap-2">
                         {personalLinks.map(({ label, href }) => (
-                            <Link key={href} href={href} target="_blank" rel="noopener noreferrer nofollow" className={linkClass}>{label}</Link>
+                            <a key={href} href={href} target="_blank" rel="noopener noreferrer nofollow" className={linkClass}>{label}</a>
                         ))}
                     </div>
                 </address>
@@ -64,9 +75,9 @@ const Footer: FC = () => {
                     <CardTitle className="text-lg">Social</CardTitle>
                     <div className="flex flex-col gap-2 md:justify-start">
                         {socialLinks.map(({ label, href, icon }) => (
-                            <Link key={href} href={href} target="_blank" rel="noopener noreferrer nofollow" className={socialButtonClass}>
+                            <a key={href} href={href} target="_blank" rel="noopener noreferrer nofollow" className={socialButtonClass}>
                                 {icon} {label}
-                            </Link>
+                            </a>
                         ))}
                     </div>
                 </address>
@@ -79,7 +90,7 @@ const Footer: FC = () => {
 
             {/* Copyright */}
             <div className="mt-5 text-sm text-center text-gray-400">
-                © {new Date().getFullYear()} <span itemProp="name">Cinemania</span>. Built by <a href="https://kaisabiyyi.com" className="text-primary hover:underline" itemProp="creator">Kais Abiyyi</a>.
+                © {currentYear} <span itemProp="name">Cinemania</span>. Built by <a href="https://kaisabiyyi.com" target="_blank" rel="noopener noreferrer nofollow" className="text-primary hover:underline" itemProp="creator">Kais Abiyyi</a>.
             </div>
         </footer>
     );

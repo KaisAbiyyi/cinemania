@@ -47,17 +47,28 @@ export function getInitials(name: string) {
   return initials;
 }
 
+const DEFAULT_TMDB_POSTER_BASE = "https://image.tmdb.org/t/p";
+
 export function getProfileImageUrl(profilePath: string) {
-  const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL
-  const baseImageUrl = `${imagePath}/w200`; // Sesuaikan 'imagePath' dengan URL dasar gambar Anda
+  const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL || DEFAULT_TMDB_POSTER_BASE;
+  const baseImageUrl = `${imagePath}/w200`;
 
-  return profilePath ? `${baseImageUrl}/${profilePath}` : '/placeholder.jpg';
+  if (!profilePath) {
+    return "/placeholder.jpg";
+  }
+  const normalizedPath = profilePath.startsWith("/") ? profilePath : `/${profilePath}`;
+  return `${baseImageUrl}${normalizedPath}`;
 }
-export function getPosterImageUrl(profilePath: string) {
-  const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL
-  const baseImageUrl = `${imagePath}/w500`; // Sesuaikan 'imagePath' dengan URL dasar gambar Anda
 
-  return profilePath ? `${baseImageUrl}/${profilePath}` : '/placeholder.jpg';
+export function getPosterImageUrl(profilePath: string) {
+  const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL || DEFAULT_TMDB_POSTER_BASE;
+  const baseImageUrl = `${imagePath}/w500`;
+
+  if (!profilePath) {
+    return "/placeholder.jpg";
+  }
+  const normalizedPath = profilePath.startsWith("/") ? profilePath : `/${profilePath}`;
+  return `${baseImageUrl}${normalizedPath}`;
 }
 
 

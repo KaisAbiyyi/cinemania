@@ -2,39 +2,19 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import GenreList from "@/feature/genre/components/GenreList";
 import HeroSection from "@/feature/home/hero/HeroSection";
 import MediaScrollableList from "@/feature/media/components/MediaScrollableList";
+import { createSiteMetadata } from "@/lib/metadata";
 import { Metadata } from "next";
 
-// Force dynamic rendering
-export const dynamic = 'force-dynamic';
+const siteMetadata = createSiteMetadata();
 
 export const metadata: Metadata = {
-  title: "Cinemania - Explore Movies & TV Shows",
-  description: "Discover trending movies and TV shows with Cinemania.",
-  keywords: ["movies", "tv shows", "trending", "watchlist", "favorites", "cinema"],
-  openGraph: {
-    title: "Cinemania",
-    description: "Explore the latest movies and TV shows.",
-    url: "https://cinemania.com",
-    siteName: "Cinemania",
-    type: "website",
-    images: [
-      {
-        url: "https://cinemania.com/og-image.jpg",
-        width: 1200,
-        height: 630,
-        alt: "Cinemania Banner",
-      },
-    ],
+  ...siteMetadata,
+  alternates: {
+    canonical: "/",
   },
 };
 
 export default function Home() {
-  const today = new Date();
-  const oneMonthBefore = new Date();
-  oneMonthBefore.setMonth(oneMonthBefore.getMonth() - 1)
-  const oneMonthAfter = new Date();
-  oneMonthAfter.setMonth(oneMonthAfter.getMonth() + 1)
-
   return (<>
     <HeroSection />
     <GenreList />
@@ -52,13 +32,8 @@ export default function Home() {
           redirectTo="movie/now-playing"
           orientation="horizontal"
           showOnly={5}
-          queryParams={
-            {
-              with_release_type: "2|3",
-              "release_date.gte": oneMonthBefore.toISOString(),
-              "release_date.lte": today.toISOString()
-            }
-          } type="movie" />
+          datePreset="movie-now-playing"
+          type="movie" />
       </TabsContent>
       <TabsContent value="upcoming">
         <MediaScrollableList
@@ -67,13 +42,7 @@ export default function Home() {
           redirectTo="movie/upcoming"
           orientation="horizontal"
           showOnly={5}
-          queryParams={
-            {
-              with_release_type: "2|3",
-              "release_date.gte": today.toISOString(),
-              "release_date.lte": oneMonthAfter.toISOString()
-            }
-          }
+          datePreset="movie-upcoming"
           type="movie" />
       </TabsContent>
     </Tabs>

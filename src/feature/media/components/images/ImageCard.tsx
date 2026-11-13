@@ -1,5 +1,4 @@
 import Image from "next/image";
-import Link from "next/link";
 import { FC } from "react";
 import { MediaImages } from "../../hooks/useMediaImages";
 
@@ -7,24 +6,27 @@ interface ImagesCardProps {
     data: MediaImages["posters"][number]
 }
 
+const DEFAULT_TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
+
 const ImagesCard: FC<ImagesCardProps> = ({ data }) => {
-    const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL || "https://default-image-path.com/";
+    const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL || DEFAULT_TMDB_IMAGE_BASE;
 
     if (!data.file_path) {
-        console.error("Invalid file path for image:", data);
-        return null; // Return null to avoid rendering invalid images
+        return null;
     }
 
+    const normalizedFilePath = data.file_path.startsWith("/") ? data.file_path : `/${data.file_path}`;
+
     return (
-        <Link href={`${imagePath}/original/${data.file_path}`} target="_blank">
+        <a href={`${imagePath}/original${normalizedFilePath}`} target="_blank" rel="noopener noreferrer">
             <Image
                 alt={data.file_path}
                 width={480}
                 height={360}
                 className="object-cover w-full h-full rounded-lg"
-                src={`${imagePath}/w500/${data.file_path}`}
+                src={`${imagePath}/w500${normalizedFilePath}`}
             />
-        </Link>
+        </a>
     );
 }
 

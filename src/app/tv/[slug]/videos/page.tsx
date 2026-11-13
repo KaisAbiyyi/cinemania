@@ -1,6 +1,8 @@
 import DetailBackBanner from "@/feature/media/components/detail/DetailBackBanner";
 import MediaVideosWrapper from "@/feature/media/components/videos/MediaVideosWrapper";
+import { buildPageMetadata } from "@/lib/metadata";
 import { slugToTitle } from "@/lib/utils";
+import type { Metadata } from "next";
 import { FC } from "react";
 
 interface VideosPageProps {
@@ -9,22 +11,17 @@ interface VideosPageProps {
     }>
 }
 
-export const generateMetadata = async ({ params }: { params: Promise<{ slug: string }> }) => {
+export const generateMetadata = async ({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> => {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
     const tvTitle = slugToTitle(decodedSlug);
 
-    return {
-        title: `Videos of ${tvTitle} - Cinemania`,
+    return buildPageMetadata({
+        title: `Videos of ${tvTitle}`,
         description: `Watch videos of ${tvTitle}. Discover trailers, behind-the-scenes, and more.`,
+        path: `/tv/${slug}/videos`,
         keywords: `${tvTitle}, tv videos, trailers, behind-the-scenes, Cinemania`,
-        openGraph: {
-            title: `Videos of ${tvTitle} - Cinemania`,
-            description: `Watch videos of ${tvTitle}. Discover trailers, behind-the-scenes, and more.`,
-            type: "website",
-            url: `https://yourdomain.com/tv/${slug}/videos`,
-        },
-    };
+    });
 }
 
 const VideosPage: FC<VideosPageProps> = async ({ params }) => {

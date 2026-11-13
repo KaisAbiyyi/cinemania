@@ -1,47 +1,28 @@
 import { buttonVariants } from "@/components/ui/button";
 import FilterContainer from "@/feature/media/components/filter/FilterContainer";
 import MediaContainer from "@/feature/media/components/MediaContainer";
+import { buildPageMetadata } from "@/lib/metadata";
 import { Metadata } from "next";
 import Link from "next/link";
 import { FC } from "react";
-import { FilterProvider } from "@/feature/media/components/filter/FilterProvider"; // pastikan path ini sesuai
+import { FilterProvider } from "@/feature/media/components/filter/FilterProvider";
 
-export const metadata: Metadata = {
-    title: "Top Rated Movies | Cinemania",
+export const metadata: Metadata = buildPageMetadata({
+    title: "Top Rated Movies",
     description:
         "Discover the highest rated movies on Cinemania. Read reviews, ratings, and detailed information on critically acclaimed films.",
-    openGraph: {
-        title: "Top Rated Movies | Cinemania",
-        description:
-            "Explore top rated movies with comprehensive details, reviews, and ratings on Cinemania.",
-        url: "https://cinemania.com/movie/top-rated",
-        siteName: "Cinemania",
-        images: [
-            {
-                url: "https://cinemania.com/og/top-rated.jpg",
-                width: 1200,
-                height: 630,
-                alt: "Top Rated Movies on Cinemania",
-            },
-        ],
-        type: "website",
-    },
-    robots: {
-        index: true,
-        follow: true,
-    },
+    path: "/movie/top-rated",
+});
+
+const TOP_RATED_MOVIE_DEFAULT_FILTERS = {
+    sort_by: "vote_average.desc",
+    without_genres: "99,10755",
+    vote_count_gte: 300,
 };
 
-
 const TopRatedMoviePage: FC = () => {
-    const defaultFilters = {
-        sort_by: "vote_average.desc",
-        without_genres: "99,10755",
-        vote_count_gte: 300
-    };
-
     return (
-        <FilterProvider defaultFilters={defaultFilters}>
+        <FilterProvider defaultFilters={TOP_RATED_MOVIE_DEFAULT_FILTERS}>
             <h1 className="font-semibold text-2xl">Top Rated Movies</h1>
             <div className="flex gap-4">
                 <Link

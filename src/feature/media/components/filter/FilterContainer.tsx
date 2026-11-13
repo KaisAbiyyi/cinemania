@@ -16,7 +16,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { LayoutGrid, StretchHorizontal } from "lucide-react";
-import { FC, useEffect, useMemo, useState } from "react";
+import { FC, Suspense, useEffect, useMemo, useState } from "react";
 
 // Import komponen filter individual
 import DateRangePicker from "./DateRangePicker";
@@ -46,7 +46,7 @@ interface FilterContainerProps {
     onOrientationChange?: (orientation: "horizontal" | "vertical") => void;
 }
 
-const FilterContainer: FC<FilterContainerProps> = ({
+const FilterContainerInner: FC<FilterContainerProps> = ({
     mediaType,
     onApply,
     onOrientationChange,
@@ -342,5 +342,11 @@ const FilterContainer: FC<FilterContainerProps> = ({
         </Accordion>
     );
 };
+
+const FilterContainer: FC<FilterContainerProps> = (props) => (
+    <Suspense fallback={<div className="h-14 rounded-lg border bg-card/50" aria-hidden="true" />}>
+        <FilterContainerInner {...props} />
+    </Suspense>
+);
 
 export default FilterContainer;

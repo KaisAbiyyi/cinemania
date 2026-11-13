@@ -1,4 +1,3 @@
-
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import apiClient from "@/services/apiClient";
 
@@ -19,12 +18,17 @@ export interface MediaResponse {
     total_results: number;
 }
 
+export interface MediaHookOptions {
+    enabled?: boolean;
+}
+
 /**
  * Hook untuk fetching media biasa (non-infinite query)
  */
-export const useMedia = (params: MediaQueryParams) => {
+export const useMedia = (params: MediaQueryParams, options?: MediaHookOptions) => {
     return useQuery({
         queryKey: ["media", params],
+        enabled: options?.enabled ?? true,
         queryFn: async () => {
             const { data } = await apiClient.get<MediaResponse>("/media", { params });
             return data;
@@ -35,9 +39,10 @@ export const useMedia = (params: MediaQueryParams) => {
 /**
  * Hook untuk fetching media dengan infinite query (infinite scroll)
  */
-export const useInfiniteMedia = (params: MediaQueryParams) => {
+export const useInfiniteMedia = (params: MediaQueryParams, options?: MediaHookOptions) => {
     return useInfiniteQuery<MediaResponse, Error>({
         queryKey: ["media", params],
+        enabled: options?.enabled ?? true,
         initialPageParam: 1, // Menentukan halaman awal
         queryFn: async ({ pageParam = 1 }) => {
             const { data } = await apiClient.get<MediaResponse>("/media", {
