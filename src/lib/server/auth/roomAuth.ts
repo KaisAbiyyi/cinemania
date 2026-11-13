@@ -9,6 +9,7 @@ import {
   verifyGuestCapabilityToken,
   type GuestCapabilityClaims,
 } from "./guestCapability";
+import { isRoomRecordExpired } from "@/lib/server/room/stateMachine";
 
 export interface RoomActorAuthority {
   room: Room;
@@ -83,7 +84,7 @@ export async function requireRoomActor(
     throw new CapabilityAuthError(404, "ROOM_NOT_FOUND", "Room does not exist.");
   }
 
-  if (room.status === "EXPIRED") {
+  if (isRoomRecordExpired(room)) {
     throw new CapabilityAuthError(410, "ROOM_EXPIRED", "Room session has expired.");
   }
 

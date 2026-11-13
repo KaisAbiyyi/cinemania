@@ -3,6 +3,8 @@ import { CapabilityAuthError, type CookieAttributes } from "./guestCapability";
 import {
   ParticipantNotFoundError,
   RoomCapacityError,
+  RoomCodeGenerationError,
+  RoomExpiredError,
   RoomNotFoundError,
 } from "@/lib/server/room/roomRepository";
 import { InvalidStateTransitionError } from "@/lib/server/room/stateMachine";
@@ -57,7 +59,25 @@ export function handleGuestApiError(err: unknown): NextResponse {
       { status: 404, headers: PRIVATE_NO_STORE_HEADERS }
     );
   }
-  if (err instanceof RoomCapacityError || err instanceof InvalidStateTransitionError) {
+  if (err instanceof RoomExpiredError) {
+    return NextResponse.json(
+      { error: "ROOM_EXPIRED", message: err.message },
+      { status: 410, headers: PRIVATE_NO_STORE_HEADERS }
+    );
+  }
+  if (err instanceof RoomCodeGenerationError) {
+    return NextResponse.json(
+      { error: "ROOM_CODE_GENERATION_FAILED", message: err.message },
+      { status: 503, headers: PRIVATE_NO_STORE_HEADERS }
+    );
+  }
+  if (err instanceof RoomCapacityError) {
+    return NextResponse.json(
+      { error: err.code, message: err.message },
+      { status: 409, headers: PRIVATE_NO_STORE_HEADERS }
+    );
+  }
+  if (err instanceof InvalidStateTransitionError) {
     return NextResponse.json(
       { error: "ROOM_JOIN_CONFLICT", message: err.message },
       { status: 409, headers: PRIVATE_NO_STORE_HEADERS }

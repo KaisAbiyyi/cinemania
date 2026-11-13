@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Pool, type PoolConfig } from "pg";
 import type { Room, RoomParticipant } from "@/db/schema";
 import { CapabilityAuthError } from "@/lib/server/auth/guestCapability";
-import { PostgresRoomRepository } from "./postgresRoomRepository";
+import { PostgresRoomRepository, assertValidPgSchema } from "./postgresRoomRepository";
 import { SqliteRoomRepository, type CreateRoomOptions } from "./roomRepository";
 
 export interface RoomAuthorityStore {
@@ -15,6 +15,7 @@ export interface RoomAuthorityStore {
   getRoomById(roomId: string): Promise<Room | null>;
   getRoomByCode(code: string): Promise<Room | null>;
   getParticipant(roomId: string, participantId: string): Promise<RoomParticipant | null>;
+  getParticipantsByRoom(roomId: string): Promise<RoomParticipant[]>;
   getMinGeneration(roomId: string, participantId: string): Promise<number>;
   setMinGeneration(
     roomId: string,
@@ -225,6 +226,10 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
     return this.repo.getParticipant(roomId, participantId);
   }
 
+  async getParticipantsByRoom(roomId: string): Promise<RoomParticipant[]> {
+    return this.repo.getParticipantsByRoom(roomId);
+  }
+
   async getMinGeneration(roomId: string, participantId: string): Promise<number> {
     const row = this.db
       .prepare(
@@ -308,11 +313,12 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
   private readonly schema?: string;
 
   constructor(pool: Pool, options?: { schema?: string }) {
-    if (options?.schema && !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(options.schema)) {
+    try {
+      this.schema = assertValidPgSchema(options?.schema);
+    } catch {
       throw new CapabilityAuthError(500, "DATABASE_CONFIG_INVALID", "Invalid PostgreSQL schema identifier.");
     }
     this.pool = pool;
-    this.schema = options?.schema;
     this.repo = new PostgresRoomRepository(pool, options);
   }
 
@@ -363,6 +369,10 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
 
   async getParticipant(roomId: string, participantId: string): Promise<RoomParticipant | null> {
     return this.repo.getParticipant(roomId, participantId);
+  }
+
+  async getParticipantsByRoom(roomId: string): Promise<RoomParticipant[]> {
+    return this.repo.getParticipantsByRoom(roomId);
   }
 
   async getMinGeneration(roomId: string, participantId: string): Promise<number> {

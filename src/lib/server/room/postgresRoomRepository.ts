@@ -13,8 +13,14 @@ import {
 } from "../../../db/schema";
 import {
   assertValidTransition,
+  isRoomRecordExpired,
   validateStartRoundPrerequisites,
 } from "./stateMachine";
+import {
+  DEFAULT_CODE_GENERATION_MAX_RETRIES,
+  RoomCodeGenerationError,
+  generateRoomCode,
+} from "./roomCode";
 import {
   CreateRoomOptions,
   CandidateInput,
@@ -23,8 +29,16 @@ import {
   RoundNotFoundError,
   CandidateNotFoundError,
   RoomCapacityError,
-  generateRoomCode,
+  RoomExpiredError,
 } from "./roomRepository";
+
+export function assertValidPgSchema(schema?: string): string | undefined {
+  if (!schema) return undefined;
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(schema)) {
+    throw new Error(`Invalid PostgreSQL schema identifier: '${schema}'`);
+  }
+  return schema;
+}
 
 export interface PostgresRepositoryOptions {
   schema?: string;
@@ -134,7 +148,7 @@ export class PostgresRoomRepository {
 
   constructor(db: Queryable, options?: PostgresRepositoryOptions) {
     this.db = db;
-    this.schema = options?.schema;
+    this.schema = assertValidPgSchema(options?.schema);
   }
 
   /**
@@ -154,7 +168,7 @@ export class PostgresRoomRepository {
 
     try {
       if (this.schema) {
-        await client.query(`SET search_path TO ${this.schema}, pg_temp;`);
+        await client.query(`SET search_path TO "${this.schema}", pg_temp;`);
       }
       await client.query("BEGIN;");
       const result = await fn(client);
@@ -184,7 +198,7 @@ export class PostgresRoomRepository {
 
     try {
       if (this.schema) {
-        await client.query(`SET search_path TO ${this.schema}, pg_temp;`);
+        await client.query(`SET search_path TO "${this.schema}", pg_temp;`);
       }
       return await fn(client);
     } finally {
@@ -206,37 +220,62 @@ export class PostgresRoomRepository {
       const nowIso = now.toISOString();
       const expiresAt = new Date(now.getTime() + ttlSeconds * 1000).toISOString();
 
+      const codeGenerator = options.codeGenerator ?? generateRoomCode;
+      const maxAttempts = Math.max(1, options.maxCodeAttempts ?? DEFAULT_CODE_GENERATION_MAX_RETRIES);
       let roomCode = "";
       let attempts = 0;
-      while (attempts < 5) {
+
+      while (attempts < maxAttempts) {
         attempts++;
-        const candidateCode = generateRoomCode();
+        const candidateCode = codeGenerator();
         const existing = await client.query("SELECT 1 FROM rooms WHERE code = $1 LIMIT 1;", [candidateCode]);
-        if (existing.rows.length === 0) {
+        if (existing.rows.length > 0) {
+          continue;
+        }
+
+        // Step 1: Insert Room under savepoint so unique-code race retries do not abort the transaction
+        await client.query("SAVEPOINT sp_create_room_code;");
+        try {
+          await client.query(
+            `INSERT INTO rooms (
+              id, code, status, host_participant_id, state_version, participant_count,
+              matched_movie_id, current_round_id, deck_filter, inactivity_ttl_seconds,
+              last_activity_at, expires_at, created_at, updated_at
+            ) VALUES ($1, $2, 'LOBBY', NULL, 1, 1, NULL, NULL, $3, $4, $5, $6, $5, $5);`,
+            [
+              roomId,
+              candidateCode,
+              options.deckFilter ? JSON.stringify(options.deckFilter) : null,
+              ttlSeconds,
+              nowIso,
+              expiresAt,
+            ]
+          );
+          await client.query("RELEASE SAVEPOINT sp_create_room_code;");
           roomCode = candidateCode;
           break;
+        } catch (insertErr: unknown) {
+          await client.query("ROLLBACK TO SAVEPOINT sp_create_room_code;");
+          const pgCode =
+            typeof insertErr === "object" && insertErr !== null && "code" in insertErr
+              ? String((insertErr as { code?: unknown }).code)
+              : "";
+          const pgConstraint =
+            typeof insertErr === "object" && insertErr !== null && "constraint" in insertErr
+              ? String((insertErr as { constraint?: unknown }).constraint)
+              : "";
+          if (pgCode === "23505" && (!pgConstraint || pgConstraint.includes("code"))) {
+            continue;
+          }
+          throw insertErr;
         }
       }
-      if (!roomCode) {
-        throw new Error("Failed to generate unique room code after 5 attempts");
-      }
 
-      // Step 1: Insert Room with host_participant_id = NULL
-      await client.query(
-        `INSERT INTO rooms (
-          id, code, status, host_participant_id, state_version, participant_count,
-          matched_movie_id, current_round_id, deck_filter, inactivity_ttl_seconds,
-          last_activity_at, expires_at, created_at, updated_at
-        ) VALUES ($1, $2, 'LOBBY', NULL, 1, 1, NULL, NULL, $3, $4, $5, $6, $5, $5);`,
-        [
-          roomId,
-          roomCode,
-          options.deckFilter ? JSON.stringify(options.deckFilter) : null,
-          ttlSeconds,
-          nowIso,
-          expiresAt,
-        ]
-      );
+      if (!roomCode) {
+        throw new RoomCodeGenerationError(
+          `Failed to generate unique room code after ${maxAttempts} attempts`
+        );
+      }
 
       // Step 2: Insert Host in room_participants
       await client.query(
@@ -294,7 +333,11 @@ export class PostgresRoomRepository {
       if (roomRes.rows.length === 0) {
         throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
       }
-      const room = roomRes.rows[0];
+      const room = normalizeRoom(roomRes.rows[0]);
+
+      if (isRoomRecordExpired(room, now)) {
+        throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+      }
 
       // 1. Idempotency check FIRST
       const existingRes = await client.query(
@@ -320,12 +363,18 @@ export class PostgresRoomRepository {
 
       // 2. Room lifecycle check
       if (room.status !== "LOBBY") {
-        throw new RoomCapacityError(`Cannot join room: status is '${room.status}', but must be 'LOBBY'.`);
+        throw new RoomCapacityError(
+          `Cannot join room: status is '${room.status}', but must be 'LOBBY'.`,
+          "ROOM_NOT_JOINABLE"
+        );
       }
 
       // 3. Capacity check
       if (room.participant_count >= MAX_PARTICIPANTS) {
-        throw new RoomCapacityError(`Room has reached maximum capacity of ${MAX_PARTICIPANTS} participants.`);
+        throw new RoomCapacityError(
+          `Room has reached maximum capacity of ${MAX_PARTICIPANTS} participants.`,
+          "ROOM_FULL"
+        );
       }
 
       // 4. Insert participant
@@ -681,6 +730,16 @@ export class PostgresRoomRepository {
       );
       if (res.rows.length === 0) return null;
       return normalizeParticipant(res.rows[0]);
+    });
+  }
+
+  async getParticipantsByRoom(roomId: string): Promise<RoomParticipant[]> {
+    return this.withClient(async (client) => {
+      const res = await client.query(
+        "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+        [roomId]
+      );
+      return res.rows.map((row) => normalizeParticipant(row));
     });
   }
 

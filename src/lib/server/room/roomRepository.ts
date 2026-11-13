@@ -14,14 +14,24 @@ import {
 } from "@/db/schema";
 import {
   assertValidTransition,
+  isRoomRecordExpired,
   validateStartRoundPrerequisites,
 } from "./stateMachine";
+import {
+  DEFAULT_CODE_GENERATION_MAX_RETRIES,
+  RoomCodeGenerationError,
+  generateRoomCode,
+} from "./roomCode";
+
+export { generateRoomCode, RoomCodeGenerationError };
 
 export interface CreateRoomOptions {
   hostParticipantId?: string;
   hostDisplayName: string;
   deckFilter?: Record<string, unknown>;
   inactivityTtlSeconds?: number;
+  codeGenerator?: () => string;
+  maxCodeAttempts?: number;
 }
 
 export interface CandidateInput {
@@ -61,10 +71,27 @@ export class CandidateNotFoundError extends Error {
   }
 }
 
+export type RoomCapacityErrorCode = "ROOM_FULL" | "ROOM_NOT_JOINABLE" | "ROOM_JOIN_CONFLICT";
+
 export class RoomCapacityError extends Error {
-  constructor(message = "Room capacity exceeded") {
+  public readonly code: RoomCapacityErrorCode;
+
+  constructor(message = "Room capacity exceeded", code: RoomCapacityErrorCode = "ROOM_JOIN_CONFLICT") {
     super(message);
     this.name = "RoomCapacityError";
+    this.code = code;
+    Object.setPrototypeOf(this, RoomCapacityError.prototype);
+  }
+}
+
+export class RoomExpiredError extends Error {
+  public readonly status = 410;
+  public readonly code = "ROOM_EXPIRED";
+
+  constructor(message = "Room has expired") {
+    super(message);
+    this.name = "RoomExpiredError";
+    Object.setPrototypeOf(this, RoomExpiredError.prototype);
   }
 }
 
@@ -73,17 +100,6 @@ export class DuplicateVoteError extends Error {
     super(message);
     this.name = "DuplicateVoteError";
   }
-}
-
-const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-export function generateRoomCode(): string {
-  let code = "";
-  const bytes = crypto.randomBytes(6);
-  for (let i = 0; i < 6; i++) {
-    code += ROOM_CODE_ALPHABET[bytes[i] % ROOM_CODE_ALPHABET.length];
-  }
-  return code;
 }
 
 export class SqliteRoomRepository {
@@ -108,12 +124,14 @@ export class SqliteRoomRepository {
 
     this.db.exec("BEGIN IMMEDIATE;");
     try {
-      // Collision retry loop for 6-character room code (up to 5 attempts)
+      const codeGenerator = options.codeGenerator ?? generateRoomCode;
+      const maxAttempts = Math.max(1, options.maxCodeAttempts ?? DEFAULT_CODE_GENERATION_MAX_RETRIES);
+      // Collision retry loop for 6-character room code
       let roomCode = "";
       let attempts = 0;
-      while (attempts < 5) {
+      while (attempts < maxAttempts) {
         attempts++;
-        const candidateCode = generateRoomCode();
+        const candidateCode = codeGenerator();
         const existing = this.db
           .prepare(`SELECT 1 FROM rooms WHERE code = ?`)
           .get(candidateCode);
@@ -123,7 +141,9 @@ export class SqliteRoomRepository {
         }
       }
       if (!roomCode) {
-        throw new Error("Failed to generate unique room code after 5 attempts");
+        throw new RoomCodeGenerationError(
+          `Failed to generate unique room code after ${maxAttempts} attempts`
+        );
       }
 
       // Step 1: Insert Room with host_participant_id = NULL
@@ -202,6 +222,10 @@ export class SqliteRoomRepository {
       const room = this.getRoomById(roomId);
       if (!room) throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
 
+      if (isRoomRecordExpired(room, now)) {
+        throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+      }
+
       // 1. Idempotency check FIRST (ADR-003): return existing participant on retry/reconnect
       const existing = this.db
         .prepare(
@@ -233,14 +257,16 @@ export class SqliteRoomRepository {
       // 2. Room lifecycle check
       if (room.status !== "LOBBY") {
         throw new RoomCapacityError(
-          `Cannot join room: status is '${room.status}', but must be 'LOBBY'.`
+          `Cannot join room: status is '${room.status}', but must be 'LOBBY'.`,
+          "ROOM_NOT_JOINABLE"
         );
       }
 
       // 3. Capacity check: maximum 5 participants
       if (room.participant_count >= MAX_PARTICIPANTS) {
         throw new RoomCapacityError(
-          `Room has reached maximum capacity of ${MAX_PARTICIPANTS} participants.`
+          `Room has reached maximum capacity of ${MAX_PARTICIPANTS} participants.`,
+          "ROOM_FULL"
         );
       }
 
@@ -721,7 +747,7 @@ export class SqliteRoomRepository {
 
   getParticipantsByRoom(roomId: string): RoomParticipant[] {
     const rows = this.db
-      .prepare(`SELECT * FROM room_participants WHERE room_id = ? ORDER BY joined_at ASC`)
+      .prepare(`SELECT * FROM room_participants WHERE room_id = ? ORDER BY joined_at ASC, participant_id ASC`)
       .all(roomId);
     return rows as unknown as RoomParticipant[];
   }
