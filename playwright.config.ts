@@ -27,6 +27,7 @@ export default defineConfig({
       NODE_OPTIONS: "--require ./tests/fixtures/mock-tmdb.cjs",
       TMDB_API_RAT: "mock-tmdb-offline-rat-token",
       CINEMATCH_CAPABILITY_SECRET: "e2e-offline-test-capability-secret-32-bytes",
+      CINEMATCH_ALLOW_LOCAL_SQLITE_IN_PROD: "true",
       NEXT_PUBLIC_TMDB_POSTER_URL: "https://image.tmdb.org/t/p",
       NEXT_PUBLIC_IMAGE_BASE_URL: "https://image.tmdb.org/t/p",
       PORT: "3055",

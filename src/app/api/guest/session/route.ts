@@ -6,6 +6,7 @@ import {
   CapabilityAuthError,
   DEFAULT_CAPABILITY_TTL_SECONDS,
   extractCookieValue,
+  getCapabilitySecret,
   getGuestCookieName,
   isValidUuid,
   mintGuestCapabilityToken,
@@ -72,6 +73,7 @@ export async function GET(request: Request) {
       throw new CapabilityAuthError(400, "INVALID_ROOM_ID", "Query parameter roomId must be a valid UUID.");
     }
 
+    getCapabilitySecret();
     const store = getRoomAuthorityStore();
     const actor = await requireRoomActor(request, roomId, store);
 
@@ -96,7 +98,7 @@ export async function GET(request: Request) {
 
 /**
  * POST /api/guest/session
- * - No roomId/roomCode: creates a new room and issues an HttpOnly HOST capability cookie.
+ * - Empty body (including absent Content-Length) or JSON with optional displayName creates a HOST room.
  * - With roomId or roomCode + valid existing cookie: safely rejoins preserving server participantId & role.
  * - With roomId or roomCode + no cookie: joins as a new MEMBER with server-generated UUID.
  * User-supplied participantId or role fields in request body are never trusted.
@@ -105,11 +107,16 @@ export async function POST(request: Request) {
   try {
     assertSameOriginCsrf(request);
 
+    // Preflight capability signing configuration & durable store BEFORE any DB mutation
+    // so missing secrets/store config never creates orphan room/participant records.
+    getCapabilitySecret();
+    const store = getRoomAuthorityStore();
+
     let rawBody: unknown = {};
-    const contentLength = request.headers.get("content-length");
-    if (contentLength !== "0") {
+    const rawText = await request.text();
+    if (rawText.trim().length > 0) {
       try {
-        rawBody = await request.json();
+        rawBody = JSON.parse(rawText);
       } catch {
         return privateJsonResponse(
           { error: "INVALID_JSON", message: "Request body must be valid JSON." },
@@ -128,7 +135,6 @@ export async function POST(request: Request) {
     }
 
     const { roomId: requestedRoomId, roomCode: requestedRoomCode, displayName } = parsed.data;
-    const store = getRoomAuthorityStore();
 
     // Case 1: Create new room as anonymous HOST
     if (!requestedRoomId && !requestedRoomCode) {

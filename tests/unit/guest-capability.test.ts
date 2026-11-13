@@ -10,6 +10,11 @@ import {
   verifyGuestCapabilityToken,
 } from "@/lib/server/auth/guestCapability";
 import { mintSupabaseRealtimeJwt } from "@/lib/server/auth/roomAuth";
+import {
+  getRoomAuthorityStore,
+  resetRoomAuthorityStoreForTests,
+  resolvePostgresPoolConfig,
+} from "@/lib/server/room/roomStore";
 
 const TEST_SECRET = "unit-test-capability-secret-32-bytes-minimum";
 const ROOM_A = "11111111-1111-4111-8111-111111111111";
@@ -18,13 +23,26 @@ const PARTICIPANT_1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 const ORIGINAL_SECRET = process.env.CINEMATCH_CAPABILITY_SECRET;
+const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
+const ORIGINAL_PG_HOST = process.env.SUPABASE_PG_HOST;
+const ORIGINAL_PG_PASSWORD = process.env.SUPABASE_PG_PASSWORD;
+const ORIGINAL_ALLOW_SQLITE = process.env.CINEMATCH_ALLOW_LOCAL_SQLITE_IN_PROD;
 
 afterEach(() => {
+  resetRoomAuthorityStoreForTests();
   (process.env as Record<string, string | undefined>).NODE_ENV = ORIGINAL_NODE_ENV;
-  if (ORIGINAL_SECRET === undefined) {
-    delete process.env.CINEMATCH_CAPABILITY_SECRET;
-  } else {
-    process.env.CINEMATCH_CAPABILITY_SECRET = ORIGINAL_SECRET;
+  for (const [key, value] of [
+    ["CINEMATCH_CAPABILITY_SECRET", ORIGINAL_SECRET],
+    ["DATABASE_URL", ORIGINAL_DATABASE_URL],
+    ["SUPABASE_PG_HOST", ORIGINAL_PG_HOST],
+    ["SUPABASE_PG_PASSWORD", ORIGINAL_PG_PASSWORD],
+    ["CINEMATCH_ALLOW_LOCAL_SQLITE_IN_PROD", ORIGINAL_ALLOW_SQLITE],
+  ] as const) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
   }
 });
 
@@ -284,5 +302,27 @@ describe("CINE-013: Guest Capability Token Unit Tests", () => {
     expect(payload.iat).toBe(1_760_000_000);
     expect(payload.exp).toBe(1_760_001_800);
     expect(sigB64.length).toBeGreaterThan(20);
+  });
+
+  it("fails closed in production when shared PostgreSQL config is missing or partial", () => {
+    (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+    delete process.env.DATABASE_URL;
+    delete process.env.SUPABASE_PG_HOST;
+    delete process.env.SUPABASE_PG_PASSWORD;
+    delete process.env.CINEMATCH_ALLOW_LOCAL_SQLITE_IN_PROD;
+
+    expect(() => getRoomAuthorityStore()).toThrowError(/Shared PostgreSQL/);
+
+    // Partial SUPABASE_PG_HOST without password fails closed instead of undefined Pool connectionString
+    process.env.SUPABASE_PG_HOST = "aws-1-ap-northeast-2.pooler.supabase.com";
+    expect(() => resolvePostgresPoolConfig()).toThrowError(/SUPABASE_PG_PASSWORD/);
+
+    // Valid SUPABASE_PG_HOST + password builds structured PoolConfig with strict Supabase TLS
+    process.env.SUPABASE_PG_PASSWORD = "dummy-password";
+    const resolved = resolvePostgresPoolConfig();
+    expect(resolved?.source).toBe("supabase_pg_env");
+    expect(resolved?.poolConfig.host).toBe("aws-1-ap-northeast-2.pooler.supabase.com");
+    expect(resolved?.poolConfig.password).toBe("dummy-password");
+    expect(resolved?.poolConfig.ssl).toBeDefined();
   });
 });

@@ -286,4 +286,119 @@ describe("CINE-013: Anonymous Guest Identity & Capability API Integration", () =
     expect(useNewGen.status).toBe(200);
     expect((await useNewGen.json()).generation).toBe(2);
   });
+
+  it("serializes concurrent rotations via atomic CAS: exactly one wins, losers fail without Set-Cookie, and new generation survives across store restarts", async () => {
+    const createRes = await postGuestSession(
+      new Request(`${ORIGIN}/api/guest/session`, {
+        method: "POST",
+        headers: { origin: ORIGIN },
+      })
+    );
+    expect(createRes.status).toBe(201);
+    const created = await createRes.json();
+    expect(created.displayName).toBe("Guest");
+    expect(created.role).toBe("HOST");
+
+    const cookieName = getGuestCookieName(created.roomId);
+    const initialCookie = extractSetCookiePair(createRes, cookieName).cookiePair;
+
+    // Fire 3 concurrent rotation requests carrying identical gen=1 cookie
+    const responses = await Promise.all(
+      Array.from({ length: 3 }, () =>
+        postRotateSession(
+          new Request(`${ORIGIN}/api/guest/session/rotate`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              origin: ORIGIN,
+              cookie: initialCookie,
+            },
+            body: JSON.stringify({ roomId: created.roomId }),
+          })
+        )
+      )
+    );
+
+    const winners = responses.filter((r) => r.status === 200);
+    const losers = responses.filter((r) => r.status !== 200);
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(2);
+    for (const loser of losers) {
+      expect([401, 409]).toContain(loser.status);
+      // Critical: losing concurrent rotations MUST NOT emit Set-Cookie that could overwrite browser jar
+      expect(loser.headers.get("set-cookie")).toBeNull();
+    }
+
+    const winnerBody = await winners[0].json();
+    expect(winnerBody.generation).toBe(2);
+    const winnerCookie = extractSetCookiePair(winners[0], cookieName).cookiePair;
+
+    // Simulate a second serverless instance / cold restart clearing in-memory cache while reading shared DB
+    resetRoomAuthorityStoreForTests();
+
+    const oldAfterRestart = await getGuestSession(
+      new Request(`${ORIGIN}/api/guest/session?roomId=${created.roomId}`, {
+        headers: { cookie: initialCookie },
+      })
+    );
+    expect(oldAfterRestart.status).toBe(401);
+
+    const newAfterRestart = await getGuestSession(
+      new Request(`${ORIGIN}/api/guest/session?roomId=${created.roomId}`, {
+        headers: { cookie: winnerCookie },
+      })
+    );
+    expect(newAfterRestart.status).toBe(200);
+    expect((await newAfterRestart.json()).generation).toBe(2);
+  });
+
+  it("supports empty-body POST without Content-Length and rejects malformed non-empty JSON with 400", async () => {
+    const emptyBodyRes = await postGuestSession(
+      new Request(`${ORIGIN}/api/guest/session`, {
+        method: "POST",
+        headers: { origin: ORIGIN },
+      })
+    );
+    expect(emptyBodyRes.status).toBe(201);
+    const created = await emptyBodyRes.json();
+    expect(created.displayName).toBe("Guest");
+    expect(created.role).toBe("HOST");
+
+    const malformedRes = await postGuestSession(
+      new Request(`${ORIGIN}/api/guest/session`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: ORIGIN },
+        body: "{not-json",
+      })
+    );
+    expect(malformedRes.status).toBe(400);
+    expect((await malformedRes.json()).error).toBe("INVALID_JSON");
+  });
+
+  it("prevents orphan room creation when signing configuration is invalid in production", async () => {
+    const origNodeEnv = (process.env as Record<string, string | undefined>).NODE_ENV;
+    const origAllowSqlite = process.env.CINEMATCH_ALLOW_LOCAL_SQLITE_IN_PROD;
+    try {
+      delete process.env.CINEMATCH_CAPABILITY_SECRET;
+      (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+      process.env.CINEMATCH_ALLOW_LOCAL_SQLITE_IN_PROD = "true";
+
+      const failedProdRes = await postGuestSession(
+        new Request(`${ORIGIN}/api/guest/session`, {
+          method: "POST",
+          headers: { origin: ORIGIN },
+        })
+      );
+      expect(failedProdRes.status).toBe(500);
+      expect((await failedProdRes.json()).error).toBe("CAPABILITY_SECRET_MISSING");
+      expect(fs.existsSync(dbPath)).toBe(false);
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV = origNodeEnv;
+      if (origAllowSqlite === undefined) {
+        delete process.env.CINEMATCH_ALLOW_LOCAL_SQLITE_IN_PROD;
+      } else {
+        process.env.CINEMATCH_ALLOW_LOCAL_SQLITE_IN_PROD = origAllowSqlite;
+      }
+    }
+  });
 });

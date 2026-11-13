@@ -2,7 +2,9 @@ import { z } from "zod";
 import { assertSameOriginCsrf } from "@/lib/server/auth/csrfGuard";
 import {
   buildGuestCookieAttributes,
+  CapabilityAuthError,
   DEFAULT_CAPABILITY_TTL_SECONDS,
+  getCapabilitySecret,
   mintGuestCapabilityToken,
 } from "@/lib/server/auth/guestCapability";
 import { handleGuestApiError, privateJsonResponse } from "@/lib/server/auth/guestResponse";
@@ -15,12 +17,14 @@ const RotateBodySchema = z.object({
 
 /**
  * POST /api/guest/session/rotate
- * Rotates the caller's per-room HttpOnly capability while keeping participantId and role,
- * persisting min_generation so any prior cookie generation is immediately rejected.
+ * Atomically compares and increments the caller's capability generation in persistent storage.
+ * Concurrent/stale rotations fail closed with 409 CAPABILITY_ROTATION_CONFLICT and emit NO Set-Cookie.
  */
 export async function POST(request: Request) {
   try {
     assertSameOriginCsrf(request);
+    getCapabilitySecret();
+    const store = getRoomAuthorityStore();
 
     let body: unknown;
     try {
@@ -40,20 +44,25 @@ export async function POST(request: Request) {
       );
     }
 
-    const store = getRoomAuthorityStore();
     const actor = await requireRoomActor(request, parsed.data.roomId, store);
-
-    const nextGeneration = actor.claims.gen + 1;
     const expiresAtIso = new Date(
       Date.now() + DEFAULT_CAPABILITY_TTL_SECONDS * 1000
     ).toISOString();
 
-    await store.setMinGeneration(
+    const nextGeneration = await store.rotateGeneration(
       actor.room.id,
       actor.participant.participant_id,
-      nextGeneration,
+      actor.claims.gen,
       expiresAtIso
     );
+
+    if (nextGeneration === null) {
+      throw new CapabilityAuthError(
+        409,
+        "CAPABILITY_ROTATION_CONFLICT",
+        "Capability token generation is stale; a concurrent rotation already succeeded."
+      );
+    }
 
     const { token } = mintGuestCapabilityToken({
       roomId: actor.room.id,
