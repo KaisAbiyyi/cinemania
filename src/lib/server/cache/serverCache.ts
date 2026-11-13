@@ -481,3 +481,28 @@ export function jsonWithCachePolicy<T>(
   }
   return response;
 }
+
+/**
+ * Returns an HTTP 503 Service Unavailable response with `Cache-Control: no-store`
+ * when an error is a `CacheConcurrencyLimitError`, or `null` otherwise.
+ */
+export function cacheConcurrencyLimitResponse(
+  error: unknown
+): NextResponse<{ error: string; code: string }> | null {
+  if (!(error instanceof CacheConcurrencyLimitError)) {
+    return null;
+  }
+  return NextResponse.json(
+    {
+      error: "Upstream cache capacity saturated; please retry briefly.",
+      code: error.code,
+    },
+    {
+      status: 503,
+      headers: {
+        "Cache-Control": "no-store",
+        "Retry-After": "1",
+      },
+    }
+  );
+}

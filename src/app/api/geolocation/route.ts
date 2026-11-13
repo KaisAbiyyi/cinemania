@@ -1,6 +1,10 @@
 import axios from "axios";
 import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
-import { cachedServerFetch, jsonWithCachePolicy } from "@/lib/server/cache/serverCache";
+import {
+    cacheConcurrencyLimitResponse,
+    cachedServerFetch,
+    jsonWithCachePolicy,
+} from "@/lib/server/cache/serverCache";
 
 /**
  * API Route untuk mendapatkan region berdasarkan IP menggunakan ipinfo.io.
@@ -30,6 +34,10 @@ export async function GET(request: Request) {
         );
         return jsonWithCachePolicy(data, policy, cacheStatus);
     } catch (error) {
+        const overloadResponse = cacheConcurrencyLimitResponse(error);
+        if (overloadResponse) {
+            return overloadResponse;
+        }
         console.error("Error fetching geolocation:", error);
         return jsonWithCachePolicy({ region: "US" }, policy, "BYPASS", { status: 500 });
     }

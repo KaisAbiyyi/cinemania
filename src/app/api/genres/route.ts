@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import tmdbApi from "@/services/tmdbApi";
 import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
-import { cachedServerFetch, jsonWithCachePolicy } from "@/lib/server/cache/serverCache";
+import {
+    cacheConcurrencyLimitResponse,
+    cachedServerFetch,
+    jsonWithCachePolicy,
+} from "@/lib/server/cache/serverCache";
 
 /**
  * Fetch genres from TMDB API using the centralized `tmdbApi.ts`
@@ -29,6 +33,10 @@ export async function GET(request: Request) {
         );
         return jsonWithCachePolicy(data, policy, cacheStatus);
     } catch (error) {
+        const overloadResponse = cacheConcurrencyLimitResponse(error);
+        if (overloadResponse) {
+            return overloadResponse;
+        }
         console.error("Error fetching genres:", error);
         return NextResponse.json(
             { error: "Failed to fetch genres" },

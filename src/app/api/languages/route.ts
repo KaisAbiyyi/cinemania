@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import tmdbApi from "@/services/tmdbApi";
 import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
-import { cachedServerFetch, jsonWithCachePolicy } from "@/lib/server/cache/serverCache";
+import {
+    cacheConcurrencyLimitResponse,
+    cachedServerFetch,
+    jsonWithCachePolicy,
+} from "@/lib/server/cache/serverCache";
 
 /**
  * API Route untuk mengambil konfigurasi bahasa dari TMDB
@@ -21,6 +25,10 @@ export async function GET() {
         );
         return jsonWithCachePolicy(data, policy, cacheStatus);
     } catch (error: unknown) {
+        const overloadResponse = cacheConcurrencyLimitResponse(error);
+        if (overloadResponse) {
+            return overloadResponse;
+        }
         console.error("Error fetching languages:", error);
         return NextResponse.json(
             { error: "Failed to fetch languages" },

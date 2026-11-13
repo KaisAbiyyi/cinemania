@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { TmdbApiError, isTmdbError, TmdbConfigurationError, TmdbHostValidationError } from "@/services/tmdbApi";
+import { cacheConcurrencyLimitResponse } from "@/lib/server/cache/serverCache";
 
 export interface ApiErrorPayload {
   error: string;
@@ -81,6 +82,12 @@ export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
       },
       { status: 400, headers: { "Cache-Control": "no-store" } }
     );
+  }
+
+  // Server Cache In-Flight Concurrency Saturation
+  const cacheOverloadResponse = cacheConcurrencyLimitResponse(error);
+  if (cacheOverloadResponse) {
+    return cacheOverloadResponse;
   }
 
   // TMDB Upstream Missing / Invalid Server Configuration

@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
-import { cachedServerFetch, jsonWithCachePolicy } from "@/lib/server/cache/serverCache";
+import {
+    cacheConcurrencyLimitResponse,
+    cachedServerFetch,
+    jsonWithCachePolicy,
+} from "@/lib/server/cache/serverCache";
 
 // Rate limiting setup
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
@@ -83,6 +87,10 @@ export async function GET(request: NextRequest) {
 
         return jsonWithCachePolicy(videoDetails, policy, cacheStatus);
     } catch (error) {
+        const overloadResponse = cacheConcurrencyLimitResponse(error);
+        if (overloadResponse) {
+            return overloadResponse;
+        }
         if (error instanceof YoutubeUpstreamError) {
             return NextResponse.json(
                 { error: error.message },

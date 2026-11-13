@@ -1,16 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import axios from "axios";
+import { NextRequest } from "next/server";
 import { GET as getDiscoverMedia } from "@/app/api/media/route";
 import { GET as getTrendingMedia } from "@/app/api/media/trending/route";
+import { GET as getKeywords } from "@/app/api/keywords/route";
+import { GET as searchKeyword } from "@/app/api/search/keyword/route";
 import { GET as searchMovie } from "@/app/api/search/movie/route";
+import { GET as searchPerson } from "@/app/api/search/person/route";
+import { GET as searchTv } from "@/app/api/search/tv/route";
 import { GET as getGenres } from "@/app/api/genres/route";
 import { GET as getLanguages } from "@/app/api/languages/route";
 import { GET as getProviderMedia } from "@/app/api/providers/[mediaType]/route";
+import { GET as getProviderRegions } from "@/app/api/providers/region/route";
 import { GET as getMediaDetail } from "@/app/api/media/[id]/route";
+import { GET as getPersonDetail } from "@/app/api/person/[id]/route";
+import { GET as getYoutube } from "@/app/api/youtube/route";
 import { GET as getGeolocation } from "@/app/api/geolocation/route";
 import tmdbApi, { TmdbApiError } from "@/services/tmdbApi";
 import { getServerCacheMetrics } from "@/lib/server/cache/serverCache";
 import { mockGenres, mockLanguages, mockMoviesList } from "../fixtures/tmdb-fixtures";
+
+vi.mock("next/headers", () => ({
+  headers: vi.fn(async () => new Headers({ "x-forwarded-for": "203.0.113.77" })),
+}));
 
 function percentile(sortedValues: number[], p: number): number {
   if (sortedValues.length === 0) return 0;
@@ -293,5 +305,136 @@ describe("CINE-008: Server Caching & Request Deduplication API Integration + Lat
     expect(metrics.hits).toBe(144);
     expect(metrics.dedupedInFlight).toBe(4);
     expect(metrics.misses).toBe(2);
+  });
+
+  it("returns HTTP 503 with no-store and Retry-After consistently across all cached routes when cache concurrency limit is saturated", async () => {
+    const releaseHolders: Array<() => void> = [];
+    vi.spyOn(tmdbApi, "get").mockImplementation(async (endpoint) => {
+      if (endpoint === "/discover/movie" && releaseHolders.length < 256) {
+        await new Promise<void>((resolve) => {
+          releaseHolders.push(resolve);
+        });
+        return { data: mockMoviesList } as never;
+      }
+      if (endpoint === "/genre/movie/list") {
+        return { data: { genres: mockGenres.movie } } as never;
+      }
+      return { data: mockMoviesList } as never;
+    });
+    vi.spyOn(axios, "get").mockResolvedValue({ data: { country: "SG" } } as never);
+
+    // Occupy all 256 in-flight slots cleanly using distinct valid /api/media pages (1..256)
+    const activeHolders = Array.from({ length: 256 }, (_, idx) =>
+      getDiscoverMedia(
+        new Request(`http://localhost:3000/api/media?mediaType=movie&page=${idx + 1}`)
+      )
+    );
+
+    for (let tick = 0; tick < 20 && getServerCacheMetrics().inFlightCount < 256; tick += 1) {
+      await Promise.resolve();
+    }
+    expect(getServerCacheMetrics().inFlightCount).toBe(256);
+
+    const saturatedCalls: Array<{ name: string; run: () => Promise<Response> }> = [
+      // handleApiError routes
+      {
+        name: "GET /api/media",
+        run: () => getDiscoverMedia(new Request("http://localhost:3000/api/media?mediaType=movie&page=300")),
+      },
+      {
+        name: "GET /api/media/trending",
+        run: () => getTrendingMedia(new Request("http://localhost:3000/api/media/trending?mediaType=movie&timeWindow=day")),
+      },
+      {
+        name: "GET /api/keywords",
+        run: () => getKeywords(new Request("http://localhost:3000/api/keywords?q=matrix")),
+      },
+      {
+        name: "GET /api/search/keyword",
+        run: () => searchKeyword(new Request("http://localhost:3000/api/search/keyword?q=scifi")),
+      },
+      {
+        name: "GET /api/search/movie",
+        run: () => searchMovie(new Request("http://localhost:3000/api/search/movie?q=Inception")),
+      },
+      {
+        name: "GET /api/search/person",
+        run: () => searchPerson(new Request("http://localhost:3000/api/search/person?q=Nolan")),
+      },
+      {
+        name: "GET /api/search/tv",
+        run: () => searchTv(new Request("http://localhost:3000/api/search/tv?q=Dark")),
+      },
+      // Custom catch routes
+      {
+        name: "GET /api/genres",
+        run: () => getGenres(new Request("http://localhost:3000/api/genres?type=movie")),
+      },
+      {
+        name: "GET /api/languages",
+        run: () => getLanguages(),
+      },
+      {
+        name: "GET /api/providers/[mediaType]",
+        run: () =>
+          getProviderMedia(new Request("http://localhost:3000/api/providers/movie"), {
+            params: Promise.resolve({ mediaType: "movie" }),
+          }),
+      },
+      {
+        name: "GET /api/providers/region",
+        run: () => getProviderRegions(new Request("http://localhost:3000/api/providers/region")),
+      },
+      {
+        name: "GET /api/youtube",
+        run: () => getYoutube(new NextRequest("http://localhost:3000/api/youtube?videoId=dQw4w9WgXcQ")),
+      },
+      // tmdbRouteHelper routes
+      {
+        name: "GET /api/media/[id]",
+        run: () =>
+          getMediaDetail(new Request("http://localhost:3000/api/media/550?mediaType=movie"), {
+            params: Promise.resolve({ id: "550" }),
+          }),
+      },
+      {
+        name: "GET /api/person/[id]",
+        run: () =>
+          getPersonDetail(new Request("http://localhost:3000/api/person/1"), {
+            params: Promise.resolve({ id: "1" }),
+          }),
+      },
+    ];
+
+    try {
+      for (const entry of saturatedCalls) {
+        const res = await entry.run();
+        expect(res.status, `${entry.name} should return 503 under saturation, not 500`).toBe(503);
+        expect(res.headers.get("Cache-Control")).toBe("no-store");
+        expect(res.headers.get("Retry-After")).toBe("1");
+        const body = await res.json();
+        expect(body).toMatchObject({ code: "CACHE_IN_FLIGHT_LIMIT_EXCEEDED" });
+      }
+
+      // PRIVATE routes still bypass shared concurrency capacity cleanly
+      const geoRes = await getGeolocation(
+        new Request("http://localhost:3000/api/geolocation", {
+          headers: { "x-forwarded-for": "203.0.113.10" },
+        })
+      );
+      expect(geoRes.status).toBe(200);
+      expect(geoRes.headers.get("X-Cache")).toBe("BYPASS");
+    } finally {
+      for (const resolve of releaseHolders) {
+        resolve();
+      }
+      await Promise.all(activeHolders);
+    }
+
+    // Recovery after slots drain
+    const recoveredGenres = await getGenres(
+      new Request("http://localhost:3000/api/genres?type=movie")
+    );
+    expect(recoveredGenres.status).toBe(200);
   });
 });
