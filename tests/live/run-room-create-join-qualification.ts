@@ -181,6 +181,180 @@ async function getRoomTableCounts(
   };
 }
 
+interface ObservedInsert23505 {
+  attemptedCode: string;
+  pgCode: string;
+  pgConstraint: string;
+}
+
+interface PgCreateTrace {
+  clientAcquires: number;
+  beginCount: number;
+  commitCount: number;
+  outerRollbackCount: number;
+  precheckHits: string[];
+  precheckMisses: string[];
+  savepointsCreated: number;
+  insertAttempts: string[];
+  insert23505s: ObservedInsert23505[];
+  rollbackSavepoints: number;
+  releaseSavepoints: number;
+  postRollbackTxIds: Array<{ xid: string; pid: number }>;
+  preCommitTxIds: Array<{ xid: string; pid: number }>;
+  sqlSequence: string[];
+}
+
+type RawPgQuery = (
+  queryOrSql: string | { text: string; values?: unknown[] },
+  values?: unknown[]
+) => Promise<{ rows: Array<Record<string, unknown>> }>;
+
+function createEmptyTrace(): PgCreateTrace {
+  return {
+    clientAcquires: 0,
+    beginCount: 0,
+    commitCount: 0,
+    outerRollbackCount: 0,
+    precheckHits: [],
+    precheckMisses: [],
+    savepointsCreated: 0,
+    insertAttempts: [],
+    insert23505s: [],
+    rollbackSavepoints: 0,
+    releaseSavepoints: 0,
+    postRollbackTxIds: [],
+    preCommitTxIds: [],
+    sqlSequence: [],
+  };
+}
+
+async function readTxMeta(origQuery: RawPgQuery): Promise<{ xid: string; pid: number }> {
+  const txMeta = await origQuery(
+    "SELECT pg_current_xact_id_if_assigned()::text AS xid, pg_backend_pid()::int AS pid;"
+  );
+  return {
+    xid: String(txMeta.rows[0]?.xid ?? ""),
+    pid: Number(txMeta.rows[0]?.pid ?? 0),
+  };
+}
+
+/**
+ * Wraps a pg Pool to record SQL control flow and inject a concurrent poolA commit after the
+ * SELECT 1 pre-check passes so real INSERT INTO rooms hits PostgreSQL SQLSTATE 23505.
+ */
+function createPgInsertRaceBarrierPool(
+  basePool: Pool,
+  trace: PgCreateTrace,
+  onBeforeRoomInsert?: (attemptedCode: string) => Promise<void>
+): Pool {
+  return new Proxy(basePool, {
+    get(targetPool, prop) {
+      if (prop !== "connect") {
+        const val = Reflect.get(targetPool, prop);
+        return typeof val === "function" ? val.bind(targetPool) : val;
+      }
+
+      return async () => {
+        const realClient = await targetPool.connect();
+        trace.clientAcquires += 1;
+        const origQuery = (realClient as unknown as { query: RawPgQuery }).query.bind(realClient);
+
+        const wrappedQuery: RawPgQuery = async (queryOrSql, values) => {
+          const sqlText = typeof queryOrSql === "string" ? queryOrSql : queryOrSql.text;
+          const params = typeof queryOrSql === "string" ? values : queryOrSql.values;
+          const trimmed = sqlText.trim();
+
+          if (trimmed === "BEGIN;" || trimmed.startsWith("BEGIN ")) {
+            trace.beginCount += 1;
+            trace.sqlSequence.push("BEGIN");
+            return origQuery(queryOrSql, values);
+          }
+          if (trimmed === "COMMIT;") {
+            trace.commitCount += 1;
+            trace.sqlSequence.push("COMMIT");
+            return origQuery(queryOrSql, values);
+          }
+          if (trimmed === "ROLLBACK;") {
+            trace.outerRollbackCount += 1;
+            trace.sqlSequence.push("ROLLBACK");
+            return origQuery(queryOrSql, values);
+          }
+          if (trimmed === "SAVEPOINT sp_create_room_code;") {
+            trace.savepointsCreated += 1;
+            trace.sqlSequence.push("SAVEPOINT");
+            return origQuery(queryOrSql, values);
+          }
+          if (trimmed === "RELEASE SAVEPOINT sp_create_room_code;") {
+            trace.releaseSavepoints += 1;
+            trace.sqlSequence.push("RELEASE_SAVEPOINT");
+            return origQuery(queryOrSql, values);
+          }
+          if (trimmed === "ROLLBACK TO SAVEPOINT sp_create_room_code;") {
+            const res = await origQuery(queryOrSql, values);
+            trace.rollbackSavepoints += 1;
+            trace.sqlSequence.push("ROLLBACK_TO_SAVEPOINT");
+            // Proves outer transaction was NOT aborted (no 25P02) and retains the exact XID/PID.
+            trace.postRollbackTxIds.push(await readTxMeta(origQuery));
+            return res;
+          }
+          if (trimmed.includes("SELECT 1 FROM rooms WHERE code = $1")) {
+            const candidateCode = String(params?.[0] ?? "");
+            const res = await origQuery(queryOrSql, values);
+            const bucket = res.rows.length > 0 ? trace.precheckHits : trace.precheckMisses;
+            bucket.push(candidateCode);
+            trace.sqlSequence.push(`${res.rows.length > 0 ? "PRECHECK_HIT" : "PRECHECK_MISS"}:${candidateCode}`);
+            return res;
+          }
+          if (trimmed.startsWith("INSERT INTO rooms")) {
+            const attemptedCode = String(params?.[1] ?? "");
+            trace.insertAttempts.push(attemptedCode);
+            if (onBeforeRoomInsert) {
+              await onBeforeRoomInsert(attemptedCode);
+            }
+            try {
+              const res = await origQuery(queryOrSql, values);
+              trace.sqlSequence.push(`INSERT_ROOM_OK:${attemptedCode}`);
+              return res;
+            } catch (err: unknown) {
+              const pgCode =
+                typeof err === "object" && err !== null && "code" in err
+                  ? String((err as { code?: unknown }).code)
+                  : "";
+              const pgConstraint =
+                typeof err === "object" && err !== null && "constraint" in err
+                  ? String((err as { constraint?: unknown }).constraint)
+                  : "";
+              if (pgCode === "23505") {
+                trace.insert23505s.push({ attemptedCode, pgCode, pgConstraint });
+                trace.sqlSequence.push(`INSERT_ROOM_23505:${attemptedCode}:${pgConstraint}`);
+              }
+              throw err;
+            }
+          }
+          if (trimmed.includes("INSERT INTO guest_capability_sessions")) {
+            const res = await origQuery(queryOrSql, values);
+            trace.preCommitTxIds.push(await readTxMeta(origQuery));
+            trace.sqlSequence.push("INSERT_SESSION_OK");
+            return res;
+          }
+
+          return origQuery(queryOrSql, values);
+        };
+
+        return new Proxy(realClient, {
+          get(targetClient, clientProp) {
+            if (clientProp === "query") {
+              return wrappedQuery;
+            }
+            const val = Reflect.get(targetClient, clientProp);
+            return typeof val === "function" ? val.bind(targetClient) : val;
+          },
+        });
+      };
+    },
+  });
+}
+
 async function main() {
   const prevSecret = process.env.CINEMATCH_CAPABILITY_SECRET;
   const createdTempSecret = !prevSecret;
@@ -230,23 +404,191 @@ async function main() {
     const storeC = new PostgresRoomAuthorityStore(poolC, { schema: TEST_SCHEMA });
 
     try {
-      // 1. Real SQLSTATE 23505 unique room code collision retry via SAVEPOINT
+      // 1a. Separate explicit SELECT pre-check skip vs real INSERT-time SQLSTATE 23505 + ROLLBACK TO SAVEPOINT recovery
       const seedA = await storeA.createRoomWithSession({
-        hostDisplayName: "SeedHost",
-        codeGenerator: () => "AAAAAA",
+        hostDisplayName: "SeedHostPrecheck",
+        codeGenerator: () => "PRE235",
       });
-      assertCondition(seedA.room.code === "AAAAAA", "Expected pre-seeded room code AAAAAA");
+      assertCondition(seedA.room.code === "PRE235", "Expected pre-seeded room code PRE235");
 
-      const codeSeq = ["AAAAAA", "AAAAAA", "BBBBBB"];
-      let seqIdx = 0;
-      const retriedRoom = await storeB.createRoomWithSession({
-        hostDisplayName: "RetryHost",
-        codeGenerator: () => codeSeq[seqIdx++] ?? "CCCCCC",
-        maxCodeAttempts: 5,
+      const raceCodesToInject = new Set(["RAC235", "RAC236"]);
+      const injectedWinners = new Map<string, string>();
+      const raceTrace = createEmptyTrace();
+      const barrierPoolB = createPgInsertRaceBarrierPool(poolB, raceTrace, async (attemptedCode) => {
+        if (raceCodesToInject.has(attemptedCode) && !injectedWinners.has(attemptedCode)) {
+          // Concurrent poolA commit strictly AFTER poolB's SELECT 1 pre-check returned 0 rows and SAVEPOINT opened
+          const winner = await storeA.createRoomWithSession({
+            hostDisplayName: `Winner_${attemptedCode}`,
+            codeGenerator: () => attemptedCode,
+          });
+          injectedWinners.set(attemptedCode, winner.room.id);
+        }
       });
+      const raceStoreB = new PostgresRoomAuthorityStore(barrierPoolB, { schema: TEST_SCHEMA });
+
+      const codeSeq = ["PRE235", "RAC235", "RAC236", "WNR235"];
+      let seqIdx = 0;
+      const retriedRoom = await raceStoreB.createRoomWithSession({
+        hostDisplayName: "RetryHost",
+        codeGenerator: () => codeSeq[seqIdx++] ?? "FALLBK",
+        maxCodeAttempts: 6,
+      });
+
       assertCondition(
-        retriedRoom.room.code === "BBBBBB" && seqIdx === 3,
-        `Expected 23505 savepoint retry to resolve BBBBBB on 3rd attempt (got ${retriedRoom.room.code} at seq=${seqIdx})`
+        retriedRoom.room.code === "WNR235" && seqIdx === 4,
+        `Expected WNR235 on attempt 4 (got ${retriedRoom.room.code} at seq=${seqIdx})`
+      );
+      assertCondition(
+        raceTrace.clientAcquires === 1 &&
+          raceTrace.beginCount === 1 &&
+          raceTrace.commitCount === 1 &&
+          raceTrace.outerRollbackCount === 0,
+        `Expected single intact outer TX without rollback/reconnect: ${JSON.stringify(raceTrace)}`
+      );
+      assertCondition(
+        JSON.stringify(raceTrace.precheckHits) === JSON.stringify(["PRE235"]) &&
+          JSON.stringify(raceTrace.precheckMisses) === JSON.stringify(["RAC235", "RAC236", "WNR235"]),
+        `Expected strictly 1 SELECT precheck hit (PRE235) and 3 misses: ${JSON.stringify(raceTrace)}`
+      );
+      assertCondition(
+        raceTrace.savepointsCreated === 3 &&
+          raceTrace.insertAttempts.length === 3 &&
+          raceTrace.insert23505s.length === 2 &&
+          raceTrace.rollbackSavepoints === 2 &&
+          raceTrace.releaseSavepoints === 1,
+        `Expected 2 real PG INSERT 23505s + 2 ROLLBACK TO SAVEPOINT + 1 RELEASE SAVEPOINT: ${JSON.stringify(raceTrace)}`
+      );
+      for (const hit of raceTrace.insert23505s) {
+        assertCondition(
+          hit.pgCode === "23505" && hit.pgConstraint.includes("idx_rooms_code"),
+          `Expected genuine PG SQLSTATE 23505 on idx_rooms_code, got ${JSON.stringify(hit)}`
+        );
+      }
+      assertCondition(
+        raceTrace.postRollbackTxIds.length === 2 &&
+          raceTrace.preCommitTxIds.length === 1 &&
+          raceTrace.postRollbackTxIds[0].xid !== "" &&
+          raceTrace.postRollbackTxIds[0].xid === raceTrace.postRollbackTxIds[1].xid &&
+          raceTrace.postRollbackTxIds[0].xid === raceTrace.preCommitTxIds[0].xid &&
+          raceTrace.postRollbackTxIds[0].pid === raceTrace.preCommitTxIds[0].pid,
+        `Expected same live outer PG xid/pid across SAVEPOINT rollbacks through commit: postRollback=${JSON.stringify(raceTrace.postRollbackTxIds)}, preCommit=${JSON.stringify(raceTrace.preCommitTxIds)}`
+      );
+
+      // Verify persisted WNR235 room, host link, ROOM_CREATED outbox event, capability session, and intact winner rooms
+      const winCounts = await getRoomTableCounts(adminClient, TEST_SCHEMA, retriedRoom.room.id);
+      assertCondition(
+        winCounts.rooms === 1 &&
+          winCounts.participants === 1 &&
+          winCounts.events === 1 &&
+          winCounts.sessions === 1,
+        `Expected intact {1,1,1,1} rows for WNR235, got ${JSON.stringify(winCounts)}`
+      );
+      assertCondition(
+        retriedRoom.room.host_participant_id === retriedRoom.participant.participant_id &&
+          retriedRoom.room.state_version === 1 &&
+          retriedRoom.room.participant_count === 1 &&
+          retriedRoom.sessionGeneration === 1,
+        "Expected intact host_participant_id, state_version=1, sessionGeneration=1 on WNR235"
+      );
+      const winEventsRes = await adminClient.query(
+        `SELECT version, event_type, payload FROM "${TEST_SCHEMA}".room_events WHERE room_id = $1;`,
+        [retriedRoom.room.id]
+      );
+      assertCondition(
+        winEventsRes.rows.length === 1 &&
+          winEventsRes.rows[0].event_type === "ROOM_CREATED" &&
+          Number(winEventsRes.rows[0].version) === 1 &&
+          (winEventsRes.rows[0].payload as { roomCode?: string }).roomCode === "WNR235",
+        `Expected intact ROOM_CREATED event for WNR235: ${JSON.stringify(winEventsRes.rows)}`
+      );
+
+      for (const [winnerCode, winnerRoomId] of [
+        ["PRE235", seedA.room.id],
+        ["RAC235", injectedWinners.get("RAC235") ?? ""],
+        ["RAC236", injectedWinners.get("RAC236") ?? ""],
+      ] as const) {
+        assertCondition(winnerRoomId !== "", `Missing winner room ID for ${winnerCode}`);
+        const c = await getRoomTableCounts(adminClient, TEST_SCHEMA, winnerRoomId);
+        assertCondition(
+          c.rooms === 1 && c.participants === 1 && c.events === 1 && c.sessions === 1,
+          `Expected colliding winner room ${winnerCode} intact {1,1,1,1}, got ${JSON.stringify(c)}`
+        );
+      }
+
+      const winHostToken = mintGuestCapabilityToken({
+        roomId: retriedRoom.room.id,
+        participantId: retriedRoom.participant.participant_id,
+        role: "HOST",
+        generation: 1,
+      }).token;
+      const winSnapshot = await getAuthenticatedRoomSnapshot(
+        new Request(`http://localhost:3000/api/rooms/${retriedRoom.room.id}`, {
+          headers: { cookie: `cm_guest_${retriedRoom.room.id}=${winHostToken}` },
+        }),
+        retriedRoom.room.id,
+        storeC
+      );
+      assertCondition(
+        winSnapshot.room.code === "WNR235" &&
+          winSnapshot.room.participantCount === 1 &&
+          winSnapshot.viewer.role === "HOST",
+        "Expected authenticated snapshot on WNR235 after 23505 savepoint recovery to succeed"
+      );
+
+      // 1b. Exhaustion under repeated genuine PG INSERT SQLSTATE 23505 collisions (zero precheck hits, 0 orphan rows)
+      const exhaustCodesToInject = new Set(["EXH235", "EXH236"]);
+      const exhaustWinners = new Set<string>();
+      const exhaustTrace = createEmptyTrace();
+      const exhaustBarrierPool = createPgInsertRaceBarrierPool(
+        poolB,
+        exhaustTrace,
+        async (attemptedCode) => {
+          if (exhaustCodesToInject.has(attemptedCode) && !exhaustWinners.has(attemptedCode)) {
+            exhaustWinners.add(attemptedCode);
+            await storeA.createRoomWithSession({
+              hostDisplayName: `Winner_${attemptedCode}`,
+              codeGenerator: () => attemptedCode,
+            });
+          }
+        }
+      );
+      const exhaustStoreB = new PostgresRoomAuthorityStore(exhaustBarrierPool, { schema: TEST_SCHEMA });
+      const exhaustSeq = ["EXH235", "EXH236"];
+      let exhaustIdx = 0;
+      let exhaustedThrew = false;
+      try {
+        await exhaustStoreB.createRoomWithSession({
+          hostDisplayName: "Exhausted23505Host",
+          codeGenerator: () => exhaustSeq[exhaustIdx++] ?? "EXHNXT",
+          maxCodeAttempts: 2,
+        });
+      } catch (err) {
+        exhaustedThrew = err instanceof Error && err.name === "RoomCodeGenerationError";
+      }
+      assertCondition(
+        exhaustedThrew &&
+          exhaustTrace.precheckHits.length === 0 &&
+          exhaustTrace.insert23505s.length === 2 &&
+          exhaustTrace.rollbackSavepoints === 2 &&
+          exhaustTrace.outerRollbackCount === 1 &&
+          exhaustTrace.commitCount === 0,
+        `Expected 23505 exhaustion after 2 INSERT 23505s + clean outer rollback: ${JSON.stringify(exhaustTrace)}`
+      );
+      const orphanExhaust = await adminClient.query(
+        `SELECT COUNT(*)::int AS c FROM "${TEST_SCHEMA}".room_participants WHERE display_name = $1;`,
+        ["Exhausted23505Host"]
+      );
+      assertCondition(
+        Number(orphanExhaust.rows[0].c) === 0,
+        `Expected 0 orphan rows for exhausted 23505 create, got ${orphanExhaust.rows[0].c}`
+      );
+      const committedBeforeFaultsRes = await adminClient.query(
+        `SELECT COUNT(*)::int AS c FROM "${TEST_SCHEMA}".rooms;`
+      );
+      const expectedCommittedRoomsBeforeFaults = Number(committedBeforeFaultsRes.rows[0].c);
+      assertCondition(
+        expectedCommittedRoomsBeforeFaults === 6,
+        `Expected 6 committed rooms after step 1 (PRE235, RAC235, RAC236, WNR235, EXH235, EXH236), got ${expectedCommittedRoomsBeforeFaults}`
       );
 
       // 2. Atomic fault-injection rollback on create & 4/5 join + clean retry without cookie
@@ -292,8 +634,8 @@ async function main() {
         `SELECT COUNT(*)::int AS c FROM "${TEST_SCHEMA}".rooms;`
       );
       assertCondition(
-        Number(totalAfterCreateFaults.rows[0].c) === 2,
-        `Expected strictly 2 committed rooms after aborted creates, got ${totalAfterCreateFaults.rows[0].c}`
+        Number(totalAfterCreateFaults.rows[0].c) === expectedCommittedRoomsBeforeFaults,
+        `Expected strictly ${expectedCommittedRoomsBeforeFaults} committed rooms after aborted creates, got ${totalAfterCreateFaults.rows[0].c}`
       );
 
       const atomicHost = await createRoomWithSession(
@@ -539,7 +881,7 @@ async function main() {
       assertCondition(expiredGetRejected, "Expected GET on expired PG room to fail with 410 ROOM_EXPIRED");
 
       console.log(
-        `PASS [CINE-014 PG QUAL]: schema=${TEST_SCHEMA}, pg_23505_savepoint_retry=3(BBBBBB), atomic_fault_rollback=create+5th_join(4/4/4/4->5/5), parallel_join_race=4_admitted/6_ROOM_FULL, repeatable_read_snapshots=6/6_coherent, peer_uuid_redacted=true, revoked_token=401, expired=410.`
+        `PASS [CINE-014 PG QUAL]: schema=${TEST_SCHEMA}, pg_precheck_skips=${raceTrace.precheckHits.length}(${raceTrace.precheckHits.join(",")}), pg_insert_23505_savepoint_retries=${raceTrace.insert23505s.length}(${raceTrace.insert23505s.map((e) => `${e.attemptedCode}:${e.pgConstraint}`).join(",")}->${retriedRoom.room.code}), rollback_to_savepoint=${raceTrace.rollbackSavepoints}, release_savepoint=${raceTrace.releaseSavepoints}, outer_tx_xid=${raceTrace.preCommitTxIds[0]?.xid}, pg_23505_exhaustion=${exhaustTrace.insert23505s.length}->RoomCodeGenerationError(0_orphans), atomic_fault_rollback=create+5th_join(4/4/4/4->5/5), parallel_join_race=4_admitted/6_ROOM_FULL, repeatable_read_snapshots=6/6_coherent, peer_uuid_redacted=true, revoked_token=401, expired=410.`
       );
     } finally {
       await poolA.end();
