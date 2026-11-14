@@ -1,9 +1,15 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { DiscoveryDatePreset, resolveDiscoveryDatePresetQueryParams } from "@/lib/datePresets";
+import {
+    DiscoveryDatePreset,
+    filtersToDiscoveryQueryParams,
+    parseCalendarDateKey,
+    resolveDiscoveryDatePresetFiltersForYmd,
+} from "@/lib/datePresets";
 import { FC, HTMLAttributes, useMemo, useSyncExternalStore } from "react";
 import { MediaQueryParams, useMedia } from "../hooks/useMedia";
+import { useLocalCalendarDay } from "../hooks/useLocalCalendarDay";
 import MediaCard from "./MediaCard";
 import { buttonVariants } from "@/components/ui/button";
 import Link from "next/link";
@@ -41,13 +47,22 @@ const MediaScrollableList: FC<MediaScrollableListProps> = ({
         () => true,
         () => false
     );
+    const localCalendarDay = useLocalCalendarDay(Boolean(datePreset));
 
-    const isReady = !datePreset || isHydrated;
+    const isReady = !datePreset || (isHydrated && Boolean(localCalendarDay));
 
-    const presetQueryParams = useMemo<Record<string, string>>(
-        () => (datePreset && isHydrated ? resolveDiscoveryDatePresetQueryParams(datePreset) : {}),
-        [datePreset, isHydrated]
-    );
+    const presetQueryParams = useMemo<Record<string, string>>(() => {
+        if (!datePreset || !localCalendarDay) {
+            return {};
+        }
+        const ymd = parseCalendarDateKey(localCalendarDay);
+        if (!ymd) {
+            return {};
+        }
+        return filtersToDiscoveryQueryParams(
+            resolveDiscoveryDatePresetFiltersForYmd(datePreset, ymd)
+        );
+    }, [datePreset, localCalendarDay]);
 
     const baseParams: MediaQueryParams = {
         mediaType: type,

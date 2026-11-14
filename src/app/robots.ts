@@ -1,8 +1,24 @@
 import type { MetadataRoute } from "next";
-import { getConfiguredSiteUrl } from "@/lib/metadata";
+import {
+  getConfiguredSiteUrl,
+  isPreviewDeployment,
+} from "@/lib/metadata";
 
-export default function robots(): MetadataRoute.Robots {
-  const siteUrl = getConfiguredSiteUrl();
+export function createRobotsConfig(
+  env: Record<string, string | undefined> = process.env
+): MetadataRoute.Robots {
+  if (isPreviewDeployment(env)) {
+    return {
+      rules: [
+        {
+          userAgent: "*",
+          disallow: "/",
+        },
+      ],
+    };
+  }
+
+  const siteUrl = getConfiguredSiteUrl(env);
 
   return {
     rules: [
@@ -14,4 +30,8 @@ export default function robots(): MetadataRoute.Robots {
     ],
     ...(siteUrl ? { host: siteUrl.origin } : {}),
   };
+}
+
+export default function robots(): MetadataRoute.Robots {
+  return createRobotsConfig();
 }

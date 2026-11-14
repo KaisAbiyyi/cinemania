@@ -2,9 +2,14 @@
 
 import React, { createContext, useContext, useState, useMemo, useSyncExternalStore, ReactNode, FC } from "react";
 import { Filters, globalDefaultFilters } from "@/types/filters";
-import { DiscoveryDatePreset, resolveDiscoveryDatePresetFilters } from "@/lib/datePresets";
+import {
+    DiscoveryDatePreset,
+    parseCalendarDateKey,
+    resolveDiscoveryDatePresetFiltersForYmd,
+} from "@/lib/datePresets";
 import { parseQuery } from "@/lib/utils";
 import { MediaQueryParams } from "../../hooks/useMedia";
+import { useLocalCalendarDay } from "../../hooks/useLocalCalendarDay";
 
 const emptySubscribe = () => () => {};
 
@@ -30,6 +35,7 @@ export const FilterProvider: FC<FilterProviderProps> = ({ children, defaultFilte
         () => true,
         () => false
     );
+    const localCalendarDay = useLocalCalendarDay(Boolean(datePreset));
 
     const serializedDefaults = JSON.stringify(defaultFilters ?? globalDefaultFilters);
 
@@ -38,17 +44,21 @@ export const FilterProvider: FC<FilterProviderProps> = ({ children, defaultFilte
         [serializedDefaults]
     );
 
-    const isReady = !datePreset || isHydrated;
+    const isReady = !datePreset || (isHydrated && Boolean(localCalendarDay));
 
     const baseDefaultFilters = useMemo<Filters>(() => {
-        if (!datePreset || !isHydrated) {
+        if (!datePreset || !localCalendarDay) {
+            return staticBaseDefaults;
+        }
+        const ymd = parseCalendarDateKey(localCalendarDay);
+        if (!ymd) {
             return staticBaseDefaults;
         }
         return {
             ...staticBaseDefaults,
-            ...resolveDiscoveryDatePresetFilters(datePreset),
+            ...resolveDiscoveryDatePresetFiltersForYmd(datePreset, ymd),
         };
-    }, [staticBaseDefaults, datePreset, isHydrated]);
+    }, [staticBaseDefaults, datePreset, localCalendarDay]);
 
     const initialUrlFilters = useMemo<Partial<Filters>>(() => {
         if (!isHydrated || typeof window === "undefined") {
@@ -73,7 +83,7 @@ export const FilterProvider: FC<FilterProviderProps> = ({ children, defaultFilte
     };
 
     const resetFilters = () => {
-        setCustomFilters(baseDefaultFilters);
+        setCustomFilters(null);
     };
 
     return (

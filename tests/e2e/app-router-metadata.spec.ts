@@ -160,12 +160,13 @@ test.describe("CINE-009: App Router Rendering, Metadata & Hydration", () => {
     ]);
   });
 
-  test("dynamic detail routes serve SSR metadata with canonicals and zero hydration mismatches", async ({
+  test("dynamic detail routes limited metadata & hydration probe (client TMDB detail fetches uncertified under minimal fixtures)", async ({
     page,
   }) => {
-    // Note: Detail/person/reviews client queries expect richer TMDB/ipinfo fixtures than
-    // tests/fixtures/mock-tmdb.cjs seeds, so this check focuses strictly on SSR metadata,
-    // canonical URLs, client <head> parity, and zero React hydration mismatches.
+    // Scope boundary: tests/fixtures/mock-tmdb.cjs intentionally seeds discovery/search/movie
+    // core endpoints rather than full /tv/*/reviews, /person/*, or ::ffff:127.0.0.1 geolocation.
+    // This test verifies SSR metadata, canonicals, and zero React hydration mismatches only, and
+    // must NOT be interpreted as end-to-end healthy client detail fetching.
     await verifyRoutesMetadataAndHydration(
       page,
       [
@@ -252,18 +253,42 @@ test.describe("CINE-009: App Router Rendering, Metadata & Hydration", () => {
       expect(resp.status(), `Footer nav target ${href} must exist`).toBe(200);
     }
 
-    // Open client-side filter panel and verify local sort selection stays client-side without full SSR reload
+    // Open client-side filter panel and verify local sort selection fires client API fetch without SSR reload
     await page.evaluate(() => {
       (window as unknown as { __cineStayClient?: string }).__cineStayClient = "alive";
     });
+    const filterResponsePromise = page.waitForResponse(
+      (res) => res.url().includes("/api/media") && res.url().includes("sort_by=vote_average.desc")
+    );
     await page.getByRole("button", { name: /^Filter$/i }).click();
     await expect(page.getByText("Sort Results By")).toBeVisible();
     await page.locator("#sort-by-select").click();
     await page.getByRole("option", { name: "Vote Average Descending" }).click();
     await expect(page.locator("#sort-by-select")).toContainText("Vote Average Descending");
+    await page.getByRole("button", { name: /^Apply$/i }).click();
+    const filterResponse = await filterResponsePromise;
+    expect(filterResponse.status()).toBeLessThan(400);
     const markerAfter = await page.evaluate(
       () => (window as unknown as { __cineStayClient?: string }).__cineStayClient ?? null
     );
     expect(markerAfter).toBe("alive");
+
+    // Verify viewer-local calendar date preset fires from /tv/airing-today on client navigation
+    const airingRequestPromise = page.waitForRequest((req) => {
+      const url = new URL(req.url());
+      return url.pathname === "/api/media" && url.searchParams.get("mediaType") === "tv";
+    });
+    await page.goto("/tv/airing-today");
+    const airingReq = await airingRequestPromise;
+    const browserLocalToday = await page.evaluate(() => {
+      const now = new Date();
+      const y = String(now.getFullYear()).padStart(4, "0");
+      const m = String(now.getMonth() + 1).padStart(2, "0");
+      const d = String(now.getDate()).padStart(2, "0");
+      return `${y}-${m}-${d}`;
+    });
+    const airingUrl = new URL(airingReq.url());
+    expect(airingUrl.searchParams.get("air_date.gte")).toBe(browserLocalToday);
+    expect(airingUrl.searchParams.get("air_date.lte")).toBe(browserLocalToday);
   });
 });
