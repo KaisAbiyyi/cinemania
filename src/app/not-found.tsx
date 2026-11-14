@@ -1,13 +1,16 @@
 import { buttonVariants } from "@/components/ui/button";
 import { CardTitle } from "@/components/ui/card";
+import { buildPageMetadata } from "@/lib/metadata";
 import { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 
-export const metadata: Metadata = {
-  title: "404 Not Found | Cinemania",
+export const metadata: Metadata = buildPageMetadata({
+  title: "404 Not Found",
   description: "Oops... The page you're looking for doesn't exist.",
-};
+  noIndex: true,
+  noFollow: true,
+});
 
 export default function NotFoundPage() {
   return (

@@ -1,5 +1,7 @@
 import MediaByKeyword from "@/feature/media/components/keyword/MediaByKeyword";
+import { buildPageMetadata } from "@/lib/metadata";
 import { slugToTitle } from "@/lib/utils";
+import type { Metadata } from "next";
 import { FC } from "react";
 
 interface TVKeywordPageProps {
@@ -8,28 +10,24 @@ interface TVKeywordPageProps {
     }>;
 }
 
-export const generateMetadata = async ({ params }: TVKeywordPageProps) => {
+export const generateMetadata = async ({ params }: TVKeywordPageProps): Promise<Metadata> => {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
     const keywordTitle = slugToTitle(decodedSlug);
 
-    return {
-        title: `${keywordTitle} TV Shows | Cinemania`,
+    return buildPageMetadata({
+        title: `${keywordTitle} TV Shows`,
         description: `Explore the keyword of ${keywordTitle} TV shows. Discover the best ${keywordTitle} TV shows and series.`,
+        path: `/keyword/${slug}/tv`,
         keywords: `${keywordTitle}, TV shows, keyword, Cinemania`,
-        openGraph: {
-            title: `Keyword - ${keywordTitle} - Cinemania`,
-            description: `Explore the keyword of ${keywordTitle} TV shows. Discover the best ${keywordTitle} TV shows and series.`,
-            type: "website",
-            url: `https://yourdomain.com/keyword/${slug}`,
-        },
-    };
+    });
 };
 
 const TVKeywordPage: FC<TVKeywordPageProps> = async ({ params }) => {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
     const keywordTitle = slugToTitle(decodedSlug);
+
     return (
         <div className="flex flex-col gap-4">
             <h1 className="text-2xl font-semibold">{keywordTitle} TV Shows</h1>

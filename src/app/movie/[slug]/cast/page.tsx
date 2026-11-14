@@ -1,5 +1,6 @@
 import { FC } from "react";
 import { Metadata } from "next";
+import { buildPageMetadata } from "@/lib/metadata";
 import { slugToTitle } from "@/lib/utils";
 import MediaCastWrapper from "@/feature/media/components/cast/MediaCastWrapper";
 import CastBanner from "@/feature/media/components/detail/DetailBackBanner";
@@ -15,17 +16,12 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     const decodedSlug = decodeURIComponent(slug);
     const movieTitle = slugToTitle(decodedSlug);
 
-    return {
-        title: `Cast of ${movieTitle} - Cinemania`,
+    return buildPageMetadata({
+        title: `Cast of ${movieTitle}`,
         description: `Explore the full cast of ${movieTitle}. Discover the actors and crew who brought the movie to life.`,
+        path: `/movie/${slug}/cast`,
         keywords: `${movieTitle}, movie cast, actors, crew, Cinemania`,
-        openGraph: {
-            title: `Cast of ${movieTitle} - Cinemania`,
-            description: `Explore the full cast of ${movieTitle}. Discover the actors and crew who brought the movie to life.`,
-            type: "website",
-            url: `https://yourdomain.com/movie/${slug}/cast`,
-        },
-    };
+    });
 }
 
 const CastPage: FC<CastPageProps> = async ({ params }) => {

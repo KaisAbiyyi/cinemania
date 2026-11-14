@@ -1,23 +1,33 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { FC, HTMLAttributes } from "react";
+import {
+    DiscoveryDatePreset,
+    filtersToDiscoveryQueryParams,
+    parseCalendarDateKey,
+    resolveDiscoveryDatePresetFiltersForYmd,
+} from "@/lib/datePresets";
+import { FC, HTMLAttributes, useMemo, useSyncExternalStore } from "react";
 import { MediaQueryParams, useMedia } from "../hooks/useMedia";
+import { useLocalCalendarDay } from "../hooks/useLocalCalendarDay";
 import MediaCard from "./MediaCard";
 import { buttonVariants } from "@/components/ui/button";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 import MediaScrollableListSkeleton from "./skeletons/MediaScrollableListSkeleton";
 
+const emptySubscribe = () => () => {};
+
 interface MediaScrollableListProps extends HTMLAttributes<HTMLDivElement> {
     title: string;
     redirectTo?: string;
     orientation: "vertical" | "horizontal";
-    redirectToButtonVariant?: "default" | "ghost"
+    redirectToButtonVariant?: "default" | "ghost";
     type: "movie" | "tv";
-    queryParams?: Partial<MediaQueryParams>; // Parameter tambahan untuk filtering, paging, dll.
+    queryParams?: Partial<MediaQueryParams>;
+    datePreset?: DiscoveryDatePreset;
     className?: string;
-    showOnly?: number; // New parameter to limit the number of items shown
+    showOnly?: number;
 }
 
 const MediaScrollableList: FC<MediaScrollableListProps> = ({
@@ -27,27 +37,49 @@ const MediaScrollableList: FC<MediaScrollableListProps> = ({
     redirectToButtonVariant = "ghost",
     type,
     queryParams = {},
+    datePreset,
     className,
-    showOnly, // Add the new parameter
+    showOnly,
     ...props
 }) => {
-    // Gabungkan parameter dasar dengan queryParams tambahan
+    const isHydrated = useSyncExternalStore(
+        emptySubscribe,
+        () => true,
+        () => false
+    );
+    const localCalendarDay = useLocalCalendarDay(Boolean(datePreset));
+
+    const isReady = !datePreset || (isHydrated && Boolean(localCalendarDay));
+
+    const presetQueryParams = useMemo<Record<string, string>>(() => {
+        if (!datePreset || !localCalendarDay) {
+            return {};
+        }
+        const ymd = parseCalendarDateKey(localCalendarDay);
+        if (!ymd) {
+            return {};
+        }
+        return filtersToDiscoveryQueryParams(
+            resolveDiscoveryDatePresetFiltersForYmd(datePreset, ymd)
+        );
+    }, [datePreset, localCalendarDay]);
+
     const baseParams: MediaQueryParams = {
         mediaType: type,
         language: "en-US",
         include_adult: false,
         ...queryParams,
+        ...presetQueryParams,
     };
 
-    const { data, isLoading, error } = useMedia(baseParams);
+    const { data, isLoading, error } = useMedia(baseParams, { enabled: isReady });
 
-    if (isLoading) return <MediaScrollableListSkeleton className={className} title={title} redirectTo={redirectTo} orientation={orientation} />;
+    if (!isReady || isLoading) {
+        return <MediaScrollableListSkeleton className={className} title={title} redirectTo={redirectTo} orientation={orientation} />;
+    }
     if (error) return <div>Error fetching media</div>;
 
-    // Get all media items
     const allMediaItems = data?.results || [];
-
-    // Apply the showOnly limit if specified
     const mediaItems = showOnly ? allMediaItems.slice(0, showOnly) : allMediaItems;
 
     return (

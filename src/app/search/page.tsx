@@ -1,31 +1,25 @@
 import SearchWrapper from '@/feature/search/components/SearchWrapper';
+import { buildPageMetadata } from '@/lib/metadata';
+import type { Metadata } from 'next';
 import React from 'react';
 
-// Force dynamic rendering
+// Intentional dynamic rendering: reads per-request ?q= query string for metadata and SSR heading
 export const dynamic = 'force-dynamic';
 
-export async function generateMetadata({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+export async function generateMetadata({ searchParams }: { searchParams: Promise<{ q?: string }> }): Promise<Metadata> {
     const resolvedSearchParams = await searchParams;
-    const query = resolvedSearchParams.q || 'Search';
-    return {
-        title: `${query} | Cinemania`,
-        description: `Search results for "${query}" on Cinemania.`,
-        openGraph: {
-            title: `${query} | Cinemania`,
-            description: `Search results for "${query}" on Cinemania.`,
-            url: `https://cinemania.com/search?q=${encodeURIComponent(query)}`,
-            siteName: 'Cinemania',
-            type: 'website',
-            images: [
-                {
-                    url: 'https://cinemania.com/og-image.jpg',
-                    width: 1200,
-                    height: 630,
-                    alt: 'Cinemania Search Results',
-                },
-            ],
-        },
-    };
+    const rawQuery = resolvedSearchParams.q?.trim() || '';
+    const displayQuery = rawQuery || 'Search';
+    const path = rawQuery ? `/search?q=${encodeURIComponent(rawQuery)}` : '/search';
+
+    return buildPageMetadata({
+        title: displayQuery,
+        description: rawQuery
+            ? `Search results for "${rawQuery}" on Cinemania.`
+            : 'Search movies, TV shows, people, and keywords on Cinemania.',
+        path,
+        noIndex: true,
+    });
 }
 
 const SearchPage = async ({ searchParams }: { searchParams: Promise<{ q?: string }> }) => {

@@ -1,7 +1,7 @@
 import { FC, useState } from 'react';
 import { PersonDetails } from '../hooks/usePerson';
 import Image from 'next/image';
-import { cn } from "@/lib/utils";
+import { cn, getPosterImageUrl } from "@/lib/utils";
 import PersonKnownFor from './PersonKnownFor';
 import { PersonCombinedCredits } from '../hooks/usePersonCombinedCredits';
 
@@ -12,8 +12,8 @@ interface Props {
 
 const PersonBanner: FC<Props> = ({ data, personCastData }) => {
     const [expanded, setExpanded] = useState(false);
-
-    const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL;
+    const profileImageSrc = getPosterImageUrl(data.profile_path);
+    const personName = data.name || "Person profile";
 
     return (
         <div className="flex flex-col gap-4">
@@ -21,8 +21,8 @@ const PersonBanner: FC<Props> = ({ data, personCastData }) => {
                 <div className="flex flex-col w-full gap-4 lg:w-3/12">
                     <div className="relative hidden w-full h-96 lg:block">
                         <Image
-                            src={`${imagePath}/w500${data.profile_path}`}
-                            alt={data.name}
+                            src={profileImageSrc}
+                            alt={personName}
                             fill
                             className="object-cover rounded-lg"
                         />
@@ -32,19 +32,19 @@ const PersonBanner: FC<Props> = ({ data, personCastData }) => {
                         <div className="flex flex-col gap-4">
                             <div className="flex flex-col gap-2">
                                 <p className="text-xs font-semibold md:text-sm lg:text-base">Known For</p>
-                                <p className="text-sm text-muted-foreground">{data.known_for_department}</p>
+                                <p className="text-sm text-muted-foreground">{data.known_for_department || "N/A"}</p>
                             </div>
                             <div className="flex flex-col gap-2">
                                 <p className="text-xs font-semibold md:text-sm lg:text-base">Birthday</p>
-                                <p className="text-sm text-muted-foreground">{data.birthday}</p>
+                                <p className="text-sm text-muted-foreground">{data.birthday || "N/A"}</p>
                             </div>
                             <div className="flex flex-col gap-2">
                                 <p className="text-xs font-semibold md:text-sm lg:text-base">Place of Birth</p>
-                                <p className="text-sm text-muted-foreground">{data.place_of_birth}</p>
+                                <p className="text-sm text-muted-foreground">{data.place_of_birth || "N/A"}</p>
                             </div>
                             <div className="flex flex-col gap-2">
                                 <p className="text-xs font-semibold md:text-sm lg:text-base">Also Known As</p>
-                                <p className="flex flex-wrap text-sm text-muted-foreground">{data.also_known_as.join(", ")}</p>
+                                <p className="flex flex-wrap text-sm text-muted-foreground">{data.also_known_as?.join(", ") || "N/A"}</p>
                             </div>
                         </div>
                         <PersonKnownFor data={personCastData} className='flex lg:hidden' />
@@ -54,8 +54,8 @@ const PersonBanner: FC<Props> = ({ data, personCastData }) => {
                     <h1 className="text-xl font-bold md:text-2xl lg:text-3xl xl:text-4xl">{data.name}</h1>
                     <div className="relative w-full h-96 lg:hidden">
                         <Image
-                            src={`${imagePath}/w500${data.profile_path}`}
-                            alt={data.name}
+                            src={profileImageSrc}
+                            alt={personName}
                             fill
                             className="object-cover rounded-lg"
                         />

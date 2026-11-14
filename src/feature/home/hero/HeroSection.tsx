@@ -5,7 +5,7 @@ import { Card, CardHeader } from "@/components/ui/card";
 import { useTrending } from "@/feature/media/hooks/useTrending";
 import { ChevronRight } from "lucide-react";
 import Link from "next/link";
-import { FC } from "react";
+import { FC, Suspense } from "react";
 import { HeroCarouselProvider } from "../hooks/HeroCarouselProvider";
 import HeroBackground from "./HeroBackground";
 import HeroMovieInfo from "./HeroMediaInfo";
@@ -57,7 +57,9 @@ const HeroSection: FC = () => {
                         </CardHeader>
                     </div>
                 </div>
-                <HeroSearchBar />
+                <Suspense fallback={<div className="h-[68px] bg-indigo-950" aria-hidden="true" />}>
+                    <HeroSearchBar />
+                </Suspense>
             </Card>
         </HeroCarouselProvider>
     );

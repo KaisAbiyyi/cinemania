@@ -104,10 +104,10 @@ export function AppSidebar() {
                             {BrowseItems.map((item) => (
                                 <SidebarMenuItem key={item.title}>
                                     <SidebarMenuButton isActive={pathname === item.url} asChild>
-                                        <a href={item.url}>
+                                        <Link href={item.url}>
                                             <item.icon />
                                             <span>{item.title}</span>
-                                        </a>
+                                        </Link>
                                     </SidebarMenuButton>
                                 </SidebarMenuItem>
                             ))}
@@ -123,9 +123,9 @@ export function AppSidebar() {
                                         <SidebarMenuSub>
                                             {MoviesCollapsibleItems.map((item) => (
                                                 <SidebarMenuSubItem key={item.title} className="hover:underline w-fit">
-                                                    <a href={item.url}>
+                                                    <Link href={item.url}>
                                                         {item.title}
-                                                    </a>
+                                                    </Link>
                                                 </SidebarMenuSubItem>
                                             ))}
                                         </SidebarMenuSub>
@@ -144,9 +144,9 @@ export function AppSidebar() {
                                         <SidebarMenuSub>
                                             {TvCollapsibleItems.map((item) => (
                                                 <SidebarMenuSubItem key={item.title} className="hover:underline w-fit">
-                                                    <a href={item.url}>
+                                                    <Link href={item.url}>
                                                         {item.title}
-                                                    </a>
+                                                    </Link>
                                                 </SidebarMenuSubItem>
                                             ))}
                                         </SidebarMenuSub>

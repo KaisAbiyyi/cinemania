@@ -1,13 +1,26 @@
 "use client";
 
-import React, { FC, useState, useEffect, useRef } from "react";
+import React, { FC, useState, useEffect } from "react";
 import { format } from "date-fns";
 import { Calendar as CalendarIcon } from "lucide-react";
+import { parseCalendarDateKey } from "@/lib/datePresets";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Label } from "@/components/ui/label";
+
+function parseDateInputValue(value?: string): Date | undefined {
+    if (!value) {
+        return undefined;
+    }
+    const ymd = parseCalendarDateKey(value);
+    if (ymd) {
+        return new Date(ymd.year, ymd.month - 1, ymd.day);
+    }
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
 
 interface DateRangePickerProps {
     label?: string;
@@ -22,39 +35,37 @@ const DateRangePicker: FC<DateRangePickerProps> = ({
     initialEndDate = "",
     onChange,
 }) => {
-    const [startDate, setStartDate] = useState<Date | undefined>(
-        initialStartDate ? new Date(initialStartDate) : undefined
+    const [startDate, setStartDate] = useState<Date | undefined>(() =>
+        parseDateInputValue(initialStartDate)
     );
-    const [endDate, setEndDate] = useState<Date | undefined>(
-        initialEndDate ? new Date(initialEndDate) : undefined
+    const [endDate, setEndDate] = useState<Date | undefined>(() =>
+        parseDateInputValue(initialEndDate)
     );
 
-    // Ref untuk menyimpan nilai formatted sebelumnya
-    const prevFormattedRef = useRef<{ start: string; end: string }>({ start: "", end: "" });
-
-    // Update state saat nilai awal berubah
+    // Sync local picker state when defaults or committed filter values change without firing user edits
     useEffect(() => {
-        setStartDate(initialStartDate ? new Date(initialStartDate) : undefined);
+        setStartDate(parseDateInputValue(initialStartDate));
     }, [initialStartDate]);
 
     useEffect(() => {
-        setEndDate(initialEndDate ? new Date(initialEndDate) : undefined);
+        setEndDate(parseDateInputValue(initialEndDate));
     }, [initialEndDate]);
 
-    // Panggil onChange hanya jika nilai formatted berbeda dari sebelumnya
-    useEffect(() => {
-        if (onChange) {
-            const formattedStart = startDate ? format(startDate, "yyyy-MM-dd") : "";
-            const formattedEnd = endDate ? format(endDate, "yyyy-MM-dd") : "";
-            if (
-                formattedStart !== prevFormattedRef.current.start ||
-                formattedEnd !== prevFormattedRef.current.end
-            ) {
-                prevFormattedRef.current = { start: formattedStart, end: formattedEnd };
-                onChange(formattedStart, formattedEnd);
-            }
-        }
-    }, [startDate, endDate, onChange]);
+    const handleStartSelect = (nextStart: Date | undefined) => {
+        setStartDate(nextStart);
+        onChange?.(
+            nextStart ? format(nextStart, "yyyy-MM-dd") : "",
+            endDate ? format(endDate, "yyyy-MM-dd") : ""
+        );
+    };
+
+    const handleEndSelect = (nextEnd: Date | undefined) => {
+        setEndDate(nextEnd);
+        onChange?.(
+            startDate ? format(startDate, "yyyy-MM-dd") : "",
+            nextEnd ? format(nextEnd, "yyyy-MM-dd") : ""
+        );
+    };
 
     return (
         <div className="flex flex-col gap-2">
@@ -74,7 +85,13 @@ const DateRangePicker: FC<DateRangePickerProps> = ({
                         </Button>
                     </PopoverTrigger>
                     <PopoverContent className="w-auto p-0">
-                        <Calendar mode="single" selected={startDate} onSelect={setStartDate} initialFocus />
+                        <Calendar
+                            mode="single"
+                            selected={startDate}
+                            defaultMonth={startDate}
+                            onSelect={handleStartSelect}
+                            initialFocus
+                        />
                     </PopoverContent>
                 </Popover>
                 <Popover>
@@ -91,7 +108,13 @@ const DateRangePicker: FC<DateRangePickerProps> = ({
                         </Button>
                     </PopoverTrigger>
                     <PopoverContent className="w-auto p-0">
-                        <Calendar mode="single" selected={endDate} onSelect={setEndDate} initialFocus />
+                        <Calendar
+                            mode="single"
+                            selected={endDate}
+                            defaultMonth={endDate}
+                            onSelect={handleEndSelect}
+                            initialFocus
+                        />
                     </PopoverContent>
                 </Popover>
             </div>

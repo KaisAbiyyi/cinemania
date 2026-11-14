@@ -1,51 +1,27 @@
 import { buttonVariants } from "@/components/ui/button";
 import FilterContainer from "@/feature/media/components/filter/FilterContainer";
 import MediaContainer from "@/feature/media/components/MediaContainer";
+import { buildPageMetadata } from "@/lib/metadata";
 import { Metadata } from "next";
 import Link from "next/link";
 import { FC } from "react";
-import { FilterProvider } from "@/feature/media/components/filter/FilterProvider"; // pastikan path ini sesuai
+import { FilterProvider } from "@/feature/media/components/filter/FilterProvider";
 
-export const metadata: Metadata = {
-    title: "Now Playing Movies | Cinemania",
+export const metadata: Metadata = buildPageMetadata({
+    title: "Now Playing Movies",
     description:
         "Discover the latest now playing movies on Cinemania. Get showtimes, ratings, reviews, and detailed information on movies currently in theaters.",
-    openGraph: {
-        title: "Now Playing Movies | Cinemania",
-        description:
-            "Explore now playing movies with comprehensive details, reviews, and ratings on Cinemania.",
-        url: "https://cinemania.com/movie/now-playing",
-        siteName: "Cinemania",
-        images: [
-            {
-                url: "https://cinemania.com/og/now-playing.jpg",
-                width: 1200,
-                height: 630,
-                alt: "Now Playing Movies on Cinemania",
-            },
-        ],
-        type: "website",
-    },
-    robots: {
-        index: true,
-        follow: true,
-    },
+    path: "/movie/now-playing",
+});
+
+const NOW_PLAYING_DEFAULT_FILTERS = {
+    sort_by: "popularity.desc",
+    with_release_type: "2|3",
 };
 
 const NowPlayingMoviePage: FC = () => {
-    const now = new Date();
-    const oneMonthBefore = new Date(now);
-    oneMonthBefore.setMonth(now.getMonth() - 1);
-
-    const defaultFilters = {
-        release_date_gte: oneMonthBefore.toISOString(),
-        release_date_lte: now.toISOString(),
-        sort_by: "popularity.desc",
-        with_release_type: "2|3",
-    };
-
     return (
-        <FilterProvider defaultFilters={defaultFilters}>
+        <FilterProvider defaultFilters={NOW_PLAYING_DEFAULT_FILTERS} datePreset="movie-now-playing">
             <h1 className="font-semibold text-2xl">Now Playing Movies</h1>
             <div className="flex gap-4">
                 <Link

@@ -1,5 +1,7 @@
 import PersonWrapper from "@/feature/person/components/PersonWrapper";
+import { buildPageMetadata } from "@/lib/metadata";
 import { slugToTitle } from "@/lib/utils";
+import type { Metadata } from "next";
 import { FC } from "react";
 
 interface PersonPageProps {
@@ -8,27 +10,22 @@ interface PersonPageProps {
     }>
 }
 
-export const generateMetadata = async ({ params }: PersonPageProps) => {
+export const generateMetadata = async ({ params }: PersonPageProps): Promise<Metadata> => {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
-    const personTitle = slugToTitle(decodedSlug)
+    const personTitle = slugToTitle(decodedSlug);
 
-    return {
-        title: `${personTitle} | Cinemania`,
+    return buildPageMetadata({
+        title: personTitle,
         description: `Explore the profile of ${personTitle}. Discover their movies and TV shows.`,
+        path: `/person/${slug}`,
         keywords: `${personTitle}, movies, TV shows, profile, Cinemania`,
-        openGraph: {
-            title: `Profile - ${personTitle} - Cinemania`,
-            description: `Explore the profile of ${personTitle}. Discover their movies and TV shows.`,
-            type: "website",
-            url: `https://yourdomain.com/person/${slug}`,
-        },
-    };
+    });
 }
 
 const PersonPage: FC<PersonPageProps> = async ({ params }) => {
     const { slug } = await params;
-    const personId = Number(slug.split("-")[0])
+    const personId = Number(slug.split("-")[0]);
 
     return (
         <PersonWrapper personId={personId} />

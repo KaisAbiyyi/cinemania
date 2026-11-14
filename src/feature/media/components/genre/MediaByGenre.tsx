@@ -1,6 +1,6 @@
 "use client"
 
-import { FC, useEffect, useRef } from "react";
+import { FC, Suspense, useEffect, useRef } from "react";
 import { useInfiniteMedia } from "../../hooks/useMedia";
 import MediaCard from "../../components/MediaCard";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -21,7 +21,7 @@ const SORT_OPTIONS = [
     { value: "vote_average.asc", label: "Rating (Asc)" },
 ];
 
-const MediaByGenre: FC<MediaByGenreProps> = ({ id, mediaType }) => {
+const MediaByGenreInner: FC<MediaByGenreProps> = ({ id, mediaType }) => {
     const searchParams = useSearchParams();
     const router = useRouter();
 
@@ -101,5 +101,11 @@ const MediaByGenre: FC<MediaByGenreProps> = ({ id, mediaType }) => {
         </div>
     );
 };
+
+const MediaByGenre: FC<MediaByGenreProps> = (props) => (
+    <Suspense fallback={<MediaByGenreSkeleton />}>
+        <MediaByGenreInner {...props} />
+    </Suspense>
+);
 
 export default MediaByGenre;

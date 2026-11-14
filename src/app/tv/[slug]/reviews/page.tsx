@@ -1,6 +1,8 @@
 import DetailBackBanner from "@/feature/media/components/detail/DetailBackBanner";
 import MediaReviewsWrapper from "@/feature/media/components/reviews/MediaReviewsWrapper";
+import { buildPageMetadata } from "@/lib/metadata";
 import { slugToTitle } from "@/lib/utils";
+import type { Metadata } from "next";
 import { FC } from "react";
 
 interface ReviewsPageProps {
@@ -9,29 +11,22 @@ interface ReviewsPageProps {
     }>
 }
 
-export const generateMetadata = async ({ params }: { params: Promise<{ slug: string }> }) => {
+export const generateMetadata = async ({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> => {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
-    const movieTitle = slugToTitle(decodedSlug);
+    const tvTitle = slugToTitle(decodedSlug);
 
-    return {
-        title: `Reviews of ${movieTitle} - Cinemania`,
-        description: `Read reviews of ${movieTitle}. Discover what critics and audiences are saying about the movie.`,
-        keywords: `${movieTitle}, movie reviews, critics, audience, Cinemania`,
-        openGraph: {
-            title: `Reviews of ${movieTitle} - Cinemania`,
-            description: `Read reviews of ${movieTitle}. Discover what critics and audiences are saying about the movie.`,
-            type: "website",
-            url: `https://yourdomain.com/movie/${slug}/reviews`,
-        },
-    };
+    return buildPageMetadata({
+        title: `Reviews of ${tvTitle}`,
+        description: `Read reviews of ${tvTitle}. Discover what critics and audiences are saying about the TV show.`,
+        path: `/tv/${slug}/reviews`,
+        keywords: `${tvTitle}, tv reviews, critics, audience, Cinemania`,
+    });
 }
 
 const ReviewsPage: FC<ReviewsPageProps> = async ({ params }) => {
     const { slug } = await params;
     const decodedSlug = decodeURIComponent(slug);
-
-
 
     return (
         <div className="flex flex-col gap-6">

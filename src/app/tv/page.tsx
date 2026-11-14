@@ -1,37 +1,19 @@
 import { buttonVariants } from "@/components/ui/button";
 import FilterContainer from "@/feature/media/components/filter/FilterContainer";
 import MediaContainer from "@/feature/media/components/MediaContainer";
+import { buildPageMetadata } from "@/lib/metadata";
 import { Metadata } from "next";
 import Link from "next/link";
 import { FC } from "react";
 import { globalDefaultFilters } from "@/types/filters";
 import { FilterProvider } from "@/feature/media/components/filter/FilterProvider";
 
-export const metadata: Metadata = {
-    title: "TV Shows | Cinemania",
+export const metadata: Metadata = buildPageMetadata({
+    title: "TV Shows",
     description:
         "Explore the latest and trending TV shows on Cinemania. Get detailed information, ratings, and more.",
-    openGraph: {
-        title: "TV Shows | Cinemania",
-        description:
-            "Discover top-rated and trending TV shows with detailed info and reviews on Cinemania.",
-        url: "https://cinemania.com/tv-shows",
-        siteName: "Cinemania",
-        images: [
-            {
-                url: "https://cinemania.com/og/tv-shows.jpg",
-                width: 1200,
-                height: 630,
-                alt: "TV Shows on Cinemania",
-            },
-        ],
-        type: "website",
-    },
-    robots: {
-        index: true,
-        follow: true,
-    },
-};
+    path: "/tv",
+});
 
 const TVPage: FC = () => {
     return (

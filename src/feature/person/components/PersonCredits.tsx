@@ -7,13 +7,13 @@ interface Props {
 }
 
 const PersonCredits: FC<Props> = ({ data }) => {
-    const cast = data.cast.sort((a, b) => {
+    const cast = [...(data?.cast ?? [])].sort((a, b) => {
         const dateA = new Date(a.release_date || a.first_air_date || "1900-01-01");
         const dateB = new Date(b.release_date || b.first_air_date || "1900-01-01");
         return dateB.getTime() - dateA.getTime(); // Sort descending
     });
 
-    const crew = data.crew.sort((a, b) => {
+    const crew = [...(data?.crew ?? [])].sort((a, b) => {
         const dateA = new Date(a.release_date || a.first_air_date || "1900-01-01");
         const dateB = new Date(b.release_date || b.first_air_date || "1900-01-01");
         return dateB.getTime() - dateA.getTime(); // Sort descending

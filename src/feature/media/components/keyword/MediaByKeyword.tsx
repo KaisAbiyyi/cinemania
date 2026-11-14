@@ -1,6 +1,6 @@
 "use client"
 
-import { FC, useEffect, useRef, useState } from "react";
+import { FC, Suspense, useEffect, useRef, useState } from "react";
 import { useInfiniteMedia } from "../../hooks/useMedia";
 import MediaCard from "../../components/MediaCard";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -26,7 +26,7 @@ const MEDIA_TYPE_OPTIONS = [
     { value: "tv", label: "TV Shows" },
 ];
 
-const MediaByKeyword: FC<MediaByKeywordProps> = ({ slug, mediaType: initialMediaType }) => {
+const MediaByKeywordInner: FC<MediaByKeywordProps> = ({ slug, mediaType: initialMediaType }) => {
     const searchParams = useSearchParams();
     const router = useRouter();
     const [mediaType, setMediaType] = useState(initialMediaType);
@@ -129,5 +129,11 @@ const MediaByKeyword: FC<MediaByKeywordProps> = ({ slug, mediaType: initialMedia
         </div>
     );
 };
+
+const MediaByKeyword: FC<MediaByKeywordProps> = (props) => (
+    <Suspense fallback={<MediaByKeywordSkeleton />}>
+        <MediaByKeywordInner {...props} />
+    </Suspense>
+);
 
 export default MediaByKeyword;
