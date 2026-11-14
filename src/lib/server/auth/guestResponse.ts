@@ -7,7 +7,10 @@ import {
   RoomExpiredError,
   RoomNotFoundError,
 } from "@/lib/server/room/roomRepository";
-import { InvalidStateTransitionError } from "@/lib/server/room/stateMachine";
+import {
+  InvalidStateTransitionError,
+  RoomCapacityError as StateMachineRoomCapacityError,
+} from "@/lib/server/room/stateMachine";
 
 export const PRIVATE_NO_STORE_HEADERS: Record<string, string> = {
   "Cache-Control": "private, no-store, no-cache, must-revalidate",
@@ -71,7 +74,7 @@ export function handleGuestApiError(err: unknown): NextResponse {
       { status: 503, headers: PRIVATE_NO_STORE_HEADERS }
     );
   }
-  if (err instanceof RoomCapacityError) {
+  if (err instanceof RoomCapacityError || err instanceof StateMachineRoomCapacityError) {
     return NextResponse.json(
       { error: err.code, message: err.message },
       { status: 409, headers: PRIVATE_NO_STORE_HEADERS }

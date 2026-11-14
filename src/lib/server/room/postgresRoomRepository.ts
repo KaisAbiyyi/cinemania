@@ -4,13 +4,16 @@ import {
   Room,
   RoomParticipant,
   Round,
+  RoundParticipant,
   Candidate,
   Vote,
   RoomEvent,
   VoteType,
+  MIN_PARTICIPANTS,
   MAX_PARTICIPANTS,
   DEFAULT_INACTIVITY_TTL_SECONDS,
 } from "../../../db/schema";
+import { CapabilityAuthError } from "../auth/guestCapability";
 import {
   assertValidTransition,
   isRoomRecordExpired,
@@ -24,6 +27,8 @@ import {
 import {
   CreateRoomOptions,
   CandidateInput,
+  LeaveLobbyResult,
+  StartLobbyRoundResult,
   RoomNotFoundError,
   ParticipantNotFoundError,
   RoundNotFoundError,
@@ -91,6 +96,17 @@ function normalizeRound(row: Record<string, unknown>): Round {
     status: row.status as Round["status"],
     started_at: toIso(row.started_at),
     completed_at: row.completed_at ? toIso(row.completed_at) : null,
+  };
+}
+
+export function normalizeRoundParticipant(row: Record<string, unknown>): RoundParticipant {
+  return {
+    room_id: String(row.room_id),
+    round_id: String(row.round_id),
+    participant_id: String(row.participant_id),
+    frozen_role: row.frozen_role as RoundParticipant["frozen_role"],
+    joined_at: toIso(row.joined_at),
+    frozen_at: toIso(row.frozen_at),
   };
 }
 
@@ -508,23 +524,427 @@ export class PostgresRoomRepository {
     });
   }
 
+  private async leaveLobbyWithClient(
+    client: Client | PoolClient,
+    roomId: string,
+    participantId: string,
+    beforeLeaveLocked?: (client: Client | PoolClient, room: Room) => Promise<void>
+  ): Promise<LeaveLobbyResult> {
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1 FOR UPDATE;", [roomId]);
+    if (roomRes.rows.length === 0) {
+      throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
+    }
+    const room = normalizeRoom(roomRes.rows[0]);
+
+    if (isRoomRecordExpired(room, now)) {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+
+    if (beforeLeaveLocked) {
+      await beforeLeaveLocked(client, room);
+    }
+
+    const partRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
+      [roomId, participantId]
+    );
+    if (partRes.rows.length === 0) {
+      throw new CapabilityAuthError(
+        403,
+        "PARTICIPANT_NOT_IN_ROOM",
+        "Guest is not a member of this room."
+      );
+    }
+    const participant = normalizeParticipant(partRes.rows[0]);
+
+    if (room.status !== "LOBBY") {
+      throw new RoomCapacityError(
+        `Cannot leave lobby roster: room status is '${room.status}', not 'LOBBY'. Frozen voter roster is locked.`,
+        "LOBBY_LEAVE_CLOSED"
+      );
+    }
+
+    const allPartsRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+      [roomId]
+    );
+    const participants = allPartsRes.rows.map((row) => normalizeParticipant(row));
+
+    if (participants.length <= 1) {
+      assertValidTransition(room.status, "EXPIRED", "Last participant left lobby");
+      const nextVersion = room.state_version + 1;
+
+      await client.query(
+        "UPDATE room_participants SET is_connected = false, last_seen_at = $1 WHERE room_id = $2 AND participant_id = $3;",
+        [nowIso, roomId, participantId]
+      );
+
+      await client.query(
+        `UPDATE rooms
+         SET status = 'EXPIRED', state_version = $1, last_activity_at = $2, expires_at = $2, updated_at = $2
+         WHERE id = $3;`,
+        [nextVersion, nowIso, roomId]
+      );
+
+      await client.query(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES ($1, $2, 'ROOM_EXPIRED', $3, false, 0, false, $4);`,
+        [
+          roomId,
+          nextVersion,
+          JSON.stringify({ reason: "LAST_PARTICIPANT_LEFT", participantId }),
+          nowIso,
+        ]
+      );
+
+      const updatedRoomRes = await client.query("SELECT * FROM rooms WHERE id = $1;", [roomId]);
+      const updatedPartsRes = await client.query(
+        "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+        [roomId]
+      );
+
+      return {
+        room: normalizeRoom(updatedRoomRes.rows[0]),
+        participants: updatedPartsRes.rows.map((row) => normalizeParticipant(row)),
+        leftParticipantId: participantId,
+        roomClosed: true,
+        hostTransferredTo: null,
+      };
+    }
+
+    const remaining = participants.filter(
+      (p) => p.participant_id.toLowerCase() !== participantId.toLowerCase()
+    );
+    const wasHost =
+      room.host_participant_id?.toLowerCase() === participantId.toLowerCase();
+    const nextHost = wasHost ? remaining[0] ?? null : null;
+
+    await client.query(
+      "DELETE FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
+      [roomId, participantId]
+    );
+
+    if (nextHost) {
+      await client.query(
+        "UPDATE room_participants SET role = 'HOST' WHERE room_id = $1 AND participant_id = $2;",
+        [roomId, nextHost.participant_id]
+      );
+    }
+
+    const leaveVersion = room.state_version + 1;
+    const finalVersion = nextHost ? room.state_version + 2 : leaveVersion;
+    const newExpiresAt = new Date(
+      now.getTime() + room.inactivity_ttl_seconds * 1000
+    ).toISOString();
+    const nextHostId = nextHost ? nextHost.participant_id : room.host_participant_id;
+
+    await client.query(
+      `UPDATE rooms
+       SET host_participant_id = $1, participant_count = $2, state_version = $3,
+           last_activity_at = $4, expires_at = $5, updated_at = $4
+       WHERE id = $6;`,
+      [nextHostId, remaining.length, finalVersion, nowIso, newExpiresAt, roomId]
+    );
+
+    await client.query(
+      `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+       VALUES ($1, $2, 'PARTICIPANT_LEFT', $3, false, 0, false, $4);`,
+      [
+        roomId,
+        leaveVersion,
+        JSON.stringify({
+          displayName: participant.display_name,
+          participantCount: remaining.length,
+          hostTransferred: Boolean(nextHost),
+        }),
+        nowIso,
+      ]
+    );
+
+    if (nextHost) {
+      await client.query(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES ($1, $2, 'HOST_TRANSFERRED', $3, false, 0, false, $4);`,
+        [
+          roomId,
+          finalVersion,
+          JSON.stringify({
+            newHostDisplayName: nextHost.display_name,
+            participantCount: remaining.length,
+          }),
+          nowIso,
+        ]
+      );
+    }
+
+    const updatedRoomRes = await client.query("SELECT * FROM rooms WHERE id = $1;", [roomId]);
+    const updatedPartsRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+      [roomId]
+    );
+    const updatedParticipants = updatedPartsRes.rows.map((row) => normalizeParticipant(row));
+    const updatedHost = nextHost
+      ? updatedParticipants.find(
+          (p) => p.participant_id.toLowerCase() === nextHost.participant_id.toLowerCase()
+        ) ?? null
+      : null;
+
+    return {
+      room: normalizeRoom(updatedRoomRes.rows[0]),
+      participants: updatedParticipants,
+      leftParticipantId: participantId,
+      roomClosed: false,
+      hostTransferredTo: updatedHost,
+    };
+  }
+
+  async leaveLobby(roomId: string, participantId: string): Promise<LeaveLobbyResult> {
+    return this.withTransaction((client) =>
+      this.leaveLobbyWithClient(client, roomId, participantId)
+    );
+  }
+
+  async leaveLobbyWithTx<T>(
+    roomId: string,
+    participantId: string,
+    callbacks: {
+      beforeLeaveLocked?: (client: Client | PoolClient, room: Room) => Promise<void>;
+      afterLeave: (client: Client | PoolClient, left: LeaveLobbyResult) => Promise<T>;
+    }
+  ): Promise<T> {
+    return this.withTransaction(async (client) => {
+      const left = await this.leaveLobbyWithClient(
+        client,
+        roomId,
+        participantId,
+        callbacks.beforeLeaveLocked
+      );
+      return callbacks.afterLeave(client, left);
+    });
+  }
+
+  private async startLobbyRoundWithClient(
+    client: Client | PoolClient,
+    roomId: string,
+    actorParticipantId: string,
+    beforeStartLocked?: (client: Client | PoolClient, room: Room) => Promise<void>
+  ): Promise<StartLobbyRoundResult> {
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1 FOR UPDATE;", [roomId]);
+    if (roomRes.rows.length === 0) {
+      throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
+    }
+    const room = normalizeRoom(roomRes.rows[0]);
+
+    if (isRoomRecordExpired(room, now)) {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+
+    if (beforeStartLocked) {
+      await beforeStartLocked(client, room);
+    }
+
+    const actorRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
+      [roomId, actorParticipantId]
+    );
+    if (actorRes.rows.length === 0) {
+      throw new CapabilityAuthError(
+        403,
+        "PARTICIPANT_NOT_IN_ROOM",
+        "Guest is not a member of this room."
+      );
+    }
+    const actor = normalizeParticipant(actorRes.rows[0]);
+    const authoritativeIsHost =
+      actor.role === "HOST" &&
+      room.host_participant_id?.toLowerCase() === actor.participant_id.toLowerCase();
+    if (!authoritativeIsHost) {
+      throw new CapabilityAuthError(
+        403,
+        "HOST_ONLY_ACTION",
+        "Only the room host can perform this action."
+      );
+    }
+
+    if (room.status !== "LOBBY") {
+      throw new RoomCapacityError(
+        `Cannot start round: room status is '${room.status}', but must be 'LOBBY'.`,
+        "ROOM_ALREADY_ACTIVE"
+      );
+    }
+
+    const partsRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+      [roomId]
+    );
+    const participants = partsRes.rows.map((row) => normalizeParticipant(row));
+    if (participants.length !== room.participant_count) {
+      throw new CapabilityAuthError(
+        500,
+        "SNAPSHOT_INCOHERENT",
+        `Incoherent room snapshot: participant_count (${room.participant_count}) does not match participant roster (${participants.length}).`
+      );
+    }
+
+    if (participants.length < MIN_PARTICIPANTS) {
+      throw new RoomCapacityError(
+        `Cannot start round: at least ${MIN_PARTICIPANTS} participants required (current: ${participants.length}).`,
+        "INSUFFICIENT_PARTICIPANTS"
+      );
+    }
+    if (participants.length > MAX_PARTICIPANTS) {
+      throw new RoomCapacityError(
+        `Cannot start round: maximum allowed participants is ${MAX_PARTICIPANTS} (current: ${participants.length}).`,
+        "ROOM_FULL"
+      );
+    }
+
+    const maxRoundRes = await client.query(
+      "SELECT COALESCE(MAX(round_number), 0) AS max_round FROM rounds WHERE room_id = $1;",
+      [roomId]
+    );
+    const roundNumber = Number(
+      (maxRoundRes.rows[0] as { max_round?: number | string } | undefined)?.max_round ?? 0
+    ) + 1;
+    const roundId = crypto.randomUUID();
+
+    await client.query(
+      "INSERT INTO rounds (id, room_id, round_number, status, started_at) VALUES ($1, $2, $3, 'ACTIVE', $4);",
+      [roundId, roomId, roundNumber, nowIso]
+    );
+
+    for (const member of participants) {
+      await client.query(
+        `INSERT INTO round_participants (room_id, round_id, participant_id, frozen_role, joined_at, frozen_at)
+         VALUES ($1, $2, $3, $4, $5, $6);`,
+        [roomId, roundId, member.participant_id, member.role, member.joined_at, nowIso]
+      );
+    }
+
+    const freezeVersion = room.state_version + 1;
+    const startVersion = room.state_version + 2;
+    const newExpiresAt = new Date(
+      now.getTime() + room.inactivity_ttl_seconds * 1000
+    ).toISOString();
+
+    await client.query(
+      `UPDATE rooms
+       SET status = 'ACTIVE', current_round_id = $1, state_version = $2,
+           last_activity_at = $3, expires_at = $4, updated_at = $3
+       WHERE id = $5;`,
+      [roundId, startVersion, nowIso, newExpiresAt, roomId]
+    );
+
+    await client.query(
+      `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+       VALUES ($1, $2, 'ROSTER_FROZEN', $3, false, 0, false, $4);`,
+      [
+        roomId,
+        freezeVersion,
+        JSON.stringify({
+          roundId,
+          roundNumber,
+          frozenQuorum: participants.length,
+          frozenParticipantIds: participants.map((p) => p.participant_id),
+        }),
+        nowIso,
+      ]
+    );
+
+    await client.query(
+      `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+       VALUES ($1, $2, 'ROUND_STARTED', $3, false, 0, false, $4);`,
+      [
+        roomId,
+        startVersion,
+        JSON.stringify({
+          roundId,
+          roundNumber,
+          frozenQuorum: participants.length,
+        }),
+        nowIso,
+      ]
+    );
+
+    const updatedRoomRes = await client.query("SELECT * FROM rooms WHERE id = $1;", [roomId]);
+    const roundRes = await client.query("SELECT * FROM rounds WHERE id = $1;", [roundId]);
+    const updatedPartsRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+      [roomId]
+    );
+    const frozenRes = await client.query(
+      "SELECT * FROM round_participants WHERE room_id = $1 AND round_id = $2 ORDER BY joined_at ASC, participant_id ASC;",
+      [roomId, roundId]
+    );
+
+    return {
+      room: normalizeRoom(updatedRoomRes.rows[0]),
+      round: normalizeRound(roundRes.rows[0]),
+      participants: updatedPartsRes.rows.map((row) => normalizeParticipant(row)),
+      frozenParticipants: frozenRes.rows.map((row) => normalizeRoundParticipant(row)),
+    };
+  }
+
+  async startLobbyRound(roomId: string, actorParticipantId: string): Promise<StartLobbyRoundResult> {
+    return this.withTransaction((client) =>
+      this.startLobbyRoundWithClient(client, roomId, actorParticipantId)
+    );
+  }
+
+  async startLobbyRoundWithTx<T>(
+    roomId: string,
+    actorParticipantId: string,
+    callbacks: {
+      beforeStartLocked?: (client: Client | PoolClient, room: Room) => Promise<void>;
+      afterStart: (client: Client | PoolClient, started: StartLobbyRoundResult) => Promise<T>;
+    }
+  ): Promise<T> {
+    return this.withTransaction(async (client) => {
+      const started = await this.startLobbyRoundWithClient(
+        client,
+        roomId,
+        actorParticipantId,
+        callbacks.beforeStartLocked
+      );
+      return callbacks.afterStart(client, started);
+    });
+  }
+
   /**
-   * Reads room and ordered participant roster within a single REPEATABLE READ READ ONLY
-   * snapshot transaction so stateVersion and participant roster are always mutually consistent.
+   * Reads room, ordered participant roster, and frozen round voters within a single REPEATABLE READ READ ONLY
+   * snapshot transaction so stateVersion, participant roster, and frozen quorum are mutually consistent.
    */
-  async getConsistentSnapshot(roomId: string): Promise<{ room: Room; participants: RoomParticipant[] } | null> {
+  async getConsistentSnapshot(roomId: string): Promise<{
+    room: Room;
+    participants: RoomParticipant[];
+    roundParticipants: RoundParticipant[];
+  } | null> {
     return this.withTransaction(async (client) => {
       const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1 LIMIT 1;", [roomId]);
       if (roomRes.rows.length === 0) {
         return null;
       }
+      const room = normalizeRoom(roomRes.rows[0]);
       const partRes = await client.query(
         "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
         [roomId]
       );
+      const frozenRes = room.current_round_id
+        ? await client.query(
+            "SELECT * FROM round_participants WHERE room_id = $1 AND round_id = $2 ORDER BY joined_at ASC, participant_id ASC;",
+            [roomId, room.current_round_id]
+          )
+        : { rows: [] };
       return {
-        room: normalizeRoom(roomRes.rows[0]),
+        room,
         participants: partRes.rows.map((row) => normalizeParticipant(row)),
+        roundParticipants: frozenRes.rows.map((row) => normalizeRoundParticipant(row)),
       };
     }, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;");
   }
@@ -852,6 +1272,16 @@ export class PostgresRoomRepository {
         [roomId]
       );
       return res.rows.map((row) => normalizeParticipant(row));
+    });
+  }
+
+  async getRoundParticipants(roomId: string, roundId: string): Promise<RoundParticipant[]> {
+    return this.withClient(async (client) => {
+      const res = await client.query(
+        "SELECT * FROM round_participants WHERE room_id = $1 AND round_id = $2 ORDER BY joined_at ASC, participant_id ASC;",
+        [roomId, roundId]
+      );
+      return res.rows.map((row) => normalizeRoundParticipant(row));
     });
   }
 

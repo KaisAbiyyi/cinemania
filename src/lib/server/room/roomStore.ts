@@ -4,14 +4,20 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Pool, type PoolConfig } from "pg";
-import type { Room, RoomParticipant } from "@/db/schema";
+import type { Room, RoomParticipant, RoundParticipant } from "@/db/schema";
 import { CapabilityAuthError } from "@/lib/server/auth/guestCapability";
 import {
   PostgresRoomRepository,
   assertValidPgSchema,
   normalizeParticipant,
+  normalizeRoundParticipant,
 } from "./postgresRoomRepository";
-import { SqliteRoomRepository, type CreateRoomOptions } from "./roomRepository";
+import {
+  SqliteRoomRepository,
+  type CreateRoomOptions,
+  type LeaveLobbyResult,
+  type StartLobbyRoundResult,
+} from "./roomRepository";
 
 export interface RoomMutationHooks {
   afterWriteBeforeSessionInit?: () => void | Promise<void>;
@@ -40,9 +46,24 @@ export interface JoinRoomSessionOptions {
 export interface AtomicRoomSessionResult {
   room: Room;
   participants: RoomParticipant[];
+  roundParticipants?: RoundParticipant[];
   participant: RoomParticipant;
   sessionGeneration: number;
   rejoined: boolean;
+}
+
+export interface LeaveLobbySessionOptions {
+  roomId: string;
+  participantId: string;
+  verifyLockedSession?: (context: { room: Room; minGeneration: number }) => void;
+  beforeCommit?: (left: LeaveLobbyResult) => void | Promise<void>;
+}
+
+export interface StartLobbyRoundSessionOptions {
+  roomId: string;
+  actorParticipantId: string;
+  verifyLockedSession?: (context: { room: Room; minGeneration: number }) => void;
+  beforeCommit?: (started: StartLobbyRoundResult) => void | Promise<void>;
 }
 
 function assertSyncHookResult(value: unknown, hookName: string): void {
@@ -60,9 +81,16 @@ export interface RoomAuthorityStore {
   joinRoom(roomId: string, participantId: string, displayName: string): Promise<RoomParticipant>;
   createRoomWithSession(options: CreateRoomSessionOptions): Promise<AtomicRoomSessionResult>;
   joinRoomWithSession(options: JoinRoomSessionOptions): Promise<AtomicRoomSessionResult>;
+  leaveLobbyWithSession(options: LeaveLobbySessionOptions): Promise<LeaveLobbyResult>;
+  startLobbyRoundWithSession(options: StartLobbyRoundSessionOptions): Promise<StartLobbyRoundResult>;
   getConsistentRoomSnapshot(
     roomId: string
-  ): Promise<{ room: Room; participants: RoomParticipant[] } | null>;
+  ): Promise<{
+    room: Room;
+    participants: RoomParticipant[];
+    roundParticipants: RoundParticipant[];
+  } | null>;
+  getRoundParticipants(roomId: string, roundId: string): Promise<RoundParticipant[]>;
   getRoomById(roomId: string): Promise<Room | null>;
   getRoomByCode(code: string): Promise<Room | null>;
   getParticipant(roomId: string, participantId: string): Promise<RoomParticipant | null>;
@@ -105,6 +133,7 @@ function loadSqliteMigrations(): string[] {
   return [
     fs.readFileSync(path.join(baseDir, "001_create_room_schema.sql"), "utf8"),
     fs.readFileSync(path.join(baseDir, "002_guest_capability_sessions.sql"), "utf8"),
+    fs.readFileSync(path.join(baseDir, "003_round_roster_freeze.sql"), "utf8"),
   ];
 }
 
@@ -290,10 +319,14 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
       | undefined;
     const sessionGeneration = sessionRow ? Number(sessionRow.min_generation) : 1;
     const participants = this.repo.getParticipantsByRoom(room.id);
+    const roundParticipants = room.current_round_id
+      ? this.repo.getRoundParticipants(room.id, room.current_round_id)
+      : [];
 
     const result: AtomicRoomSessionResult = {
       room,
       participants,
+      roundParticipants,
       participant,
       sessionGeneration,
       rejoined,
@@ -346,8 +379,79 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
 
   async getConsistentRoomSnapshot(
     roomId: string
-  ): Promise<{ room: Room; participants: RoomParticipant[] } | null> {
+  ): Promise<{
+    room: Room;
+    participants: RoomParticipant[];
+    roundParticipants: RoundParticipant[];
+  } | null> {
     return this.repo.getConsistentSnapshot(roomId);
+  }
+
+  async leaveLobbyWithSession(options: LeaveLobbySessionOptions): Promise<LeaveLobbyResult> {
+    return this.repo.leaveLobbyInTransaction(options.roomId, options.participantId, {
+      beforeLeaveLocked: (room) => {
+        const row = this.db
+          .prepare(
+            "SELECT min_generation FROM guest_capability_sessions WHERE room_id = ? AND participant_id = ? LIMIT 1;"
+          )
+          .get(room.id, options.participantId) as unknown as
+          | { min_generation: number }
+          | undefined;
+        const minGeneration = row ? Number(row.min_generation) : 1;
+        options.verifyLockedSession?.({ room, minGeneration });
+      },
+      afterLeave: (left) => {
+        if (left.roomClosed) {
+          const rotatedAt = new Date().toISOString();
+          this.db
+            .prepare(
+              `INSERT INTO guest_capability_sessions (room_id, participant_id, min_generation, rotated_at, expires_at)
+               VALUES (?, ?, 2, ?, ?)
+               ON CONFLICT(room_id, participant_id) DO UPDATE SET
+                 min_generation = guest_capability_sessions.min_generation + 1,
+                 rotated_at = excluded.rotated_at,
+                 expires_at = excluded.expires_at;`
+            )
+            .run(left.room.id, left.leftParticipantId, rotatedAt, left.room.expires_at);
+        }
+        if (options.beforeCommit) {
+          assertSyncHookResult(options.beforeCommit(left), "beforeCommit");
+        }
+        return left;
+      },
+    });
+  }
+
+  async startLobbyRoundWithSession(
+    options: StartLobbyRoundSessionOptions
+  ): Promise<StartLobbyRoundResult> {
+    return this.repo.startLobbyRoundInTransaction(
+      options.roomId,
+      options.actorParticipantId,
+      {
+        beforeStartLocked: (room) => {
+          const row = this.db
+            .prepare(
+              "SELECT min_generation FROM guest_capability_sessions WHERE room_id = ? AND participant_id = ? LIMIT 1;"
+            )
+            .get(room.id, options.actorParticipantId) as unknown as
+            | { min_generation: number }
+            | undefined;
+          const minGeneration = row ? Number(row.min_generation) : 1;
+          options.verifyLockedSession?.({ room, minGeneration });
+        },
+        afterStart: (started) => {
+          if (options.beforeCommit) {
+            assertSyncHookResult(options.beforeCommit(started), "beforeCommit");
+          }
+          return started;
+        },
+      }
+    );
+  }
+
+  async getRoundParticipants(roomId: string, roundId: string): Promise<RoundParticipant[]> {
+    return this.repo.getRoundParticipants(roomId, roundId);
   }
 
   async getRoomById(roomId: string): Promise<Room | null> {
@@ -506,10 +610,20 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     const participants = partRes.rows.map((row) =>
       normalizeParticipant(row as Record<string, unknown>)
     );
+    const frozenRes = room.current_round_id
+      ? await client.query(
+          "SELECT * FROM round_participants WHERE room_id = $1 AND round_id = $2 ORDER BY joined_at ASC, participant_id ASC;",
+          [room.id, room.current_round_id]
+        )
+      : { rows: [] };
+    const roundParticipants = frozenRes.rows.map((row) =>
+      normalizeRoundParticipant(row as Record<string, unknown>)
+    );
 
     const result: AtomicRoomSessionResult = {
       room,
       participants,
+      roundParticipants,
       participant,
       sessionGeneration,
       rejoined,
@@ -573,8 +687,74 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
 
   async getConsistentRoomSnapshot(
     roomId: string
-  ): Promise<{ room: Room; participants: RoomParticipant[] } | null> {
+  ): Promise<{
+    room: Room;
+    participants: RoomParticipant[];
+    roundParticipants: RoundParticipant[];
+  } | null> {
     return this.repo.getConsistentSnapshot(roomId);
+  }
+
+  async leaveLobbyWithSession(options: LeaveLobbySessionOptions): Promise<LeaveLobbyResult> {
+    return this.repo.leaveLobbyWithTx(options.roomId, options.participantId, {
+      beforeLeaveLocked: async (client, room) => {
+        const genRes = await client.query(
+          "SELECT min_generation FROM guest_capability_sessions WHERE room_id = $1 AND participant_id = $2 LIMIT 1;",
+          [room.id, options.participantId]
+        );
+        const minGeneration =
+          genRes.rows.length > 0
+            ? Number((genRes.rows[0] as { min_generation: number }).min_generation)
+            : 1;
+        options.verifyLockedSession?.({ room, minGeneration });
+      },
+      afterLeave: async (client, left) => {
+        if (left.roomClosed) {
+          const rotatedAt = new Date().toISOString();
+          await client.query(
+            `INSERT INTO guest_capability_sessions (room_id, participant_id, min_generation, rotated_at, expires_at)
+             VALUES ($1, $2, 2, $3, $4)
+             ON CONFLICT (room_id, participant_id) DO UPDATE SET
+               min_generation = guest_capability_sessions.min_generation + 1,
+               rotated_at = EXCLUDED.rotated_at,
+               expires_at = EXCLUDED.expires_at;`,
+            [left.room.id, left.leftParticipantId, rotatedAt, left.room.expires_at]
+          );
+        }
+        if (options.beforeCommit) {
+          await options.beforeCommit(left);
+        }
+        return left;
+      },
+    });
+  }
+
+  async startLobbyRoundWithSession(
+    options: StartLobbyRoundSessionOptions
+  ): Promise<StartLobbyRoundResult> {
+    return this.repo.startLobbyRoundWithTx(options.roomId, options.actorParticipantId, {
+      beforeStartLocked: async (client, room) => {
+        const genRes = await client.query(
+          "SELECT min_generation FROM guest_capability_sessions WHERE room_id = $1 AND participant_id = $2 LIMIT 1;",
+          [room.id, options.actorParticipantId]
+        );
+        const minGeneration =
+          genRes.rows.length > 0
+            ? Number((genRes.rows[0] as { min_generation: number }).min_generation)
+            : 1;
+        options.verifyLockedSession?.({ room, minGeneration });
+      },
+      afterStart: async (_client, started) => {
+        if (options.beforeCommit) {
+          await options.beforeCommit(started);
+        }
+        return started;
+      },
+    });
+  }
+
+  async getRoundParticipants(roomId: string, roundId: string): Promise<RoundParticipant[]> {
+    return this.repo.getRoundParticipants(roomId, roundId);
   }
 
   async getRoomById(roomId: string): Promise<Room | null> {
