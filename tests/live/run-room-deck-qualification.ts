@@ -265,6 +265,55 @@ async function runQualification() {
     assertCondition(stillLobby.rows[0].status === "LOBBY", "Room must stay in LOBBY after 422 DECK_EMPTY");
     assertCondition(stillLobby.rows[0].current_round_id === null, "No round created after 422 DECK_EMPTY");
 
+    // 3b. [P2-2] Direct PostgresRoomRepository.startLobbyRound rejects missing / [] candidates with rollback
+    const hostLookup = await adminClient.query(
+      "SELECT participant_id FROM room_participants WHERE room_id = $1 AND role = 'HOST' LIMIT 1;",
+      [roomId]
+    );
+    const liveHostId = String(hostLookup.rows[0]?.participant_id ?? "");
+    assertCondition(liveHostId.length > 0, "Expected host participant_id in Postgres");
+
+    let missingCandidatesRejected = false;
+    try {
+      await repo.startLobbyRound(roomId, liveHostId, undefined as never);
+    } catch (err) {
+      missingCandidatesRejected = err instanceof DeckEmptyError;
+    }
+    assertCondition(
+      missingCandidatesRejected,
+      "PostgresRoomRepository.startLobbyRound must reject missing options/candidates with DeckEmptyError"
+    );
+
+    let emptyCandidatesRejected = false;
+    try {
+      await repo.startLobbyRound(roomId, liveHostId, { candidates: [] });
+    } catch (err) {
+      emptyCandidatesRejected = err instanceof DeckEmptyError;
+    }
+    assertCondition(
+      emptyCandidatesRejected,
+      "PostgresRoomRepository.startLobbyRound must reject empty candidates=[] with DeckEmptyError"
+    );
+
+    const pgInvariantCheck = await adminClient.query(
+      `SELECT
+         (SELECT status FROM rooms WHERE id = $1) AS room_status,
+         (SELECT COUNT(*)::int FROM rounds WHERE room_id = $1) AS round_count,
+         (SELECT COUNT(*)::int FROM round_participants WHERE room_id = $1) AS frozen_count,
+         (SELECT COUNT(*)::int FROM candidates WHERE room_id = $1) AS candidate_count,
+         (SELECT COUNT(*)::int FROM room_events WHERE room_id = $1 AND event_type IN ('ROSTER_FROZEN', 'ROUND_STARTED')) AS start_event_count;`,
+      [roomId]
+    );
+    const inv = pgInvariantCheck.rows[0];
+    assertCondition(
+      inv.room_status === "LOBBY" &&
+        inv.round_count === 0 &&
+        inv.frozen_count === 0 &&
+        inv.candidate_count === 0 &&
+        inv.start_event_count === 0,
+      `Live Postgres rollback check failed after missing/[] candidates: ${JSON.stringify(inv)}`
+    );
+
     // 4. Concurrent start vs PATCH /filters race -> DECK_FILTER_CONFLICT
     let conflictCaught = false;
     try {

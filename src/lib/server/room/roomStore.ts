@@ -69,7 +69,7 @@ export interface LeaveLobbySessionOptions {
 export interface StartLobbyRoundSessionOptions {
   roomId: string;
   actorParticipantId: string;
-  options?: StartLobbyRoundOptions;
+  options: StartLobbyRoundOptions;
   verifyLockedSession?: (context: { room: Room; minGeneration: number }) => void;
   beforeCommit?: (started: StartLobbyRoundResult) => void | Promise<void>;
 }

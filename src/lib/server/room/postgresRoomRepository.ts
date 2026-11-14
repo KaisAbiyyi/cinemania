@@ -18,6 +18,7 @@ import type { CanonicalRoomDeckFilter } from "@/lib/schemas/roomDeck";
 import { CapabilityAuthError } from "../auth/guestCapability";
 import {
   assertValidTransition,
+  DeckEmptyError,
   isRoomRecordExpired,
   validateStartRoundPrerequisites,
 } from "./stateMachine";
@@ -939,9 +940,12 @@ export class PostgresRoomRepository {
     }
 
     const candidatesInput = options?.candidates;
-    if (candidatesInput !== undefined) {
-      assertValidUniqueRoundCandidates(participants.length, candidatesInput);
+    if (!Array.isArray(candidatesInput)) {
+      throw new DeckEmptyError(
+        "Cannot start active round without validated deck candidates."
+      );
     }
+    assertValidUniqueRoundCandidates(participants.length, candidatesInput);
 
     const maxRoundRes = await client.query(
       "SELECT COALESCE(MAX(round_number), 0) AS max_round FROM rounds WHERE room_id = $1;",
@@ -965,27 +969,25 @@ export class PostgresRoomRepository {
       );
     }
 
-    if (candidatesInput && candidatesInput.length > 0) {
-      for (let i = 0; i < candidatesInput.length; i += 1) {
-        const c = candidatesInput[i];
-        await client.query(
-          `INSERT INTO candidates (
-            id, round_id, room_id, movie_id, position, title, poster_path, overview, release_date, vote_average
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);`,
-          [
-            crypto.randomUUID(),
-            roundId,
-            roomId,
-            c.movieId,
-            i,
-            c.title,
-            c.posterPath || null,
-            c.overview || null,
-            c.releaseDate || null,
-            c.voteAverage ?? null,
-          ]
-        );
-      }
+    for (let i = 0; i < candidatesInput.length; i += 1) {
+      const c = candidatesInput[i];
+      await client.query(
+        `INSERT INTO candidates (
+          id, round_id, room_id, movie_id, position, title, poster_path, overview, release_date, vote_average
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);`,
+        [
+          crypto.randomUUID(),
+          roundId,
+          roomId,
+          c.movieId,
+          i,
+          c.title,
+          c.posterPath || null,
+          c.overview || null,
+          c.releaseDate || null,
+          c.voteAverage ?? null,
+        ]
+      );
     }
 
     const freezeVersion = room.state_version + 1;
@@ -1039,13 +1041,9 @@ export class PostgresRoomRepository {
           roundId,
           roundNumber,
           frozenQuorum: participants.length,
-          ...(candidatesInput !== undefined
-            ? {
-                deckSize: candidatesInput.length,
-                expectedDeckSize: DECK_SIZE,
-                isShortage: candidatesInput.length < DECK_SIZE,
-              }
-            : {}),
+          deckSize: candidatesInput.length,
+          expectedDeckSize: DECK_SIZE,
+          isShortage: candidatesInput.length < DECK_SIZE,
           ...(options?.deckFilter ? { deckFilter: options.deckFilter } : {}),
           ...(options?.deckSeed ? { deckSeed: options.deckSeed } : {}),
         }),
@@ -1063,13 +1061,10 @@ export class PostgresRoomRepository {
       "SELECT * FROM round_participants WHERE room_id = $1 AND round_id = $2 ORDER BY joined_at ASC, participant_id ASC;",
       [roomId, roundId]
     );
-    const candsRes =
-      candidatesInput !== undefined
-        ? await client.query(
-            "SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2 ORDER BY position ASC;",
-            [roomId, roundId]
-          )
-        : { rows: [] };
+    const candsRes = await client.query(
+      "SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2 ORDER BY position ASC;",
+      [roomId, roundId]
+    );
 
     return {
       room: normalizeRoom(updatedRoomRes.rows[0]),
@@ -1083,7 +1078,7 @@ export class PostgresRoomRepository {
   async startLobbyRound(
     roomId: string,
     actorParticipantId: string,
-    options?: StartLobbyRoundOptions
+    options: StartLobbyRoundOptions
   ): Promise<StartLobbyRoundResult> {
     return this.withTransaction((client) =>
       this.startLobbyRoundWithClient(client, roomId, actorParticipantId, undefined, options)
@@ -1094,7 +1089,7 @@ export class PostgresRoomRepository {
     roomId: string,
     actorParticipantId: string,
     callbacks: {
-      options?: StartLobbyRoundOptions;
+      options: StartLobbyRoundOptions;
       beforeStartLocked?: (client: Client | PoolClient, room: Room) => Promise<void>;
       afterStart: (client: Client | PoolClient, started: StartLobbyRoundResult) => Promise<T>;
     }

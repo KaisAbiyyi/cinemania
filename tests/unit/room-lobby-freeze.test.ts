@@ -6,11 +6,26 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { CapabilityAuthError } from "@/lib/server/auth/guestCapability";
-import { RoomCapacityError, SqliteRoomRepository } from "@/lib/server/room/roomRepository";
+import {
+  type CandidateInput,
+  RoomCapacityError,
+  SqliteRoomRepository,
+} from "@/lib/server/room/roomRepository";
 import { PostgresRoomRepository } from "@/lib/server/room/postgresRoomRepository";
 import { applySqliteMigrations } from "@/lib/server/room/roomStore";
 import { normalizeDisplayName } from "@/lib/server/room/roomSnapshot";
 import { validateStartLobbyRoundPrerequisites } from "@/lib/server/room/stateMachine";
+
+function makeSampleCandidates(count = 20): CandidateInput[] {
+  return Array.from({ length: count }, (_, idx) => ({
+    movieId: 900100 + idx,
+    title: `Lobby Freeze Test Movie ${idx + 1}`,
+    posterPath: `/sample-${idx + 1}.jpg`,
+    overview: "Deterministic fixture movie",
+    releaseDate: "2025-01-15",
+    voteAverage: 7.5,
+  }));
+}
 
 const tempDirs: string[] = [];
 const openDbs: DatabaseSync[] = [];
@@ -94,15 +109,20 @@ describe("CINE-015 Lobby Prerequisites, Host Control, Leave & Frozen Roster Inva
   it("enforces host-only start, 2..5 capacity limits, freeze persistence, and active-room protections in SQLite", () => {
     const { repo, db } = createMigratedSqliteRepo();
     const { room, host } = repo.createRoom({ hostDisplayName: "Alice" });
+    const sampleCandidates = makeSampleCandidates(20);
 
     // Start with 1 rejected
-    expect(() => repo.startLobbyRound(room.id, host.participant_id)).toThrowError(RoomCapacityError);
+    expect(() =>
+      repo.startLobbyRound(room.id, host.participant_id, { candidates: sampleCandidates })
+    ).toThrowError(RoomCapacityError);
 
     const guest2Id = crypto.randomUUID();
     repo.joinRoom(room.id, guest2Id, "Bob");
 
     // Member cannot start
-    expect(() => repo.startLobbyRound(room.id, guest2Id)).toThrowError(CapabilityAuthError);
+    expect(() =>
+      repo.startLobbyRound(room.id, guest2Id, { candidates: sampleCandidates })
+    ).toThrowError(CapabilityAuthError);
 
     // 6-participant invariant breach defense (even if DB constraint bypassed in test table without check or > 5)
     // Add 3 more -> 5/5 valid
@@ -113,16 +133,21 @@ describe("CINE-015 Lobby Prerequisites, Host Control, Leave & Frozen Roster Inva
       repo.joinRoom(room.id, pid, `Guest ${i}`);
     }
 
-    const started = repo.startLobbyRound(room.id, host.participant_id);
+    const started = repo.startLobbyRound(room.id, host.participant_id, {
+      candidates: sampleCandidates,
+    });
     expect(started.room.status).toBe("ACTIVE");
     expect(started.round.status).toBe("ACTIVE");
     expect(started.frozenParticipants).toHaveLength(5);
+    expect(started.candidates).toHaveLength(20);
     expect(started.frozenParticipants.map((rp) => rp.participant_id)).toEqual(
       started.participants.map((p) => p.participant_id)
     );
 
     // Starting twice fails cleanly
-    expect(() => repo.startLobbyRound(room.id, host.participant_id)).toThrowError(RoomCapacityError);
+    expect(() =>
+      repo.startLobbyRound(room.id, host.participant_id, { candidates: sampleCandidates })
+    ).toThrowError(RoomCapacityError);
 
     // Leaving once ACTIVE fails cleanly without mutating round_participants
     expect(() => repo.leaveLobby(room.id, guest2Id)).toThrowError(RoomCapacityError);
@@ -134,6 +159,7 @@ describe("CINE-015 Lobby Prerequisites, Host Control, Leave & Frozen Roster Inva
     );
     const snapshot = repo.getConsistentSnapshot(room.id);
     expect(snapshot?.roundParticipants).toHaveLength(5);
+    expect(snapshot?.candidates).toHaveLength(20);
     expect(snapshot?.room.participant_count).toBe(5);
   });
 
@@ -204,6 +230,7 @@ describe("CINE-015 Lobby Prerequisites, Host Control, Leave & Frozen Roster Inva
     ];
 
     const frozenState: Array<Record<string, unknown>> = [];
+    const candidatesState: Array<Record<string, unknown>> = [];
 
     const mockClient = {
       query: async (sql: string, params?: unknown[]) => {
@@ -236,6 +263,21 @@ describe("CINE-015 Lobby Prerequisites, Host Control, Leave & Frozen Roster Inva
           });
           return { rows: [] };
         }
+        if (sql.includes("INSERT INTO candidates")) {
+          candidatesState.push({
+            id: params?.[0],
+            round_id: params?.[1],
+            room_id: params?.[2],
+            movie_id: params?.[3],
+            position: params?.[4],
+            title: params?.[5],
+            poster_path: params?.[6],
+            overview: params?.[7],
+            release_date: params?.[8],
+            vote_average: params?.[9],
+          });
+          return { rows: [] };
+        }
         if (sql.includes("UPDATE rooms") && sql.includes("SET status = 'ACTIVE'")) {
           roomState.status = "ACTIVE";
           roomState.current_round_id = params?.[0];
@@ -262,6 +304,9 @@ describe("CINE-015 Lobby Prerequisites, Host Control, Leave & Frozen Roster Inva
         if (sql.includes("SELECT * FROM round_participants WHERE room_id = $1 AND round_id = $2")) {
           return { rows: frozenState.map((r) => ({ ...r })) };
         }
+        if (sql.includes("SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2")) {
+          return { rows: candidatesState.map((c) => ({ ...c })) };
+        }
         return { rows: [] };
       },
       release: () => undefined,
@@ -269,12 +314,16 @@ describe("CINE-015 Lobby Prerequisites, Host Control, Leave & Frozen Roster Inva
 
     const mockPool = { totalCount: 1, connect: async () => mockClient };
     const repo = new PostgresRoomRepository(mockPool as never, { schema: "cinematch_qual015" });
-    const started = await repo.startLobbyRound(roomId, hostId);
+    const started = await repo.startLobbyRound(roomId, hostId, {
+      candidates: makeSampleCandidates(20),
+    });
 
     expect(started.room.status).toBe("ACTIVE");
     expect(started.frozenParticipants).toHaveLength(2);
+    expect(started.candidates).toHaveLength(20);
     expect(queries.some((q) => q.sql.includes("SELECT * FROM rooms WHERE id = $1 FOR UPDATE;"))).toBe(true);
     expect(queries.some((q) => q.sql.includes("INSERT INTO round_participants"))).toBe(true);
+    expect(queries.some((q) => q.sql.includes("INSERT INTO candidates"))).toBe(true);
     expect(queries.some((q) => q.sql.includes("false, 0, false"))).toBe(true);
   });
 });

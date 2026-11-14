@@ -640,10 +640,21 @@ export async function startRoomRoundWithSession(
   const expectedLobbyFilterJson =
     inlineFilter !== undefined ? undefined : computeCanonicalLobbyFilterJson(actor.room.deck_filter);
 
+  if (actor.room.current_round_id !== null) {
+    throw new RoomCapacityError(
+      "Round restart / multi-round deck seeding is out of CINE-016 scope and requires reserved roundNumber derivation (CINE-025).",
+      "ROOM_ALREADY_ACTIVE"
+    );
+  }
+
+  // CINE-016 MVP scope: initial LOBBY -> ACTIVE start only (roundNumber === 1).
+  // When CINE-025 enables round restarts, reserve/derive next roundNumber before seed generation.
+  const initialRoundNumber = 1;
+
   // Fetch and deterministically order candidate deck outside DB transaction locks (L-053)
   const builtDeck = await fetchAndBuildDeterministicDeck({
     roomId: actor.room.id,
-    roundNumber: 1,
+    roundNumber: initialRoundNumber,
     filter: effectiveFilter,
     maxPages: options?.maxPages,
     discoverFetcher: options?.discoverFetcher,

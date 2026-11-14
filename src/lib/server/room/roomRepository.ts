@@ -22,6 +22,7 @@ import {
 } from "@/lib/schemas/roomDeck";
 import {
   assertValidTransition,
+  DeckEmptyError,
   isRoomRecordExpired,
   validateStartRoundDeckBounds,
   validateStartRoundPrerequisites,
@@ -99,7 +100,7 @@ export interface LeaveLobbyResult {
 }
 
 export interface StartLobbyRoundOptions {
-  candidates?: CandidateInput[];
+  candidates: CandidateInput[];
   deckFilter?: CanonicalRoomDeckFilter;
   expectedLobbyFilterJson?: string | null;
   deckSeed?: string;
@@ -181,6 +182,9 @@ export function assertValidUniqueRoundCandidates(
   for (const candidate of candidates) {
     if (!Number.isInteger(candidate.movieId) || candidate.movieId <= 0) {
       throw new Error(`Invalid candidate movieId: ${String(candidate.movieId)}`);
+    }
+    if (typeof candidate.title !== "string" || candidate.title.trim().length === 0) {
+      throw new Error(`Invalid candidate title for movieId ${candidate.movieId}: title must be non-empty.`);
     }
     if (seenIds.has(candidate.movieId)) {
       throw new Error(`Duplicate candidate movieId detected in round deck: ${candidate.movieId}`);
@@ -889,9 +893,12 @@ export class SqliteRoomRepository {
     }
 
     const candidatesInput = options?.candidates;
-    if (candidatesInput !== undefined) {
-      assertValidUniqueRoundCandidates(participants.length, candidatesInput);
+    if (!Array.isArray(candidatesInput)) {
+      throw new DeckEmptyError(
+        "Cannot start active round without validated deck candidates."
+      );
     }
+    assertValidUniqueRoundCandidates(participants.length, candidatesInput);
 
     const maxRoundRow = this.db
       .prepare(`SELECT COALESCE(MAX(round_number), 0) AS max_round FROM rounds WHERE room_id = ?;`)
@@ -921,27 +928,25 @@ export class SqliteRoomRepository {
       );
     }
 
-    if (candidatesInput && candidatesInput.length > 0) {
-      const insertCandidateStmt = this.db.prepare(
-        `INSERT INTO candidates (
-          id, round_id, room_id, movie_id, position, title, poster_path, overview, release_date, vote_average
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+    const insertCandidateStmt = this.db.prepare(
+      `INSERT INTO candidates (
+        id, round_id, room_id, movie_id, position, title, poster_path, overview, release_date, vote_average
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+    );
+    for (let i = 0; i < candidatesInput.length; i += 1) {
+      const c = candidatesInput[i];
+      insertCandidateStmt.run(
+        crypto.randomUUID(),
+        roundId,
+        roomId,
+        c.movieId,
+        i,
+        c.title,
+        c.posterPath || null,
+        c.overview || null,
+        c.releaseDate || null,
+        c.voteAverage ?? null
       );
-      for (let i = 0; i < candidatesInput.length; i += 1) {
-        const c = candidatesInput[i];
-        insertCandidateStmt.run(
-          crypto.randomUUID(),
-          roundId,
-          roomId,
-          c.movieId,
-          i,
-          c.title,
-          c.posterPath || null,
-          c.overview || null,
-          c.releaseDate || null,
-          c.voteAverage ?? null
-        );
-      }
     }
 
     const freezeVersion = room.state_version + 1;
@@ -1007,13 +1012,9 @@ export class SqliteRoomRepository {
           roundId,
           roundNumber,
           frozenQuorum: participants.length,
-          ...(candidatesInput !== undefined
-            ? {
-                deckSize: candidatesInput.length,
-                expectedDeckSize: DECK_SIZE,
-                isShortage: candidatesInput.length < DECK_SIZE,
-              }
-            : {}),
+          deckSize: candidatesInput.length,
+          expectedDeckSize: DECK_SIZE,
+          isShortage: candidatesInput.length < DECK_SIZE,
           ...(options?.deckFilter ? { deckFilter: options.deckFilter } : {}),
           ...(options?.deckSeed ? { deckSeed: options.deckSeed } : {}),
         }),
@@ -1032,7 +1033,7 @@ export class SqliteRoomRepository {
   startLobbyRound(
     roomId: string,
     actorParticipantId: string,
-    options?: StartLobbyRoundOptions
+    options: StartLobbyRoundOptions
   ): StartLobbyRoundResult {
     return this.runInImmediateTransaction(() =>
       this.startLobbyRoundCore(roomId, actorParticipantId, undefined, options)
@@ -1043,7 +1044,7 @@ export class SqliteRoomRepository {
     roomId: string,
     actorParticipantId: string,
     callbacks: {
-      options?: StartLobbyRoundOptions;
+      options: StartLobbyRoundOptions;
       beforeStartLocked?: (room: Room) => void;
       afterStart: (started: StartLobbyRoundResult) => T;
     }

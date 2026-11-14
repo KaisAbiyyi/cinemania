@@ -289,7 +289,6 @@ export async function fetchAndBuildDeterministicDeck(
     }
 
     fetchedCount += payload.results.length;
-    const beforeUnique = uniqueEntries.size;
 
     for (const rawItem of payload.results) {
       const sanitized = sanitizeDeckMovieEntry(rawItem);
@@ -298,8 +297,7 @@ export async function fetchAndBuildDeterministicDeck(
       }
     }
 
-    const addedUnique = uniqueEntries.size - beforeUnique;
-    if (uniqueEntries.size >= targetSize || (page > 1 && addedUnique === 0)) {
+    if (uniqueEntries.size >= targetSize || page >= totalPagesAvailable) {
       break;
     }
   }
