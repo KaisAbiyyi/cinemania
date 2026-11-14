@@ -37,3 +37,9 @@ CREATE TRIGGER trg_votes_immutable_update
   BEFORE UPDATE ON votes
   FOR EACH ROW
   EXECUTE FUNCTION prevent_vote_mutation();
+
+DROP TRIGGER IF EXISTS trg_votes_immutable_delete ON votes;
+CREATE TRIGGER trg_votes_immutable_delete
+  BEFORE DELETE ON votes
+  FOR EACH ROW
+  EXECUTE FUNCTION prevent_vote_mutation();

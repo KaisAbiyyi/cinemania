@@ -12,9 +12,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { Client, Pool } from "pg";
 import { PostgresRoomRepository } from "../../src/lib/server/room/postgresRoomRepository";
+import { PostgresRoomAuthorityStore } from "../../src/lib/server/room/roomStore";
 import { RoomCapacityError } from "../../src/lib/server/room/roomRepository";
 import {
+  CandidateOutOfOrderError,
+  FrozenRosterMissingError,
   ImmutableVoteError,
+  MissingMigrationSchemaError,
   OperationConflictError,
   VoterNotEligibleError,
 } from "../../src/lib/server/room/votingEngine";
@@ -180,6 +184,23 @@ async function main() {
       "LIKE",
       { operationId: "pg-v3a" }
     );
+
+    // Out-of-order vote on candidates[1] while candidates[0] is unresolved -> CandidateOutOfOrderError
+    let outOfOrderCaught = false;
+    try {
+      await repo.recordVote(
+        created3.room.id,
+        started3.round.id,
+        g3a,
+        started3.candidates[1]!.id,
+        started3.candidates[1]!.movie_id,
+        "LIKE",
+        { operationId: "pg-ooo-early" }
+      );
+    } catch (err) {
+      outOfOrderCaught = err instanceof CandidateOutOfOrderError && err.code === "CANDIDATE_OUT_OF_ORDER";
+    }
+    assertCondition(outOfOrderCaught, "Out-of-order vote on candidates[1] before candidates[0] resolves must reject");
     const v3b = await repo.recordVote(
       created3.room.id,
       started3.round.id,
@@ -247,6 +268,14 @@ async function main() {
       triggerAborted = String(err).includes("VOTE_IMMUTABLE");
     }
     assertCondition(triggerAborted, "Direct UPDATE on votes must be rejected by trg_votes_immutable_update");
+
+    let deleteTriggerAborted = false;
+    try {
+      await adminClient.query(`DELETE FROM "${TEST_SCHEMA}".votes WHERE id = $1;`, [v3a.vote.id]);
+    } catch (err) {
+      deleteTriggerAborted = String(err).includes("VOTE_IMMUTABLE");
+    }
+    assertCondition(deleteTriggerAborted, "Direct DELETE on votes must be rejected by trg_votes_immutable_delete");
 
     // Finish round 3 with unanimous 3rd LIKE
     const v3c = await repo.recordVote(
@@ -385,17 +414,72 @@ async function main() {
     }
     assertCondition(rlsDenied, "authenticated role must be denied direct SELECT on votes table");
 
-    console.log("[7/8] Verifying 004_down rollback and 004 forward re-application...");
+    console.log("[7/8] Verifying fail-closed frozen roster, 004_down rollback/re-application & missing migration enforcement...");
+    const authorityStore = new PostgresRoomAuthorityStore(storePool, { schema: TEST_SCHEMA });
+    const frCreated = await authorityStore.createRoom({ hostDisplayName: "FrHost" });
+    const frGuest = await authorityStore.joinRoom(frCreated.room.id, crypto.randomUUID(), "FrGuest");
+    const frStarted = await repo.startLobbyRound(frCreated.room.id, frCreated.host.participant_id, {
+      candidates: [{ movieId: 93001, title: "Frozen Fail-Closed Movie" }],
+    });
+
+    await adminClient.query(
+      `DELETE FROM "${TEST_SCHEMA}".round_participants WHERE room_id = $1 AND round_id = $2;`,
+      [frCreated.room.id, frStarted.round.id]
+    );
+
+    let frozenMissingCaught = false;
+    try {
+      await authorityStore.recordVoteWithSession({
+        roomId: frCreated.room.id,
+        roundId: frStarted.round.id,
+        participantId: frGuest.participant_id,
+        candidateId: frStarted.candidates[0]!.id,
+        movieId: frStarted.candidates[0]!.movie_id,
+        vote: "LIKE",
+        operationId: "pg-missing-roster",
+      });
+    } catch (err) {
+      frozenMissingCaught = err instanceof FrozenRosterMissingError && err.code === "FROZEN_ROSTER_MISSING";
+    }
+    assertCondition(frozenMissingCaught, "Empty round_participants must fail closed with FrozenRosterMissingError (never fallback)");
+
     await adminClient.query(
       adaptSql(fs.readFileSync(path.join(migDir, "004_down_vote_operation_idempotency.sql"), "utf8"), TEST_SCHEMA)
     );
+
+    const colDownRes = await adminClient.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'votes' AND column_name = 'operation_id';`,
+      [TEST_SCHEMA]
+    );
+    assertCondition(colDownRes.rows.length === 0, "004_down must drop votes.operation_id column");
+
+    // Partial migration state (003 without 004) must fail closed
+    let missingSchemaCaught = false;
+    try {
+      await repo.recordVote(
+        concCreated.room.id,
+        concStarted.round.id,
+        concCreated.host.participant_id,
+        concStarted.candidates[1]!.id,
+        concStarted.candidates[1]!.movie_id,
+        "LIKE"
+      );
+    } catch (err) {
+      missingSchemaCaught = err instanceof MissingMigrationSchemaError && err.code === "MIGRATION_SCHEMA_MISSING";
+    }
+    assertCondition(missingSchemaCaught, "Missing 004 schema must fail closed with MissingMigrationSchemaError");
+
     await adminClient.query(
       adaptSql(fs.readFileSync(path.join(migDir, "004_vote_operation_idempotency.sql"), "utf8"), TEST_SCHEMA)
     );
     const trgRes = await adminClient.query(
-      `SELECT 1 FROM pg_trigger WHERE tgname = 'trg_votes_immutable_update';`
+      `SELECT tgname FROM pg_trigger t
+       JOIN pg_class c ON c.oid = t.tgrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = $1 AND tgname IN ('trg_votes_immutable_update', 'trg_votes_immutable_delete');`,
+      [TEST_SCHEMA]
     );
-    assertCondition(trgRes.rows.length > 0, "trg_votes_immutable_update must exist after 004 re-application");
+    assertCondition(trgRes.rows.length === 2, "Both trg_votes_immutable_update and trg_votes_immutable_delete must exist after 004 re-application");
 
     console.log("[8/8] Verifying zero impact on public schema & tearing down isolated schema...");
     const pubSnapAfter = await adminClient.query(

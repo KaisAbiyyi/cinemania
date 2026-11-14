@@ -17,7 +17,12 @@ import {
   RoundNotFoundError,
   VoterNotEligibleError,
 } from "@/lib/server/room/roomRepository";
-import { VotePayloadError } from "@/lib/server/room/votingEngine";
+import {
+  CandidateOutOfOrderError,
+  FrozenRosterMissingError,
+  MissingMigrationSchemaError,
+  VotePayloadError,
+} from "@/lib/server/room/votingEngine";
 import {
   DeckEmptyError,
   InvalidStateTransitionError,
@@ -104,10 +109,21 @@ export function handleGuestApiError(err: unknown): NextResponse {
       { status: 403, headers: PRIVATE_NO_STORE_HEADERS }
     );
   }
-  if (err instanceof ImmutableVoteError || err instanceof OperationConflictError) {
+  if (
+    err instanceof ImmutableVoteError ||
+    err instanceof OperationConflictError ||
+    err instanceof CandidateOutOfOrderError ||
+    err instanceof FrozenRosterMissingError
+  ) {
     return NextResponse.json(
       { error: err.code, message: err.message },
       { status: 409, headers: PRIVATE_NO_STORE_HEADERS }
+    );
+  }
+  if (err instanceof MissingMigrationSchemaError) {
+    return NextResponse.json(
+      { error: err.code, message: err.message },
+      { status: 500, headers: PRIVATE_NO_STORE_HEADERS }
     );
   }
   if (err instanceof RoomExpiredError) {

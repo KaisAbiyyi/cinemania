@@ -9,12 +9,16 @@ import {
   RoomCapacityError,
   SqliteRoomRepository,
 } from "@/lib/server/room/roomRepository";
+import { buildSafeRoomSnapshot } from "@/lib/server/room/roomSnapshot";
 import { applySqliteMigrations } from "@/lib/server/room/roomStore";
 import {
+  CandidateOutOfOrderError,
   evaluateCandidateConsensus,
   evaluateDeckProgression,
   extractOperationIdFromHeaders,
+  FrozenRosterMissingError,
   ImmutableVoteError,
+  MissingMigrationSchemaError,
   OperationConflictError,
   parseVoteSubmissionPayload,
   VotePayloadError,
@@ -248,6 +252,30 @@ describe("CINE-017 Pure Unanimous Matching Engine", () => {
       })
     ).toThrow(VotePayloadError);
   });
+
+  it("refuses to match a later candidate while an earlier candidate in the deck is still pending consensus", () => {
+    const roomId = "00000000-0000-4000-8000-0000000000c1";
+    const roundId = "00000000-0000-4000-8000-0000000000c2";
+    const candidates = makeCandidates(roomId, roundId, 3);
+    const roster = new Set(["voter-1", "voter-2"]);
+
+    // candidate[0] has only 1 of 2 votes (pending); candidate[1] has 2/2 LIKE (out-of-order)
+    const progression = evaluateDeckProgression(
+      candidates,
+      [
+        { candidate_id: candidates[0]!.id, participant_id: "voter-1", vote: "LIKE" },
+        { candidate_id: candidates[1]!.id, participant_id: "voter-1", vote: "LIKE" },
+        { candidate_id: candidates[1]!.id, participant_id: "voter-2", vote: "LIKE" },
+      ],
+      roster
+    );
+
+    expect(progression.nextStatus).toBe("ACTIVE");
+    expect(progression.matchedCandidate).toBeNull();
+    expect(progression.matchedMovieId).toBeNull();
+    expect(progression.currentCandidateIndex).toBe(0);
+    expect(progression.currentCandidate?.id).toBe(candidates[0]!.id);
+  });
 });
 
 describe("CINE-017 SQLite Repository Immutability, Frozen Roster, Idempotency & Exhaustion", () => {
@@ -408,10 +436,29 @@ describe("CINE-017 SQLite Repository Immutability, Frozen Roster, Idempotency & 
         })
       ).toThrow(ImmutableVoteError);
 
-      // Raw SQL UPDATE on votes table MUST be aborted by DB trigger trg_votes_immutable_update
+      // Raw SQL UPDATE & DELETE on votes table MUST be aborted by DB immutability triggers
       expect(() => {
         db.prepare("UPDATE votes SET vote = 'SKIP' WHERE id = ?;").run(first.vote.id);
       }).toThrow(/VOTE_IMMUTABLE/);
+      expect(() => {
+        db.prepare("DELETE FROM votes WHERE id = ?;").run(first.vote.id);
+      }).toThrow(/VOTE_IMMUTABLE/);
+
+      // Blank operation_id MUST be aborted on insert by trg_votes_operation_id_nonempty
+      expect(() => {
+        db.prepare(
+          `INSERT INTO votes (id, room_id, round_id, participant_id, candidate_id, movie_id, vote, operation_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'LIKE', '   ', ?);`
+        ).run(
+          crypto.randomUUID(),
+          room.id,
+          round.id,
+          guestId,
+          c1.id,
+          c1.movie_id,
+          new Date().toISOString()
+        );
+      }).toThrow(/INVALID_VOTE_PAYLOAD/);
 
       // Guest completes unanimous LIKE -> MATCHED; retry-after-timeout on MATCHED stays idempotent
       const matchRes = repo.recordVote(
@@ -518,9 +565,29 @@ describe("CINE-017 SQLite Repository Immutability, Frozen Roster, Idempotency & 
     }
   });
 
-  it("supports clean SQLite 004_down rollback and 004 forward re-application", () => {
+  it("supports clean SQLite 004_down rollback (including DROP COLUMN operation_id) and 004 forward re-application", () => {
     const db = createMigratedSqliteDb();
     try {
+      const repo = new SqliteRoomRepository(db, { enforceMigrationAuthority: true });
+      const { room, host } = repo.createRoom({ hostDisplayName: "Host" });
+      const guestId = crypto.randomUUID();
+      repo.joinRoom(room.id, guestId, "Guest");
+      const started = repo.startLobbyRound(room.id, host.participant_id, {
+        candidates: [
+          { movieId: 501, title: "Rollback Movie 1" },
+          { movieId: 502, title: "Rollback Movie 2" },
+        ],
+      });
+      repo.recordVote(
+        room.id,
+        started.round.id,
+        host.participant_id,
+        started.candidates[0]!.id,
+        started.candidates[0]!.movie_id,
+        "SKIP",
+        { operationId: "op-rollback-seed" }
+      );
+
       const downSql = fs.readFileSync(
         path.join(process.cwd(), "src", "db", "migrations", "sqlite", "004_down_vote_operation_idempotency.sql"),
         "utf8"
@@ -531,19 +598,311 @@ describe("CINE-017 SQLite Repository Immutability, Frozen Roster, Idempotency & 
       );
 
       db.exec(downSql);
+
+      const colsAfterDown = db
+        .prepare("PRAGMA table_info(votes);")
+        .all() as Array<{ name: string }>;
+      expect(colsAfterDown.some((c) => c.name === "operation_id")).toBe(false);
+
       const triggersAfterDown = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_votes_immutable_update';")
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'trigger'
+             AND name IN ('trg_votes_immutable_update', 'trg_votes_immutable_delete', 'trg_votes_operation_id_nonempty');`
+        )
         .all();
       expect(triggersAfterDown.length).toBe(0);
 
-      db.exec(upSql);
-      const triggersAfterUp = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_votes_immutable_update';")
+      const idxAfterDown = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_votes_round_participant_operation';"
+        )
         .all();
-      expect(triggersAfterUp.length).toBe(1);
+      expect(idxAfterDown.length).toBe(0);
+
+      // Re-apply forward 004 migration cleanly from SQL file alone
+      db.exec(upSql);
+
+      const colsAfterUp = db
+        .prepare("PRAGMA table_info(votes);")
+        .all() as Array<{ name: string }>;
+      expect(colsAfterUp.some((c) => c.name === "operation_id")).toBe(true);
+
+      const triggersAfterUp = db
+        .prepare(
+          `SELECT name FROM sqlite_master
+           WHERE type = 'trigger'
+             AND name IN ('trg_votes_immutable_update', 'trg_votes_immutable_delete', 'trg_votes_operation_id_nonempty');`
+        )
+        .all();
+      expect(triggersAfterUp.length).toBe(3);
+
+      const idxAfterUp = db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_votes_round_participant_operation';"
+        )
+        .all();
+      expect(idxAfterUp.length).toBe(1);
     } finally {
       db.close();
     }
+  });
+
+  it("blocks out-of-order candidate voting and fails closed when frozen roster or migration authority is missing in SQLite & PostgreSQL", async () => {
+    // 1. SQLite out-of-order candidate voting & fail-closed empty round_participants
+    const db = createMigratedSqliteDb();
+    try {
+      const repo = new SqliteRoomRepository(db, { enforceMigrationAuthority: true });
+      const { room, host } = repo.createRoom({ hostDisplayName: "Host" });
+      const guestId = crypto.randomUUID();
+      repo.joinRoom(room.id, guestId, "Guest");
+      const started = repo.startLobbyRound(room.id, host.participant_id, {
+        candidates: [
+          { movieId: 601, title: "Seq 1" },
+          { movieId: 602, title: "Seq 2" },
+        ],
+      });
+
+      const c0 = started.candidates[0]!;
+      const c1 = started.candidates[1]!;
+
+      // Jumping to c1 before c0 has any votes -> CandidateOutOfOrderError
+      expect(() =>
+        repo.recordVote(room.id, started.round.id, host.participant_id, c1.id, c1.movie_id, "LIKE")
+      ).toThrow(CandidateOutOfOrderError);
+
+      // Host skips c0 -> still 1/2 pending on c0 -> c1 STILL rejected
+      repo.recordVote(room.id, started.round.id, host.participant_id, c0.id, c0.movie_id, "SKIP");
+      expect(() =>
+        repo.recordVote(room.id, started.round.id, guestId, c1.id, c1.movie_id, "LIKE")
+      ).toThrow(CandidateOutOfOrderError);
+
+      // Guest completes c0 with LIKE -> c0 resolves without unanimity -> c1 becomes active & succeeds
+      const c0Done = repo.recordVote(room.id, started.round.id, guestId, c0.id, c0.movie_id, "LIKE");
+      expect(c0Done.room.status).toBe("ACTIVE");
+      expect(c0Done.progression.currentCandidateIndex).toBe(1);
+
+      const c1Vote = repo.recordVote(room.id, started.round.id, host.participant_id, c1.id, c1.movie_id, "LIKE");
+      expect(c1Vote.room.status).toBe("ACTIVE");
+
+      // buildSafeRoomSnapshot must NEVER fall back to mutable participants when roundParticipants is missing
+      const participants = repo.getParticipantsByRoom(room.id);
+      const activeRoom = repo.getRoomById(room.id)!;
+      expect(() =>
+        buildSafeRoomSnapshot(activeRoom, participants, host.participant_id, new Date(), [], started.candidates, [])
+      ).toThrow(FrozenRosterMissingError);
+
+      // Corrupting round_participants to empty MUST fail closed with FrozenRosterMissingError (never fallback to room_participants)
+      db.prepare("DELETE FROM round_participants WHERE round_id = ?;").run(started.round.id);
+      expect(() =>
+        repo.recordVote(room.id, started.round.id, guestId, c1.id, c1.movie_id, "LIKE")
+      ).toThrow(FrozenRosterMissingError);
+    } finally {
+      db.close();
+    }
+
+    // 2. Partial migration / missing migration authority must fail closed
+    const partialDb = new DatabaseSync(":memory:");
+    try {
+      const baseDir = path.join(process.cwd(), "src", "db", "migrations", "sqlite");
+      partialDb.exec("PRAGMA foreign_keys = ON;");
+      partialDb.exec(fs.readFileSync(path.join(baseDir, "001_create_room_schema.sql"), "utf8"));
+      partialDb.exec(fs.readFileSync(path.join(baseDir, "002_guest_capability_sessions.sql"), "utf8"));
+      partialDb.exec(fs.readFileSync(path.join(baseDir, "003_round_roster_freeze.sql"), "utf8"));
+
+      const partialRepo = new SqliteRoomRepository(partialDb);
+      const { room, host } = partialRepo.createRoom({ hostDisplayName: "Partial Host" });
+      const guestId = crypto.randomUUID();
+      partialRepo.joinRoom(room.id, guestId, "Partial Guest");
+      const started = partialRepo.startLobbyRound(room.id, host.participant_id, {
+        candidates: [{ movieId: 701, title: "Partial Movie" }],
+      });
+
+      // Missing 004 (votes.operation_id) when 002+003 exist MUST fail closed
+      expect(() =>
+        partialRepo.recordVote(
+          room.id,
+          started.round.id,
+          host.participant_id,
+          started.candidates[0]!.id,
+          started.candidates[0]!.movie_id,
+          "LIKE"
+        )
+      ).toThrow(MissingMigrationSchemaError);
+    } finally {
+      partialDb.close();
+    }
+
+    // 3. 001-only DB with enforceMigrationAuthority OR explicit operationId MUST fail closed
+    const legacyDb = new DatabaseSync(":memory:");
+    try {
+      const m001 = fs.readFileSync(
+        path.join(process.cwd(), "src", "db", "migrations", "sqlite", "001_create_room_schema.sql"),
+        "utf8"
+      );
+      legacyDb.exec("PRAGMA foreign_keys = ON;");
+      legacyDb.exec(m001);
+
+      const compatRepo = new SqliteRoomRepository(legacyDb);
+      const { room, host } = compatRepo.createRoom({ hostDisplayName: "Compat Host" });
+      compatRepo.joinRoom(room.id, crypto.randomUUID(), "Compat Guest");
+      const { round, candidates } = compatRepo.startRound(
+        room.id,
+        Array.from({ length: 20 }, (_, idx) => ({
+          movieId: 801 + idx,
+          title: `Compat Movie ${idx + 1}`,
+        }))
+      );
+
+      // Passing operationId on 001-only schema MUST NOT silently drop idempotency
+      expect(() =>
+        compatRepo.recordVote(
+          room.id,
+          round.id,
+          host.participant_id,
+          candidates[0]!.id,
+          candidates[0]!.movie_id,
+          "LIKE",
+          { operationId: "must-fail-closed" }
+        )
+      ).toThrow(MissingMigrationSchemaError);
+
+      // Authority mode on 001-only MUST fail closed even without operationId
+      const authorityRepo = new SqliteRoomRepository(legacyDb, { enforceMigrationAuthority: true });
+      expect(() =>
+        authorityRepo.recordVote(
+          room.id,
+          round.id,
+          host.participant_id,
+          candidates[0]!.id,
+          candidates[0]!.movie_id,
+          "LIKE"
+        )
+      ).toThrow(MissingMigrationSchemaError);
+    } finally {
+      legacyDb.close();
+    }
+
+    // 4. PostgresRoomRepository regression checks (out-of-order candidate & fail-closed empty frozen roster)
+    const pgRoomId = crypto.randomUUID();
+    const pgRoundId = crypto.randomUUID();
+    const pgHostId = crypto.randomUUID();
+    const pgGuestId = crypto.randomUUID();
+    const pgCand0Id = crypto.randomUUID();
+    const pgCand1Id = crypto.randomUUID();
+    const nowIso = new Date().toISOString();
+
+    const makePgMockPool = (emptyFrozenRoster: boolean) => ({
+      totalCount: 1,
+      connect: async () => ({
+        query: async (sql: string) => {
+          if (sql.includes("SELECT * FROM rooms WHERE id = $1 FOR UPDATE")) {
+            return {
+              rows: [
+                {
+                  id: pgRoomId,
+                  code: "PG1234",
+                  status: "ACTIVE",
+                  host_participant_id: pgHostId,
+                  state_version: 3,
+                  participant_count: 2,
+                  matched_movie_id: null,
+                  current_round_id: pgRoundId,
+                  deck_filter: null,
+                  inactivity_ttl_seconds: 86400,
+                  last_activity_at: nowIso,
+                  expires_at: new Date(Date.now() + 86400_000).toISOString(),
+                  created_at: nowIso,
+                  updated_at: nowIso,
+                },
+              ],
+            };
+          }
+          if (sql.includes("SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2")) {
+            return {
+              rows: [
+                {
+                  room_id: pgRoomId,
+                  participant_id: pgHostId,
+                  display_name: "PG Host",
+                  role: "HOST",
+                  is_connected: true,
+                  joined_at: nowIso,
+                  last_seen_at: nowIso,
+                },
+              ],
+            };
+          }
+          if (sql.includes("SELECT to_regclass('round_participants')")) {
+            return { rows: [{ present: true }] };
+          }
+          if (sql.includes("information_schema.columns") && sql.includes("operation_id")) {
+            return { rows: [{ present: true }] };
+          }
+          if (sql.includes("SELECT participant_id FROM round_participants")) {
+            return {
+              rows: emptyFrozenRoster
+                ? []
+                : [{ participant_id: pgHostId }, { participant_id: pgGuestId }],
+            };
+          }
+          if (sql.includes("SELECT * FROM candidates WHERE id = $1")) {
+            return {
+              rows: [
+                {
+                  id: pgCand1Id,
+                  room_id: pgRoomId,
+                  round_id: pgRoundId,
+                  movie_id: 992,
+                  position: 1,
+                  title: "PG Second Candidate",
+                },
+              ],
+            };
+          }
+          if (sql.includes("SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2 ORDER BY position ASC")) {
+            return {
+              rows: [
+                {
+                  id: pgCand0Id,
+                  room_id: pgRoomId,
+                  round_id: pgRoundId,
+                  movie_id: 991,
+                  position: 0,
+                  title: "PG First Candidate",
+                },
+                {
+                  id: pgCand1Id,
+                  room_id: pgRoomId,
+                  round_id: pgRoundId,
+                  movie_id: 992,
+                  position: 1,
+                  title: "PG Second Candidate",
+                },
+              ],
+            };
+          }
+          return { rows: [] };
+        },
+        release: () => {},
+      }),
+    });
+
+    const pgOutOfOrderRepo = new PostgresRoomRepository(makePgMockPool(false) as never, {
+      schema: "cinematch_unit",
+      enforceMigrationAuthority: true,
+    });
+    await expect(
+      pgOutOfOrderRepo.recordVote(pgRoomId, pgRoundId, pgHostId, pgCand1Id, 992, "LIKE")
+    ).rejects.toThrow(CandidateOutOfOrderError);
+
+    const pgEmptyRosterRepo = new PostgresRoomRepository(makePgMockPool(true) as never, {
+      schema: "cinematch_unit",
+      enforceMigrationAuthority: true,
+    });
+    await expect(
+      pgEmptyRosterRepo.recordVote(pgRoomId, pgRoundId, pgHostId, pgCand1Id, 992, "LIKE")
+    ).rejects.toThrow(FrozenRosterMissingError);
   });
 
   it("verifies PostgresRoomRepository executes FOR UPDATE locking, round_participants lookup, and SAVEPOINT vote insertion", async () => {

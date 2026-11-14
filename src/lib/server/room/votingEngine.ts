@@ -54,6 +54,42 @@ export class VoterNotEligibleError extends Error {
   }
 }
 
+export class CandidateOutOfOrderError extends Error {
+  public readonly code = "CANDIDATE_OUT_OF_ORDER";
+  public readonly status = 409;
+
+  constructor(
+    message = "Votes must target the current active deck candidate before later candidates"
+  ) {
+    super(message);
+    this.name = "CandidateOutOfOrderError";
+  }
+}
+
+export class FrozenRosterMissingError extends Error {
+  public readonly code = "FROZEN_ROSTER_MISSING";
+  public readonly status = 409;
+
+  constructor(
+    message = "Frozen round voter roster is missing or below minimum quorum"
+  ) {
+    super(message);
+    this.name = "FrozenRosterMissingError";
+  }
+}
+
+export class MissingMigrationSchemaError extends Error {
+  public readonly code = "MIGRATION_SCHEMA_MISSING";
+  public readonly status = 500;
+
+  constructor(
+    message = "Required room voting database migrations (003/004) are not applied"
+  ) {
+    super(message);
+    this.name = "MissingMigrationSchemaError";
+  }
+}
+
 export interface ParsedVoteSubmissionPayload {
   candidateId: string;
   movieId: number;
@@ -293,12 +329,16 @@ export function evaluateDeckProgression(
     );
     candidateResults.push(result);
 
-    if (result.isMatched && matchedCandidate === null) {
+    if (
+      result.isMatched &&
+      matchedCandidate === null &&
+      currentCandidateIndex === null
+    ) {
       matchedCandidate = candidate;
     }
     if (result.isResolvedWithoutMatch) {
       resolvedCount += 1;
-    } else if (!result.isMatched && currentCandidateIndex === null) {
+    } else if (currentCandidateIndex === null && matchedCandidate === null) {
       currentCandidateIndex = index;
       currentCandidate = candidate;
     }

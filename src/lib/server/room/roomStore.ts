@@ -201,13 +201,11 @@ export function applySqliteMigrations(db: DatabaseSync): void {
   }
   const voteColumns = db.prepare("PRAGMA table_info(votes);").all() as Array<{ name?: string }>;
   const hasOperationId = voteColumns.some((col) => col.name === "operation_id");
-  if (!hasOperationId) {
-    db.exec(
-      "ALTER TABLE votes ADD COLUMN operation_id TEXT CHECK (operation_id IS NULL OR LENGTH(TRIM(operation_id)) > 0);"
-    );
-  }
   for (const sql of postColumnSqls) {
-    db.exec(sql);
+    const executableSql = hasOperationId
+      ? sql.replace(/ALTER TABLE votes\s+ADD COLUMN operation_id[^;]*;/gi, "")
+      : sql;
+    db.exec(executableSql);
   }
 }
 
@@ -347,7 +345,7 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
 
   constructor(db: DatabaseSync) {
     this.db = db;
-    this.repo = new SqliteRoomRepository(db);
+    this.repo = new SqliteRoomRepository(db, { enforceMigrationAuthority: true });
   }
 
   async createRoom(options: CreateRoomOptions): Promise<{ room: Room; host: RoomParticipant }> {
@@ -715,7 +713,10 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
       throw new CapabilityAuthError(500, "DATABASE_CONFIG_INVALID", "Invalid PostgreSQL schema identifier.");
     }
     this.pool = pool;
-    this.repo = new PostgresRoomRepository(pool, options);
+    this.repo = new PostgresRoomRepository(pool, {
+      ...options,
+      enforceMigrationAuthority: true,
+    });
   }
 
   private async withClient<T>(

@@ -64,6 +64,19 @@ test.describe("CINE-017 Multi-Context Unanimous Matching & Immutable Votes E2E",
       }
 
       const lastVoterCtx = guestCtxs[3]!;
+      // Out-of-order vote on Card 1 while Card 0 still awaits 5th voter -> 409 CANDIDATE_OUT_OF_ORDER
+      const outOfOrderRes = await hostCtx.request.post(`${origin}/api/rooms/${roomId}/votes`, {
+        headers: { origin, "Idempotency-Key": "e2e-ooo-card1" },
+        data: {
+          roundId,
+          candidateId: card1.candidateId,
+          movieId: card1.movieId,
+          vote: "LIKE",
+        },
+      });
+      expect(outOfOrderRes.status()).toBe(409);
+      expect((await outOfOrderRes.json()).error).toBe("CANDIDATE_OUT_OF_ORDER");
+
       const skipRes = await lastVoterCtx.request.post(`${origin}/api/rooms/${roomId}/votes`, {
         headers: { origin, "Idempotency-Key": "e2e-c0-v4" },
         data: {

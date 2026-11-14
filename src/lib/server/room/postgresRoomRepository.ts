@@ -46,8 +46,11 @@ import {
   RoomExpiredError,
 } from "./roomRepository";
 import {
+  CandidateOutOfOrderError,
   evaluateDeckProgression,
+  FrozenRosterMissingError,
   ImmutableVoteError,
+  MissingMigrationSchemaError,
   normalizeOperationId,
   OperationConflictError,
   VoterNotEligibleError,
@@ -63,6 +66,7 @@ export function assertValidPgSchema(schema?: string): string | undefined {
 
 export interface PostgresRepositoryOptions {
   schema?: string;
+  enforceMigrationAuthority?: boolean;
 }
 
 type Queryable = Client | Pool | PoolClient;
@@ -181,10 +185,14 @@ function normalizeRoomEvent(row: Record<string, unknown>): RoomEvent {
 export class PostgresRoomRepository {
   private readonly db: Queryable;
   private readonly schema?: string;
+  private readonly enforceMigrationAuthority: boolean;
 
   constructor(db: Queryable, options?: PostgresRepositoryOptions) {
     this.db = db;
     this.schema = assertValidPgSchema(options?.schema);
+    this.enforceMigrationAuthority = Boolean(
+      options?.enforceMigrationAuthority || process.env.NODE_ENV === "production"
+    );
   }
 
   /**
@@ -1119,6 +1127,13 @@ export class PostgresRoomRepository {
     });
   }
 
+  private async hasGuestCapabilitySessionsTable(client: Queryable): Promise<boolean> {
+    const res = await client.query(
+      "SELECT to_regclass('guest_capability_sessions') IS NOT NULL AS present;"
+    );
+    return Boolean((res.rows[0] as { present?: boolean } | undefined)?.present);
+  }
+
   private async hasRoundParticipantsTable(client: Queryable): Promise<boolean> {
     const res = await client.query("SELECT to_regclass('round_participants') IS NOT NULL AS present;");
     return Boolean((res.rows[0] as { present?: boolean } | undefined)?.present);
@@ -1137,28 +1152,80 @@ export class PostgresRoomRepository {
     return Boolean((res.rows[0] as { present?: boolean } | undefined)?.present);
   }
 
+  /**
+   * Preserves compatibility ONLY for untouched CINE-012 001-only test harnesses
+   * outside production/authority stores when migrations 002, 003, and 004 are all absent.
+   */
+  private async detectSchemaMigrationStateWithClient(client: Queryable): Promise<{
+    hasRoundParticipants: boolean;
+    hasVotesOperationId: boolean;
+    isLegacy001Only: boolean;
+  }> {
+    const hasRoundParticipants = await this.hasRoundParticipantsTable(client);
+    const hasVotesOperationId = await this.hasVotesOperationIdColumn(client);
+    if (
+      hasRoundParticipants ||
+      hasVotesOperationId ||
+      this.enforceMigrationAuthority ||
+      process.env.NODE_ENV === "production"
+    ) {
+      return {
+        hasRoundParticipants,
+        hasVotesOperationId,
+        isLegacy001Only: false,
+      };
+    }
+    const hasGuestSessions = await this.hasGuestCapabilitySessionsTable(client);
+    return {
+      hasRoundParticipants,
+      hasVotesOperationId,
+      isLegacy001Only: !hasGuestSessions,
+    };
+  }
+
+  private assertMigrationAuthorityState(state: {
+    hasRoundParticipants: boolean;
+    hasVotesOperationId: boolean;
+  }): void {
+    if (!state.hasRoundParticipants) {
+      throw new MissingMigrationSchemaError(
+        "Required migration 003 table 'round_participants' is missing."
+      );
+    }
+    if (!state.hasVotesOperationId) {
+      throw new MissingMigrationSchemaError(
+        "Required migration 004 column 'votes.operation_id' is missing."
+      );
+    }
+  }
+
   private async resolveEligibleVoterIdsWithClient(
     client: Queryable,
     roomId: string,
-    roundId: string
+    roundId: string,
+    isLegacy001Only: boolean
   ): Promise<Set<string>> {
-    if (await this.hasRoundParticipantsTable(client)) {
-      const frozenRes = await client.query(
-        "SELECT participant_id FROM round_participants WHERE room_id = $1 AND round_id = $2;",
-        [roomId, roundId]
+    if (isLegacy001Only) {
+      const membersRes = await client.query(
+        "SELECT participant_id FROM room_participants WHERE room_id = $1;",
+        [roomId]
       );
-      if (frozenRes.rows.length > 0) {
-        return new Set(
-          frozenRes.rows.map((row) => String((row as { participant_id: string }).participant_id))
-        );
-      }
+      return new Set(
+        membersRes.rows.map((row) => String((row as { participant_id: string }).participant_id))
+      );
     }
-    const membersRes = await client.query(
-      "SELECT participant_id FROM room_participants WHERE room_id = $1;",
-      [roomId]
+
+    const frozenRes = await client.query(
+      "SELECT participant_id FROM round_participants WHERE room_id = $1 AND round_id = $2;",
+      [roomId, roundId]
     );
+    if (frozenRes.rows.length < MIN_PARTICIPANTS) {
+      throw new FrozenRosterMissingError(
+        `Frozen voter roster for round ${roundId} has ${frozenRes.rows.length} participant(s); expected at least ${MIN_PARTICIPANTS}.`
+      );
+    }
     return new Set(
-      membersRes.rows.map((row) => String((row as { participant_id: string }).participant_id))
+      frozenRes.rows.map((row) => String((row as { participant_id: string }).participant_id))
     );
   }
 
@@ -1239,8 +1306,14 @@ export class PostgresRoomRepository {
         [roundId, roomId, nowIso]
       );
 
+      const schemaState = await this.detectSchemaMigrationStateWithClient(client);
+      if (!schemaState.isLegacy001Only && !schemaState.hasRoundParticipants) {
+        throw new MissingMigrationSchemaError(
+          "Required migration 003 table 'round_participants' is missing."
+        );
+      }
       // Freeze voter roster into round_participants when migration 003+ is present
-      if (await this.hasRoundParticipantsTable(client)) {
+      if (schemaState.hasRoundParticipants) {
         for (const memberRow of participantsRes.rows) {
           const member = normalizeParticipant(memberRow);
           await client.query(
@@ -1364,11 +1437,17 @@ export class PostgresRoomRepository {
       );
     }
 
+    const schemaState = await this.detectSchemaMigrationStateWithClient(client);
+    if (!schemaState.isLegacy001Only || operationId !== null) {
+      this.assertMigrationAuthorityState(schemaState);
+    }
+
     // 2. Participant must belong to the frozen round voter roster
     const eligibleVoterIds = await this.resolveEligibleVoterIdsWithClient(
       client,
       roomId,
-      targetRoundId
+      targetRoundId,
+      schemaState.isLegacy001Only
     );
     if (!eligibleVoterIds.has(participantId)) {
       throw new VoterNotEligibleError(
@@ -1377,7 +1456,7 @@ export class PostgresRoomRepository {
     }
 
     // 3. Check operationId idempotency & parameter conflict
-    const supportsOperationId = await this.hasVotesOperationIdColumn(client);
+    const supportsOperationId = !schemaState.isLegacy001Only && schemaState.hasVotesOperationId;
     if (operationId !== null && supportsOperationId) {
       const existingByOpRes = await client.query(
         `SELECT * FROM votes
@@ -1494,6 +1573,33 @@ export class PostgresRoomRepository {
         `Cannot record vote: room status is '${room.status}', but must be 'ACTIVE'.`,
         "ROOM_NOT_ACTIVE"
       );
+    }
+
+    // 6b. Enforce sequential active-candidate progression in migrated/authority mode
+    if (!schemaState.isLegacy001Only) {
+      const preCandsRes = await client.query(
+        "SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2 ORDER BY position ASC;",
+        [roomId, targetRoundId]
+      );
+      const preVotesRes = await client.query(
+        "SELECT * FROM votes WHERE room_id = $1 AND round_id = $2 ORDER BY created_at ASC;",
+        [roomId, targetRoundId]
+      );
+      const preProgression = evaluateDeckProgression(
+        preCandsRes.rows.map(normalizeCandidate),
+        preVotesRes.rows.map(normalizeVote),
+        eligibleVoterIds
+      );
+      if (
+        !preProgression.currentCandidate ||
+        preProgression.currentCandidate.id !== candidateId
+      ) {
+        const candidatePos = Number((candidateRes.rows[0] as { position?: unknown }).position);
+        const expectedPos = preProgression.currentCandidate?.position ?? "none";
+        throw new CandidateOutOfOrderError(
+          `Cannot vote on candidate at position ${candidatePos} while active candidate is position ${expectedPos}.`
+        );
+      }
     }
 
     // 7. Insert immutable vote (with savepoint defense-in-depth)

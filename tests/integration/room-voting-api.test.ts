@@ -573,4 +573,124 @@ describe("CINE-017 Voting API Integration", () => {
     expect(b2.isMatched).toBe(false);
     expect(b2.room.status).toBe("EXHAUSTED");
   });
+
+  it("rejects out-of-order candidate voting (409 CANDIDATE_OUT_OF_ORDER) and fails closed if round_participants is missing (409 FROZEN_ROSTER_MISSING)", async () => {
+    const { roomId, roundId, deck, cookies } = await setupStartedRoom(2, 5, 610000);
+    const card0 = deck[0]!;
+    const card1 = deck[1]!;
+
+    // 1. Voting on card1 while card0 has 0 votes -> 409 CANDIDATE_OUT_OF_ORDER
+    const earlyCard1 = await submitVotePost(
+      createSameOriginRequest("POST", `http://localhost:3000/api/rooms/${roomId}/votes`, {
+        cookieHeader: cookies[0],
+        body: {
+          roundId,
+          candidateId: card1.candidateId,
+          movieId: card1.movieId,
+          vote: "LIKE",
+          operationId: "ooo-early",
+        },
+      }),
+      { params: Promise.resolve({ roomId }) }
+    );
+    expect(earlyCard1.status).toBe(409);
+    expect((await earlyCard1.json()).error).toBe("CANDIDATE_OUT_OF_ORDER");
+
+    // 2. Host skips card0 -> still 1/2 votes -> guest voting on card1 still returns 409 CANDIDATE_OUT_OF_ORDER
+    const hostCard0 = await submitVotePost(
+      createSameOriginRequest("POST", `http://localhost:3000/api/rooms/${roomId}/votes`, {
+        cookieHeader: cookies[0],
+        body: {
+          roundId,
+          candidateId: card0.candidateId,
+          movieId: card0.movieId,
+          vote: "SKIP",
+          operationId: "ooo-c0-h",
+        },
+      }),
+      { params: Promise.resolve({ roomId }) }
+    );
+    expect(hostCard0.status).toBe(200);
+
+    const partialCard1 = await submitVotePost(
+      createSameOriginRequest("POST", `http://localhost:3000/api/rooms/${roomId}/votes`, {
+        cookieHeader: cookies[1],
+        body: {
+          roundId,
+          candidateId: card1.candidateId,
+          movieId: card1.movieId,
+          vote: "LIKE",
+          operationId: "ooo-partial",
+        },
+      }),
+      { params: Promise.resolve({ roomId }) }
+    );
+    expect(partialCard1.status).toBe(409);
+    expect((await partialCard1.json()).error).toBe("CANDIDATE_OUT_OF_ORDER");
+
+    // 3. Guest completes card0 -> card1 becomes active & succeeds, while prior resolved card0 still supports replay/409 flip
+    const guestCard0 = await submitVotePost(
+      createSameOriginRequest("POST", `http://localhost:3000/api/rooms/${roomId}/votes`, {
+        cookieHeader: cookies[1],
+        body: {
+          roundId,
+          candidateId: card0.candidateId,
+          movieId: card0.movieId,
+          vote: "LIKE",
+          operationId: "ooo-c0-g",
+        },
+      }),
+      { params: Promise.resolve({ roomId }) }
+    );
+    expect(guestCard0.status).toBe(200);
+    expect((await guestCard0.json()).room.currentCandidateIndex).toBe(1);
+
+    const validCard1 = await submitVotePost(
+      createSameOriginRequest("POST", `http://localhost:3000/api/rooms/${roomId}/votes`, {
+        cookieHeader: cookies[0],
+        body: {
+          roundId,
+          candidateId: card1.candidateId,
+          movieId: card1.movieId,
+          vote: "LIKE",
+          operationId: "ooo-c1-h",
+        },
+      }),
+      { params: Promise.resolve({ roomId }) }
+    );
+    expect(validCard1.status).toBe(200);
+
+    // 4. Corrupt round_participants to empty for active round -> both GET snapshot and POST votes MUST fail closed (409 FROZEN_ROSTER_MISSING)
+    const db = new DatabaseSync(sqlitePath);
+    try {
+      db.prepare("DELETE FROM round_participants WHERE round_id = ?;").run(roundId);
+    } finally {
+      db.close();
+    }
+
+    const snapMissingRoster = await getRoomSnapshotGet(
+      createSameOriginRequest("GET", `http://localhost:3000/api/rooms/${roomId}`, {
+        cookieHeader: cookies[0],
+      }),
+      { params: Promise.resolve({ roomId }) }
+    );
+    expect(snapMissingRoster.status).toBe(409);
+    expect((await snapMissingRoster.json()).error).toBe("FROZEN_ROSTER_MISSING");
+
+    const voteMissingRoster = await submitVotePost(
+      createSameOriginRequest("POST", `http://localhost:3000/api/rooms/${roomId}/votes`, {
+        cookieHeader: cookies[1],
+        body: {
+          roundId,
+          candidateId: card1.candidateId,
+          movieId: card1.movieId,
+          vote: "LIKE",
+          operationId: "ooo-missing-roster",
+        },
+      }),
+      { params: Promise.resolve({ roomId }) }
+    );
+    expect(voteMissingRoster.status).toBe(409);
+    expect((await voteMissingRoster.json()).error).toBe("FROZEN_ROSTER_MISSING");
+  });
 });

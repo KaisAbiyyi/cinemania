@@ -1,6 +1,7 @@
 -- CINE-017: Vote Operation Idempotency & Immutability Migration 004 (Rollback)
 -- Target: PostgreSQL 15+
 
+DROP TRIGGER IF EXISTS trg_votes_immutable_delete ON votes;
 DROP TRIGGER IF EXISTS trg_votes_immutable_update ON votes;
 DROP FUNCTION IF EXISTS prevent_vote_mutation();
 DROP INDEX IF EXISTS idx_votes_round_participant_operation;

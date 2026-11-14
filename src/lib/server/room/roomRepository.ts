@@ -33,8 +33,11 @@ import {
   generateRoomCode,
 } from "./roomCode";
 import {
+  CandidateOutOfOrderError,
   evaluateDeckProgression,
+  FrozenRosterMissingError,
   ImmutableVoteError,
+  MissingMigrationSchemaError,
   normalizeOperationId,
   OperationConflictError,
   VoterNotEligibleError,
@@ -44,7 +47,10 @@ import {
 export {
   generateRoomCode,
   RoomCodeGenerationError,
+  CandidateOutOfOrderError,
+  FrozenRosterMissingError,
   ImmutableVoteError,
+  MissingMigrationSchemaError,
   OperationConflictError,
   VoterNotEligibleError,
   type DeckProgressionResult,
@@ -277,11 +283,19 @@ export class DuplicateVoteError extends Error {
   }
 }
 
+export interface SqliteRepositoryOptions {
+  enforceMigrationAuthority?: boolean;
+}
+
 export class SqliteRoomRepository {
   private readonly db: DatabaseSync;
+  private readonly enforceMigrationAuthority: boolean;
 
-  constructor(db: DatabaseSync) {
+  constructor(db: DatabaseSync, options?: SqliteRepositoryOptions) {
     this.db = db;
+    this.enforceMigrationAuthority = Boolean(
+      options?.enforceMigrationAuthority || process.env.NODE_ENV === "production"
+    );
   }
 
   private runInImmediateTransaction<T>(fn: () => T): T {
@@ -549,6 +563,15 @@ export class SqliteRoomRepository {
     });
   }
 
+  private hasGuestCapabilitySessionsTable(): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'guest_capability_sessions' LIMIT 1;`
+      )
+      .get();
+    return Boolean(row);
+  }
+
   private hasRoundParticipantsTable(): boolean {
     const row = this.db
       .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'round_participants' LIMIT 1;`)
@@ -559,6 +582,34 @@ export class SqliteRoomRepository {
   private hasVotesOperationIdColumn(): boolean {
     const columns = this.db.prepare(`PRAGMA table_info(votes);`).all() as Array<{ name?: string }>;
     return columns.some((col) => col.name === "operation_id");
+  }
+
+  /**
+   * Preserves compatibility ONLY for untouched CINE-012 001-only test harnesses
+   * outside production/authority stores when migrations 002, 003, and 004 are all absent.
+   */
+  private isLegacy001OnlySchema(): boolean {
+    if (this.enforceMigrationAuthority || process.env.NODE_ENV === "production") {
+      return false;
+    }
+    return (
+      !this.hasGuestCapabilitySessionsTable() &&
+      !this.hasRoundParticipantsTable() &&
+      !this.hasVotesOperationIdColumn()
+    );
+  }
+
+  private assertMigrationAuthority(): void {
+    if (!this.hasRoundParticipantsTable()) {
+      throw new MissingMigrationSchemaError(
+        "Required migration 003 table 'round_participants' is missing."
+      );
+    }
+    if (!this.hasVotesOperationIdColumn()) {
+      throw new MissingMigrationSchemaError(
+        "Required migration 004 column 'votes.operation_id' is missing."
+      );
+    }
   }
 
   private getRoundParticipantsInternal(roomId: string, roundId: string): RoundParticipant[] {
@@ -575,15 +626,28 @@ export class SqliteRoomRepository {
     return rows as unknown as RoundParticipant[];
   }
 
-  private resolveEligibleVoterIds(roomId: string, roundId: string): Set<string> {
-    if (this.hasRoundParticipantsTable()) {
-      const frozen = this.getRoundParticipantsInternal(roomId, roundId);
-      if (frozen.length > 0) {
-        return new Set(frozen.map((participant) => participant.participant_id));
-      }
+  private resolveEligibleVoterIds(
+    roomId: string,
+    roundId: string,
+    legacy001Mode = this.isLegacy001OnlySchema()
+  ): Set<string> {
+    if (legacy001Mode) {
+      const activeMembers = this.getParticipantsByRoom(roomId);
+      return new Set(activeMembers.map((participant) => participant.participant_id));
     }
-    const activeMembers = this.getParticipantsByRoom(roomId);
-    return new Set(activeMembers.map((participant) => participant.participant_id));
+
+    if (!this.hasRoundParticipantsTable()) {
+      throw new MissingMigrationSchemaError(
+        "Required migration 003 table 'round_participants' is missing."
+      );
+    }
+    const frozen = this.getRoundParticipantsInternal(roomId, roundId);
+    if (frozen.length < MIN_PARTICIPANTS) {
+      throw new FrozenRosterMissingError(
+        `Frozen voter roster for round ${roundId} has ${frozen.length} participant(s); expected at least ${MIN_PARTICIPANTS}.`
+      );
+    }
+    return new Set(frozen.map((participant) => participant.participant_id));
   }
 
   private leaveLobbyCore(
@@ -1189,6 +1253,12 @@ export class SqliteRoomRepository {
         )
         .run(roundId, roomId, nowIso);
 
+      const legacy001Mode = this.isLegacy001OnlySchema();
+      if (!legacy001Mode && !this.hasRoundParticipantsTable()) {
+        throw new MissingMigrationSchemaError(
+          "Required migration 003 table 'round_participants' is missing."
+        );
+      }
       // Freeze voter roster in round_participants when migration 003+ is active
       if (this.hasRoundParticipantsTable()) {
         const freezeStmt = this.db.prepare(
@@ -1319,14 +1389,23 @@ export class SqliteRoomRepository {
       );
     }
 
-    const eligibleVoterIds = this.resolveEligibleVoterIds(roomId, targetRoundId);
+    const legacy001Mode = this.isLegacy001OnlySchema();
+    if (!legacy001Mode || operationId !== null) {
+      this.assertMigrationAuthority();
+    }
+
+    const eligibleVoterIds = this.resolveEligibleVoterIds(
+      roomId,
+      targetRoundId,
+      legacy001Mode
+    );
     if (!eligibleVoterIds.has(participantId)) {
       throw new VoterNotEligibleError(
         `Participant ${participantId} is not in the frozen voter roster for round ${targetRoundId}.`
       );
     }
 
-    const supportsOperationId = this.hasVotesOperationIdColumn();
+    const supportsOperationId = !legacy001Mode && this.hasVotesOperationIdColumn();
     if (operationId !== null && supportsOperationId) {
       const existingByOpRow = this.db
         .prepare(
@@ -1440,6 +1519,28 @@ export class SqliteRoomRepository {
         `Cannot record vote: room status is '${room.status}', but must be 'ACTIVE'.`,
         "ROOM_NOT_ACTIVE"
       );
+    }
+
+    if (!legacy001Mode) {
+      const preCandidates = this.getCandidatesByRound(targetRoundId, roomId);
+      const preVotes = this.getVotesByRound(targetRoundId, roomId);
+      const preProgression = evaluateDeckProgression(
+        preCandidates,
+        preVotes,
+        eligibleVoterIds
+      );
+      if (
+        !preProgression.currentCandidate ||
+        preProgression.currentCandidate.id !== candidateId
+      ) {
+        const candidatePos = Number(
+          (candidateRow as Record<string, unknown>).position
+        );
+        const expectedPos = preProgression.currentCandidate?.position ?? "none";
+        throw new CandidateOutOfOrderError(
+          `Cannot vote on candidate at position ${candidatePos} while active candidate is position ${expectedPos}.`
+        );
+      }
     }
 
     const voteId = crypto.randomUUID();

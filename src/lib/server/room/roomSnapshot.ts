@@ -58,6 +58,7 @@ import { isRoomRecordExpired } from "./stateMachine";
 import {
   evaluateDeckProgression,
   extractOperationIdFromHeaders,
+  FrozenRosterMissingError,
   parseVoteSubmissionPayload,
 } from "./votingEngine";
 
@@ -292,7 +293,12 @@ export function buildSafeRoomSnapshot(
   const expired = isRoomRecordExpired(room, now);
   const status: RoomStatus = expired ? "EXPIRED" : room.status;
   const participantCount = room.participant_count;
-  const hasFrozenRoster = Boolean(room.current_round_id && roundParticipants.length > 0);
+  if (room.current_round_id !== null && roundParticipants.length < MIN_PARTICIPANTS) {
+    throw new FrozenRosterMissingError(
+      `Frozen voter roster for round ${room.current_round_id} has ${roundParticipants.length} participant(s); expected at least ${MIN_PARTICIPANTS}.`
+    );
+  }
+  const hasFrozenRoster = Boolean(room.current_round_id && roundParticipants.length >= MIN_PARTICIPANTS);
   const frozenIds = new Set(roundParticipants.map((rp) => rp.participant_id.toLowerCase()));
   const deckFilter = resolveEffectiveRoomDeckFilter(room.deck_filter);
   const orderedCandidates = room.current_round_id
@@ -311,9 +317,7 @@ export function buildSafeRoomSnapshot(
     currentCandidateIndex !== null ? deck[currentCandidateIndex] ?? null : null;
 
   if (orderedCandidates.length > 0) {
-    const eligibleVoterIds = hasFrozenRoster
-      ? new Set(roundParticipants.map((rp) => rp.participant_id))
-      : new Set(participants.map((p) => p.participant_id));
+    const eligibleVoterIds = new Set(roundParticipants.map((rp) => rp.participant_id));
 
     if (
       eligibleVoterIds.size >= MIN_PARTICIPANTS &&
