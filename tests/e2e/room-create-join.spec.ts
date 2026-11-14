@@ -27,9 +27,14 @@ test.describe("CINE-014: Room Create, Invite Join, and Concurrent Capacity E2E",
       expect(created.status).toBe(201);
       const roomId: string = created.body.room.roomId;
       const roomCode: string = created.body.room.code;
+      const hostParticipantId: string = created.body.viewer.participantId;
       expect(roomCode).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/);
       expect(created.body.room.invitePath).toBe(`/join/${roomCode}`);
       expect(created.body.room.canStart).toBe(false);
+      expect(created.body.room.stateVersion).toBe(1);
+      expect(created.body.room.participants[0]).not.toHaveProperty("participantId");
+      expect(created.body.room.participants[0].isSelf).toBe(true);
+      expect(JSON.stringify(created.body.room)).not.toContain(hostParticipantId);
 
       const cookieName = `cm_guest_${roomId}`;
       const hostCookies = await hostContext.cookies();
@@ -65,19 +70,44 @@ test.describe("CINE-014: Room Create, Invite Join, and Concurrent Capacity E2E",
       const rejected = joinResults.filter((r) => r.status === 409);
       expect(accepted).toHaveLength(4);
       expect(rejected).toHaveLength(2);
+      for (const ok of accepted) {
+        const guestPid: string = ok.body.viewer.participantId;
+        expect(guestPid).toBeTruthy();
+        expect(guestPid).not.toBe(hostParticipantId);
+        expect(JSON.stringify(ok.body.room)).not.toContain(hostParticipantId);
+        expect(JSON.stringify(ok.body.room)).not.toContain(guestPid);
+        for (const participant of ok.body.room.participants as Array<Record<string, unknown>>) {
+          expect("participantId" in participant).toBe(false);
+        }
+        expect(
+          (ok.body.room.participants as Array<{ isSelf: boolean }>).filter((p) => p.isSelf)
+        ).toHaveLength(1);
+      }
       for (const fail of rejected) {
         expect(fail.body.error).toBe("ROOM_FULL");
         expect(fail.setCookie).toBe("");
       }
 
-      // Host fetches authenticated snapshot via HttpOnly cookie and observes exact 5/5 capacity
+      // Host fetches authenticated snapshot via HttpOnly cookie and observes exact 5/5 coherent state + peer privacy
       const snapshotRes = await hostPage.evaluate(async (rid: string) => {
         const res = await fetch(`/api/rooms/${rid}`);
         return { status: res.status, body: await res.json() };
       }, roomId);
       expect(snapshotRes.status).toBe(200);
       expect(snapshotRes.body.room.participantCount).toBe(5);
+      expect(snapshotRes.body.room.stateVersion).toBe(5);
+      expect(snapshotRes.body.room.participants).toHaveLength(5);
       expect(snapshotRes.body.room.canStart).toBe(true);
+      const hostSnapshotSerialized = JSON.stringify(snapshotRes.body.room);
+      expect(hostSnapshotSerialized).not.toContain(hostParticipantId);
+      for (const ok of accepted) {
+        expect(hostSnapshotSerialized).not.toContain(ok.body.viewer.participantId);
+      }
+      expect(
+        (snapshotRes.body.room.participants as Array<{ role: string; isSelf: boolean }>).filter(
+          (p) => p.isSelf
+        )
+      ).toEqual([{ displayName: "E2E Host", role: "HOST", isConnected: true, joinedAt: expect.any(String), isSelf: true }]);
 
       // Invalid code check over live HTTP
       const invalidRes = await hostPage.evaluate(async () => {

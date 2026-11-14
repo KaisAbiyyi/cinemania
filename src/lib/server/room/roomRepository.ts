@@ -109,12 +109,23 @@ export class SqliteRoomRepository {
     this.db = db;
   }
 
-  /**
-   * Creates a new room in LOBBY status and registers the host participant.
-   * Uses safe nullable host_participant_id insertion flow to guarantee
-   * full immediate foreign-key compatibility with PostgreSQL and SQLite.
-   */
-  createRoom(options: CreateRoomOptions): { room: Room; host: RoomParticipant } {
+  private runInImmediateTransaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      const result = fn();
+      this.db.exec("COMMIT;");
+      return result;
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK;");
+      } catch {
+        // ignore rollback error when surfacing primary failure
+      }
+      throw err;
+    }
+  }
+
+  private createRoomCore(options: CreateRoomOptions): { room: Room; host: RoomParticipant } {
     const roomId = crypto.randomUUID();
     const hostParticipantId = options.hostParticipantId || crypto.randomUUID();
     const ttlSeconds = options.inactivityTtlSeconds || DEFAULT_INACTIVITY_TTL_SECONDS;
@@ -122,89 +133,214 @@ export class SqliteRoomRepository {
     const nowIso = now.toISOString();
     const expiresAt = new Date(now.getTime() + ttlSeconds * 1000).toISOString();
 
-    this.db.exec("BEGIN IMMEDIATE;");
-    try {
-      const codeGenerator = options.codeGenerator ?? generateRoomCode;
-      const maxAttempts = Math.max(1, options.maxCodeAttempts ?? DEFAULT_CODE_GENERATION_MAX_RETRIES);
-      // Collision retry loop for 6-character room code
-      let roomCode = "";
-      let attempts = 0;
-      while (attempts < maxAttempts) {
-        attempts++;
-        const candidateCode = codeGenerator();
-        const existing = this.db
-          .prepare(`SELECT 1 FROM rooms WHERE code = ?`)
-          .get(candidateCode);
-        if (!existing) {
-          roomCode = candidateCode;
-          break;
-        }
+    const codeGenerator = options.codeGenerator ?? generateRoomCode;
+    const maxAttempts = Math.max(1, options.maxCodeAttempts ?? DEFAULT_CODE_GENERATION_MAX_RETRIES);
+    // Collision retry loop for 6-character room code
+    let roomCode = "";
+    let attempts = 0;
+    while (attempts < maxAttempts) {
+      attempts++;
+      const candidateCode = codeGenerator();
+      const existing = this.db
+        .prepare(`SELECT 1 FROM rooms WHERE code = ?`)
+        .get(candidateCode);
+      if (!existing) {
+        roomCode = candidateCode;
+        break;
       }
-      if (!roomCode) {
-        throw new RoomCodeGenerationError(
-          `Failed to generate unique room code after ${maxAttempts} attempts`
-        );
-      }
-
-      // Step 1: Insert Room with host_participant_id = NULL
-      this.db
-        .prepare(
-          `INSERT INTO rooms (
-            id, code, status, host_participant_id, state_version, participant_count,
-            matched_movie_id, current_round_id, deck_filter, inactivity_ttl_seconds,
-            last_activity_at, expires_at, created_at, updated_at
-          ) VALUES (?, ?, 'LOBBY', NULL, 1, 1, NULL, NULL, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
-          roomId,
-          roomCode,
-          options.deckFilter ? JSON.stringify(options.deckFilter) : null,
-          ttlSeconds,
-          nowIso,
-          expiresAt,
-          nowIso,
-          nowIso
-        );
-
-      // Step 2: Insert Host in room_participants
-      this.db
-        .prepare(
-          `INSERT INTO room_participants (
-            room_id, participant_id, display_name, role, is_connected, joined_at, last_seen_at
-          ) VALUES (?, ?, ?, 'HOST', 1, ?, ?)`
-        )
-        .run(roomId, hostParticipantId, options.hostDisplayName, nowIso, nowIso);
-
-      // Step 3: Link host_participant_id in rooms
-      this.db
-        .prepare(`UPDATE rooms SET host_participant_id = ? WHERE id = ?`)
-        .run(hostParticipantId, roomId);
-
-      // Step 4: Emit ROOM_CREATED outbox event (ADR-003 §4.4)
-      this.db
-        .prepare(
-          `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-           VALUES (?, 1, 'ROOM_CREATED', ?, 0, 0, 0, ?)`
-        )
-        .run(
-          roomId,
-          JSON.stringify({
-            roomCode,
-            hostParticipantId,
-            hostDisplayName: options.hostDisplayName,
-          }),
-          nowIso
-        );
-
-      this.db.exec("COMMIT;");
-
-      const room = this.getRoomById(roomId)!;
-      const host = this.getParticipant(roomId, hostParticipantId)!;
-      return { room, host };
-    } catch (err) {
-      this.db.exec("ROLLBACK;");
-      throw err;
     }
+    if (!roomCode) {
+      throw new RoomCodeGenerationError(
+        `Failed to generate unique room code after ${maxAttempts} attempts`
+      );
+    }
+
+    // Step 1: Insert Room with host_participant_id = NULL
+    this.db
+      .prepare(
+        `INSERT INTO rooms (
+          id, code, status, host_participant_id, state_version, participant_count,
+          matched_movie_id, current_round_id, deck_filter, inactivity_ttl_seconds,
+          last_activity_at, expires_at, created_at, updated_at
+        ) VALUES (?, ?, 'LOBBY', NULL, 1, 1, NULL, NULL, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        roomId,
+        roomCode,
+        options.deckFilter ? JSON.stringify(options.deckFilter) : null,
+        ttlSeconds,
+        nowIso,
+        expiresAt,
+        nowIso,
+        nowIso
+      );
+
+    // Step 2: Insert Host in room_participants
+    this.db
+      .prepare(
+        `INSERT INTO room_participants (
+          room_id, participant_id, display_name, role, is_connected, joined_at, last_seen_at
+        ) VALUES (?, ?, ?, 'HOST', 1, ?, ?)`
+      )
+      .run(roomId, hostParticipantId, options.hostDisplayName, nowIso, nowIso);
+
+    // Step 3: Link host_participant_id in rooms
+    this.db
+      .prepare(`UPDATE rooms SET host_participant_id = ? WHERE id = ?`)
+      .run(hostParticipantId, roomId);
+
+    // Step 4: Emit ROOM_CREATED outbox event (ADR-003 §4.4)
+    this.db
+      .prepare(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES (?, 1, 'ROOM_CREATED', ?, 0, 0, 0, ?)`
+      )
+      .run(
+        roomId,
+        JSON.stringify({
+          roomCode,
+          hostParticipantId,
+          hostDisplayName: options.hostDisplayName,
+        }),
+        nowIso
+      );
+
+    const room = this.getRoomById(roomId)!;
+    const host = this.getParticipant(roomId, hostParticipantId)!;
+    return { room, host };
+  }
+
+  private joinRoomCore(
+    roomId: string,
+    participantId: string,
+    displayName: string,
+    beforeJoinLocked?: (room: Room) => void
+  ): { room: Room; participant: RoomParticipant; rejoined: boolean } {
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    const room = this.getRoomById(roomId);
+    if (!room) throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
+
+    if (isRoomRecordExpired(room, now)) {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+
+    beforeJoinLocked?.(room);
+
+    // 1. Idempotency check FIRST (ADR-003): return existing participant on retry/reconnect
+    const existing = this.db
+      .prepare(
+        `SELECT * FROM room_participants WHERE room_id = ? AND participant_id = ?`
+      )
+      .get(roomId, participantId) as unknown as RoomParticipant | undefined;
+
+    if (existing) {
+      // Update last_seen_at and renew activity
+      const newExpiresAt = new Date(now.getTime() + room.inactivity_ttl_seconds * 1000).toISOString();
+      this.db
+        .prepare(
+          `UPDATE room_participants SET last_seen_at = ?, is_connected = 1 WHERE room_id = ? AND participant_id = ?`
+        )
+        .run(nowIso, roomId, participantId);
+      this.db
+        .prepare(
+          `UPDATE rooms SET last_activity_at = ?, expires_at = ?, updated_at = ? WHERE id = ?`
+        )
+        .run(nowIso, newExpiresAt, nowIso, roomId);
+      const updatedRoom = this.getRoomById(roomId)!;
+      const updatedParticipant = this.getParticipant(roomId, participantId)!;
+      return {
+        room: updatedRoom,
+        participant: updatedParticipant,
+        rejoined: true,
+      };
+    }
+
+    // 2. Room lifecycle check
+    if (room.status !== "LOBBY") {
+      throw new RoomCapacityError(
+        `Cannot join room: status is '${room.status}', but must be 'LOBBY'.`,
+        "ROOM_NOT_JOINABLE"
+      );
+    }
+
+    // 3. Capacity check: maximum 5 participants
+    if (room.participant_count >= MAX_PARTICIPANTS) {
+      throw new RoomCapacityError(
+        `Room has reached maximum capacity of ${MAX_PARTICIPANTS} participants.`,
+        "ROOM_FULL"
+      );
+    }
+
+    // 4. Insert new participant
+    this.db
+      .prepare(
+        `INSERT INTO room_participants (
+          room_id, participant_id, display_name, role, is_connected, joined_at, last_seen_at
+        ) VALUES (?, ?, ?, 'MEMBER', 1, ?, ?)`
+      )
+      .run(roomId, participantId, displayName, nowIso, nowIso);
+
+    const nextVersion = room.state_version + 1;
+    const newParticipantCount = room.participant_count + 1;
+    const newExpiresAt = new Date(now.getTime() + room.inactivity_ttl_seconds * 1000).toISOString();
+
+    // 5. Update room state_version, participant_count, last_activity_at, and renewed expires_at
+    this.db
+      .prepare(
+        `UPDATE rooms
+         SET state_version = ?, participant_count = ?, last_activity_at = ?, expires_at = ?, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(nextVersion, newParticipantCount, nowIso, newExpiresAt, nowIso, roomId);
+
+    // 6. Insert PARTICIPANT_JOINED outbox event
+    this.db
+      .prepare(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES (?, ?, 'PARTICIPANT_JOINED', ?, 0, 0, 0, ?)`
+      )
+      .run(
+        roomId,
+        nextVersion,
+        JSON.stringify({
+          participantId,
+          displayName,
+          participantCount: newParticipantCount,
+        }),
+        nowIso
+      );
+
+    return {
+      room: this.getRoomById(roomId)!,
+      participant: this.getParticipant(roomId, participantId)!,
+      rejoined: false,
+    };
+  }
+
+  /**
+   * Creates a new room in LOBBY status and registers the host participant.
+   * Uses safe nullable host_participant_id insertion flow to guarantee
+   * full immediate foreign-key compatibility with PostgreSQL and SQLite.
+   */
+  createRoom(options: CreateRoomOptions): { room: Room; host: RoomParticipant } {
+    return this.runInImmediateTransaction(() => this.createRoomCore(options));
+  }
+
+  /**
+   * Executes room creation plus caller-supplied transactional follow-up work
+   * (such as capability generation initialization and coherent roster read)
+   * inside one atomic BEGIN IMMEDIATE transaction.
+   */
+  createRoomInTransaction<T>(
+    options: CreateRoomOptions,
+    afterRoomCreated: (created: { room: Room; host: RoomParticipant }) => T
+  ): T {
+    return this.runInImmediateTransaction(() => {
+      const created = this.createRoomCore(options);
+      return afterRoomCreated(created);
+    });
   }
 
   /**
@@ -214,105 +350,50 @@ export class SqliteRoomRepository {
    * Atomically extends expires_at by inactivity_ttl_seconds.
    */
   joinRoom(roomId: string, participantId: string, displayName: string): RoomParticipant {
-    const now = new Date();
-    const nowIso = now.toISOString();
+    return this.runInImmediateTransaction(
+      () => this.joinRoomCore(roomId, participantId, displayName).participant
+    );
+  }
 
-    this.db.exec("BEGIN IMMEDIATE;");
+  /**
+   * Executes join/reconnect plus locked capability verification, generation
+   * initialization, and coherent snapshot read inside one BEGIN IMMEDIATE transaction.
+   */
+  joinRoomInTransaction<T>(
+    roomId: string,
+    participantId: string,
+    displayName: string,
+    callbacks: {
+      beforeJoinLocked?: (room: Room) => void;
+      afterJoin: (joined: { room: Room; participant: RoomParticipant; rejoined: boolean }) => T;
+    }
+  ): T {
+    return this.runInImmediateTransaction(() => {
+      const joined = this.joinRoomCore(roomId, participantId, displayName, callbacks.beforeJoinLocked);
+      return callbacks.afterJoin(joined);
+    });
+  }
+
+  /**
+   * Reads room and ordered participant roster within a single SQLite read transaction.
+   */
+  getConsistentSnapshot(roomId: string): { room: Room; participants: RoomParticipant[] } | null {
+    this.db.exec("BEGIN;");
     try {
       const room = this.getRoomById(roomId);
-      if (!room) throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
-
-      if (isRoomRecordExpired(room, now)) {
-        throw new RoomExpiredError(`Room '${room.code}' has expired.`);
-      }
-
-      // 1. Idempotency check FIRST (ADR-003): return existing participant on retry/reconnect
-      const existing = this.db
-        .prepare(
-          `SELECT * FROM room_participants WHERE room_id = ? AND participant_id = ?`
-        )
-        .get(roomId, participantId) as unknown as RoomParticipant | undefined;
-
-      if (existing) {
-        // Update last_seen_at and renew activity
-        const newExpiresAt = new Date(now.getTime() + room.inactivity_ttl_seconds * 1000).toISOString();
-        this.db
-          .prepare(
-            `UPDATE room_participants SET last_seen_at = ?, is_connected = 1 WHERE room_id = ? AND participant_id = ?`
-          )
-          .run(nowIso, roomId, participantId);
-        this.db
-          .prepare(
-            `UPDATE rooms SET last_activity_at = ?, expires_at = ?, updated_at = ? WHERE id = ?`
-          )
-          .run(nowIso, newExpiresAt, nowIso, roomId);
+      if (!room) {
         this.db.exec("COMMIT;");
-        return {
-          ...existing,
-          last_seen_at: nowIso,
-          is_connected: true,
-        };
+        return null;
       }
-
-      // 2. Room lifecycle check
-      if (room.status !== "LOBBY") {
-        throw new RoomCapacityError(
-          `Cannot join room: status is '${room.status}', but must be 'LOBBY'.`,
-          "ROOM_NOT_JOINABLE"
-        );
-      }
-
-      // 3. Capacity check: maximum 5 participants
-      if (room.participant_count >= MAX_PARTICIPANTS) {
-        throw new RoomCapacityError(
-          `Room has reached maximum capacity of ${MAX_PARTICIPANTS} participants.`,
-          "ROOM_FULL"
-        );
-      }
-
-      // 4. Insert new participant
-      this.db
-        .prepare(
-          `INSERT INTO room_participants (
-            room_id, participant_id, display_name, role, is_connected, joined_at, last_seen_at
-          ) VALUES (?, ?, ?, 'MEMBER', 1, ?, ?)`
-        )
-        .run(roomId, participantId, displayName, nowIso, nowIso);
-
-      const nextVersion = room.state_version + 1;
-      const newParticipantCount = room.participant_count + 1;
-      const newExpiresAt = new Date(now.getTime() + room.inactivity_ttl_seconds * 1000).toISOString();
-
-      // 5. Update room state_version, participant_count, last_activity_at, and renewed expires_at
-      this.db
-        .prepare(
-          `UPDATE rooms
-           SET state_version = ?, participant_count = ?, last_activity_at = ?, expires_at = ?, updated_at = ?
-           WHERE id = ?`
-        )
-        .run(nextVersion, newParticipantCount, nowIso, newExpiresAt, nowIso, roomId);
-
-      // 6. Insert PARTICIPANT_JOINED outbox event
-      this.db
-        .prepare(
-          `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-           VALUES (?, ?, 'PARTICIPANT_JOINED', ?, 0, 0, 0, ?)`
-        )
-        .run(
-          roomId,
-          nextVersion,
-          JSON.stringify({
-            participantId,
-            displayName,
-            participantCount: newParticipantCount,
-          }),
-          nowIso
-        );
-
+      const participants = this.getParticipantsByRoom(roomId);
       this.db.exec("COMMIT;");
-      return this.getParticipant(roomId, participantId)!;
+      return { room, participants };
     } catch (err) {
-      this.db.exec("ROLLBACK;");
+      try {
+        this.db.exec("ROLLBACK;");
+      } catch {
+        // ignore
+      }
       throw err;
     }
   }

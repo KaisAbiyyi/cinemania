@@ -107,13 +107,25 @@ describe("CINE-014 Room Create/Join/Code/Capacity API Integration", () => {
       role: "MEMBER",
     });
     expect(joined.room.participantCount).toBe(2);
+    expect(joined.room.stateVersion).toBe(2);
     expect(joined.room.canStart).toBe(true);
-    expect(joined.room.participants.map((p: { displayName: string }) => p.displayName)).toEqual([
-      "Alice Host",
-      "Bob Guest",
+    expect(
+      joined.room.participants.map((p: { displayName: string; role: string; isSelf: boolean }) => ({
+        displayName: p.displayName,
+        role: p.role,
+        isSelf: p.isSelf,
+      }))
+    ).toEqual([
+      { displayName: "Alice Host", role: "HOST", isSelf: false },
+      { displayName: "Bob Guest", role: "MEMBER", isSelf: true },
     ]);
+    for (const p of joined.room.participants) {
+      expect("participantId" in p).toBe(false);
+    }
+    expect(JSON.stringify(joined.room)).not.toContain(created.viewer.participantId);
+    expect(JSON.stringify(joined.room)).not.toContain(joined.viewer.participantId);
 
-    // 3. Authenticated snapshot fetch works for members and fails closed for strangers
+    // 3. Authenticated snapshot fetch works for members, enforces peer privacy, and fails closed for strangers
     const authedGet = await getRoomSnapshotGet(
       new NextRequest(`http://localhost:3000/api/rooms/${created.room.roomId}`, {
         headers: { cookie: hostCookie },
@@ -123,7 +135,37 @@ describe("CINE-014 Room Create/Join/Code/Capacity API Integration", () => {
     expect(authedGet.status).toBe(200);
     const snapshot = await authedGet.json();
     expect(snapshot.room.participantCount).toBe(2);
+    expect(snapshot.room.stateVersion).toBe(2);
     expect(snapshot.viewer.role).toBe("HOST");
+    expect(snapshot.viewer.participantId).toBe(created.viewer.participantId);
+    expect(
+      snapshot.room.participants.map((p: { displayName: string; isSelf: boolean }) => ({
+        displayName: p.displayName,
+        isSelf: p.isSelf,
+      }))
+    ).toEqual([
+      { displayName: "Alice Host", isSelf: true },
+      { displayName: "Bob Guest", isSelf: false },
+    ]);
+    expect(JSON.stringify(snapshot.room)).not.toContain(created.viewer.participantId);
+    expect(JSON.stringify(snapshot.room)).not.toContain(joined.viewer.participantId);
+
+    const guestGet = await getRoomSnapshotGet(
+      new NextRequest(`http://localhost:3000/api/rooms/${created.room.roomId}`, {
+        headers: { cookie: guestCookie },
+      }),
+      { params: Promise.resolve({ roomId: created.room.roomId }) }
+    );
+    expect(guestGet.status).toBe(200);
+    const guestSnapshot = await guestGet.json();
+    expect(guestSnapshot.viewer.participantId).toBe(joined.viewer.participantId);
+    expect(guestSnapshot.viewer.participantId).not.toBe(created.viewer.participantId);
+    expect(guestSnapshot.room.participants.map((p: { isSelf: boolean }) => p.isSelf)).toEqual([
+      false,
+      true,
+    ]);
+    expect(JSON.stringify(guestSnapshot.room)).not.toContain(created.viewer.participantId);
+    expect(JSON.stringify(guestSnapshot.room)).not.toContain(joined.viewer.participantId);
 
     const unauthedGet = await getRoomSnapshotGet(
       new NextRequest(`http://localhost:3000/api/rooms/${created.room.roomId}`),
@@ -337,6 +379,93 @@ describe("CINE-014 Room Create/Join/Code/Capacity API Integration", () => {
     } finally {
       (process.env as Record<string, string | undefined>).NODE_ENV = prevEnv;
       resetRoomAuthorityStoreForTests();
+    }
+  });
+
+  it("maintains snapshot stateVersion, participantCount, outbox versions, and peer confidentiality across interleaved joins and reads", async () => {
+    const createRes = await createRoomPost(
+      createSameOriginJsonRequest("http://localhost:3000/api/rooms", { displayName: "Coherent Host" })
+    );
+    expect(createRes.status).toBe(201);
+    const hostCookie = extractSetCookiePair(createRes);
+    const created = await createRes.json();
+    const roomId: string = created.room.roomId;
+    const roomCode: string = created.room.code;
+
+    const ops: Array<Promise<{ kind: "join" | "get"; body: { room: { stateVersion: number; participantCount: number; participants: Array<Record<string, unknown>> }; viewer: { participantId: string } } }>> = [];
+    for (let i = 0; i < 4; i++) {
+      ops.push(
+        joinRoomPost(
+          createSameOriginJsonRequest("http://localhost:3000/api/rooms/join", {
+            code: roomCode,
+            displayName: `Concurrent ${i + 2}`,
+          })
+        ).then(async (res) => {
+          expect(res.status).toBe(200);
+          return { kind: "join" as const, body: await res.json() };
+        })
+      );
+      ops.push(
+        getRoomSnapshotGet(
+          new NextRequest(`http://localhost:3000/api/rooms/${roomId}`, {
+            headers: { cookie: hostCookie },
+          }),
+          { params: Promise.resolve({ roomId }) }
+        ).then(async (res) => {
+          expect(res.status).toBe(200);
+          return { kind: "get" as const, body: await res.json() };
+        })
+      );
+      ops.push(
+        getRoomSnapshotGet(
+          new NextRequest(`http://localhost:3000/api/rooms/${roomId}`, {
+            headers: { cookie: hostCookie },
+          }),
+          { params: Promise.resolve({ roomId }) }
+        ).then(async (res) => {
+          expect(res.status).toBe(200);
+          return { kind: "get" as const, body: await res.json() };
+        })
+      );
+    }
+
+    const results = await Promise.all(ops);
+    const knownIds = new Set<string>([created.viewer.participantId]);
+    for (const r of results) {
+      knownIds.add(r.body.viewer.participantId);
+      expect(r.body.room.participantCount).toBe(r.body.room.participants.length);
+      expect(r.body.room.stateVersion).toBe(r.body.room.participantCount);
+      for (const participant of r.body.room.participants) {
+        expect("participantId" in participant).toBe(false);
+      }
+      expect(r.body.room.participants.filter((p) => p.isSelf === true)).toHaveLength(1);
+    }
+
+    const finalGet = await getRoomSnapshotGet(
+      new NextRequest(`http://localhost:3000/api/rooms/${roomId}`, {
+        headers: { cookie: hostCookie },
+      }),
+      { params: Promise.resolve({ roomId }) }
+    );
+    expect(finalGet.status).toBe(200);
+    const finalBody = await finalGet.json();
+    expect(finalBody.room.stateVersion).toBe(5);
+    expect(finalBody.room.participantCount).toBe(5);
+    const serializedRoom = JSON.stringify(finalBody.room);
+    for (const pid of knownIds) {
+      expect(serializedRoom).not.toContain(pid);
+    }
+
+    const directDb = new DatabaseSync(process.env.CINEMATCH_SQLITE_PATH!);
+    try {
+      const events = directDb
+        .prepare("SELECT version, event_type FROM room_events WHERE room_id = ? ORDER BY version ASC;")
+        .all(roomId) as Array<{ version: number; event_type: string }>;
+      expect(events.map((e) => e.version)).toEqual([1, 2, 3, 4, 5]);
+      expect(events[0].event_type).toBe("ROOM_CREATED");
+      expect(Math.max(...events.map((e) => e.version))).toBe(finalBody.room.stateVersion);
+    } finally {
+      directDb.close();
     }
   });
 });

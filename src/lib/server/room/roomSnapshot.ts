@@ -21,15 +21,24 @@ import {
 import { requireRoomActor } from "@/lib/server/auth/roomAuth";
 import { buildRoomInvitePath, normalizeRoomCodeInput } from "./roomCode";
 import { RoomExpiredError, RoomNotFoundError } from "./roomRepository";
-import { getRoomAuthorityStore, type RoomAuthorityStore } from "./roomStore";
+import {
+  getRoomAuthorityStore,
+  type AtomicRoomSessionResult,
+  type RoomAuthorityStore,
+  type RoomMutationHooks,
+} from "./roomStore";
 import { isRoomRecordExpired } from "./stateMachine";
 
 export interface SafeRoomParticipant {
-  participantId: string;
   displayName: string;
   role: ParticipantRole;
   isConnected: boolean;
   joinedAt: string;
+  isSelf: boolean;
+}
+
+export interface RoomSessionMutationOptions {
+  hooks?: RoomMutationHooks;
 }
 
 export interface SafeRoomSnapshot {
@@ -132,11 +141,21 @@ function resolveJoinLookup(
 export function buildSafeRoomSnapshot(
   room: Room,
   participants: RoomParticipant[],
+  viewerParticipantId: string,
   now: Date = new Date()
 ): SafeRoomSnapshot {
+  if (room.participant_count !== participants.length) {
+    throw new CapabilityAuthError(
+      500,
+      "SNAPSHOT_INCOHERENT",
+      `Incoherent room snapshot: participant_count (${room.participant_count}) does not match participant roster (${participants.length}).`
+    );
+  }
+
+  const normalizedViewerId = viewerParticipantId.toLowerCase();
   const expired = isRoomRecordExpired(room, now);
   const status: RoomStatus = expired ? "EXPIRED" : room.status;
-  const participantCount = Math.max(room.participant_count, participants.length);
+  const participantCount = room.participant_count;
 
   return {
     roomId: room.id,
@@ -154,11 +173,11 @@ export function buildSafeRoomSnapshot(
     expiresAt: room.expires_at,
     createdAt: room.created_at,
     participants: participants.map((participant) => ({
-      participantId: participant.participant_id,
       displayName: participant.display_name,
       role: participant.role,
       isConnected: Boolean(participant.is_connected),
       joinedAt: participant.joined_at,
+      isSelf: participant.participant_id.toLowerCase() === normalizedViewerId,
     })),
   };
 }
@@ -170,43 +189,72 @@ function resolveAuthoritativeRole(room: Room, participant: RoomParticipant): Par
     : "MEMBER";
 }
 
+function createPreCommitMintHooks(
+  hooks: RoomMutationHooks | undefined,
+  onTokenMinted: (token: string) => void
+): RoomMutationHooks {
+  return {
+    afterWriteBeforeSessionInit: hooks?.afterWriteBeforeSessionInit,
+    beforeCommit: (txResult) => {
+      const role = resolveAuthoritativeRole(txResult.room, txResult.participant);
+      const { token } = mintGuestCapabilityToken({
+        roomId: txResult.room.id,
+        participantId: txResult.participant.participant_id,
+        role,
+        generation: txResult.sessionGeneration,
+      });
+      onTokenMinted(token);
+      return hooks?.beforeCommit?.(txResult);
+    },
+  };
+}
+
+function buildAtomicSnapshotResult(
+  request: Request,
+  result: AtomicRoomSessionResult,
+  mintedToken: string
+): RoomSnapshotResult {
+  const role = resolveAuthoritativeRole(result.room, result.participant);
+  return {
+    room: buildSafeRoomSnapshot(
+      result.room,
+      result.participants,
+      result.participant.participant_id
+    ),
+    viewer: {
+      participantId: result.participant.participant_id,
+      displayName: result.participant.display_name,
+      role,
+    },
+    cookie: buildGuestCookieAttributes(request, result.room.id, mintedToken),
+  };
+}
+
 /**
  * Creates a new CineMatch room, assigns a unique normalized 6-character code,
- * and mints the HOST capability cookie.
+ * persists guest capability generation = 1, and mints the HOST capability cookie
+ * atomically before database COMMIT.
  */
 export async function createRoomWithSession(
   request: Request,
   body: Record<string, unknown>,
-  store: RoomAuthorityStore = getRoomAuthorityStore()
+  store: RoomAuthorityStore = getRoomAuthorityStore(),
+  options?: RoomSessionMutationOptions
 ): Promise<RoomSnapshotResult> {
   // Preflight signing secret before writing durable state (L-045)
   getCapabilitySecret();
 
   const hostDisplayName = normalizeDisplayName(body.displayName, "Host");
-  const { room, host } = await store.createRoom({
+  let mintedToken = "";
+
+  const result = await store.createRoomWithSession({
     hostDisplayName,
+    hooks: createPreCommitMintHooks(options?.hooks, (token) => {
+      mintedToken = token;
+    }),
   });
 
-  await store.setMinGeneration(room.id, host.participant_id, 1, room.expires_at);
-  const { token } = mintGuestCapabilityToken({
-    roomId: room.id,
-    participantId: host.participant_id,
-    role: "HOST",
-    generation: 1,
-  });
-
-  const cookie = buildGuestCookieAttributes(request, room.id, token);
-  const participants = await store.getParticipantsByRoom(room.id);
-
-  return {
-    room: buildSafeRoomSnapshot(room, participants.length > 0 ? participants : [host]),
-    viewer: {
-      participantId: host.participant_id,
-      displayName: host.display_name,
-      role: "HOST",
-    },
-    cookie,
-  };
+  return buildAtomicSnapshotResult(request, result, mintedToken);
 }
 
 /**
@@ -215,7 +263,8 @@ export async function createRoomWithSession(
 export async function joinRoomWithSession(
   request: Request,
   body: Record<string, unknown>,
-  store: RoomAuthorityStore = getRoomAuthorityStore()
+  store: RoomAuthorityStore = getRoomAuthorityStore(),
+  options?: RoomSessionMutationOptions
 ): Promise<RoomSnapshotResult> {
   // Preflight signing secret before writing durable state (L-045)
   getCapabilitySecret();
@@ -239,79 +288,44 @@ export async function joinRoomWithSession(
   const cookieName = getGuestCookieName(targetRoom.id);
   const existingToken = extractCookieValue(request.headers.get("cookie"), cookieName);
 
+  let participantId: string;
+  let requireExistingParticipant = false;
+  let verifyLockedSession: ((context: { room: Room; minGeneration: number }) => void) | undefined;
+
   if (existingToken !== null) {
     const preliminary = verifyGuestCapabilityToken(existingToken, {
       expectedRoomId: targetRoom.id,
     });
-    const minGen = await store.getMinGeneration(targetRoom.id, preliminary.pid);
-    const claims = verifyGuestCapabilityToken(existingToken, {
-      expectedRoomId: targetRoom.id,
-      minGeneration: minGen,
-    });
-
-    const participant = await store.getParticipant(targetRoom.id, claims.pid);
-    if (!participant) {
-      throw new CapabilityAuthError(
-        403,
-        "PARTICIPANT_NOT_IN_ROOM",
-        "Capability does not match an active participant in this room."
-      );
-    }
-
-    const rejoined = await store.joinRoom(
-      targetRoom.id,
-      participant.participant_id,
-      participant.display_name
-    );
-    const freshRoom = (await store.getRoomById(targetRoom.id)) ?? targetRoom;
-    const participants = await store.getParticipantsByRoom(targetRoom.id);
-    const role = resolveAuthoritativeRole(freshRoom, rejoined);
-
-    const { token } = mintGuestCapabilityToken({
-      roomId: targetRoom.id,
-      participantId: rejoined.participant_id,
-      role,
-      generation: minGen,
-    });
-
-    return {
-      room: buildSafeRoomSnapshot(freshRoom, participants),
-      viewer: {
-        participantId: rejoined.participant_id,
-        displayName: rejoined.display_name,
-        role,
-      },
-      cookie: buildGuestCookieAttributes(request, targetRoom.id, token),
+    participantId = preliminary.pid;
+    requireExistingParticipant = true;
+    verifyLockedSession = ({ minGeneration }) => {
+      verifyGuestCapabilityToken(existingToken, {
+        expectedRoomId: targetRoom.id,
+        minGeneration,
+      });
     };
+  } else {
+    participantId = crypto.randomUUID();
   }
 
-  const participantId = crypto.randomUUID();
-  const participant = await store.joinRoom(targetRoom.id, participantId, displayName);
-  const freshRoom = (await store.getRoomById(targetRoom.id)) ?? targetRoom;
-  await store.setMinGeneration(freshRoom.id, participant.participant_id, 1, freshRoom.expires_at);
-
-  const { token } = mintGuestCapabilityToken({
-    roomId: freshRoom.id,
-    participantId: participant.participant_id,
-    role: "MEMBER",
-    generation: 1,
+  let mintedToken = "";
+  const result = await store.joinRoomWithSession({
+    roomId: targetRoom.id,
+    participantId,
+    displayName,
+    requireExistingParticipant,
+    verifyLockedSession,
+    hooks: createPreCommitMintHooks(options?.hooks, (token) => {
+      mintedToken = token;
+    }),
   });
 
-  const participants = await store.getParticipantsByRoom(freshRoom.id);
-
-  return {
-    room: buildSafeRoomSnapshot(freshRoom, participants),
-    viewer: {
-      participantId: participant.participant_id,
-      displayName: participant.display_name,
-      role: "MEMBER",
-    },
-    cookie: buildGuestCookieAttributes(request, freshRoom.id, token),
-  };
+  return buildAtomicSnapshotResult(request, result, mintedToken);
 }
 
 /**
- * Returns the authenticated participant's view of the room snapshot.
+ * Returns the authenticated participant's view of the room snapshot from a single
+ * consistent database snapshot transaction.
  */
 export async function getAuthenticatedRoomSnapshot(
   request: Request,
@@ -319,14 +333,37 @@ export async function getAuthenticatedRoomSnapshot(
   store: RoomAuthorityStore = getRoomAuthorityStore()
 ): Promise<RoomSnapshotResult> {
   const actor = await requireRoomActor(request, roomId, store);
-  const participants = await store.getParticipantsByRoom(actor.room.id);
-  const role = resolveAuthoritativeRole(actor.room, actor.participant);
+  const consistent = await store.getConsistentRoomSnapshot(actor.room.id);
+  if (!consistent) {
+    throw new RoomNotFoundError(`Room ${actor.room.id} does not exist.`);
+  }
+  if (isRoomRecordExpired(consistent.room)) {
+    throw new RoomExpiredError(`Room '${consistent.room.code}' has expired.`);
+  }
+
+  const viewerParticipant = consistent.participants.find(
+    (participant) =>
+      participant.participant_id.toLowerCase() === actor.participant.participant_id.toLowerCase()
+  );
+  if (!viewerParticipant) {
+    throw new CapabilityAuthError(
+      403,
+      "PARTICIPANT_NOT_IN_ROOM",
+      "Capability does not match an active participant in this room."
+    );
+  }
+
+  const role = resolveAuthoritativeRole(consistent.room, viewerParticipant);
 
   return {
-    room: buildSafeRoomSnapshot(actor.room, participants),
+    room: buildSafeRoomSnapshot(
+      consistent.room,
+      consistent.participants,
+      viewerParticipant.participant_id
+    ),
     viewer: {
-      participantId: actor.participant.participant_id,
-      displayName: actor.participant.display_name,
+      participantId: viewerParticipant.participant_id,
+      displayName: viewerParticipant.display_name,
       role,
     },
   };
