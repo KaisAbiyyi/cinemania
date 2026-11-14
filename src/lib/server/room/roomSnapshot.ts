@@ -9,6 +9,8 @@ import {
   RoomParticipant,
   RoomStatus,
   RoundParticipant,
+  Vote,
+  VoteType,
 } from "@/db/schema";
 import { ValidationError } from "@/lib/api/errorResponse";
 import {
@@ -48,10 +50,16 @@ import {
 import {
   getRoomAuthorityStore,
   type AtomicRoomSessionResult,
+  type RecordVoteSessionResult,
   type RoomAuthorityStore,
   type RoomMutationHooks,
 } from "./roomStore";
 import { isRoomRecordExpired } from "./stateMachine";
+import {
+  evaluateDeckProgression,
+  extractOperationIdFromHeaders,
+  parseVoteSubmissionPayload,
+} from "./votingEngine";
 
 export interface SafeRoomParticipant {
   displayName: string;
@@ -83,6 +91,10 @@ export interface SafeRoomSnapshot {
   expectedDeckSize: number;
   isDeckShortage: boolean;
   deck: SafeDeckCandidate[];
+  matchedMovieId: number | null;
+  matchedCandidate: SafeDeckCandidate | null;
+  currentCandidateIndex: number | null;
+  currentCandidate: SafeDeckCandidate | null;
   expiresAt: string;
   createdAt: string;
   participants: SafeRoomParticipant[];
@@ -110,6 +122,27 @@ export interface RoomSessionViewer {
   displayName: string;
   role: ParticipantRole;
   isEligibleVoter: boolean;
+  userVotes?: Record<string, VoteType>;
+  nextCandidateIndex?: number | null;
+}
+
+export interface RoomVoteSubmissionResult {
+  vote: {
+    id: string;
+    roomId: string;
+    roundId: string;
+    participantId: string;
+    candidateId: string;
+    movieId: number;
+    vote: VoteType;
+    operationId: string | null;
+    createdAt: string;
+  };
+  isMatched: boolean;
+  isExhausted: boolean;
+  idempotentReplay: boolean;
+  room: SafeRoomSnapshot;
+  viewer: RoomSessionViewer;
 }
 
 export interface RoomSnapshotResult {
@@ -211,6 +244,30 @@ function resolveJoinLookup(
   throw new CapabilityAuthError(400, "INVALID_ROOM_CODE", "A room code or invite link is required.");
 }
 
+function buildViewerVoteSummary(
+  viewerParticipantId: string,
+  roomStatus: RoomStatus,
+  candidates: Candidate[],
+  votes: Vote[]
+): { userVotes: Record<string, VoteType>; nextCandidateIndex: number | null } {
+  const normalizedViewerId = viewerParticipantId.toLowerCase();
+  const userVotes: Record<string, VoteType> = {};
+  for (const vote of votes) {
+    if (vote.participant_id.toLowerCase() === normalizedViewerId) {
+      userVotes[vote.candidate_id] = vote.vote;
+    }
+  }
+
+  let nextCandidateIndex: number | null = null;
+  if (roomStatus === "ACTIVE" && candidates.length > 0) {
+    const ordered = [...candidates].sort((a, b) => a.position - b.position);
+    const pendingIdx = ordered.findIndex((candidate) => !(candidate.id in userVotes));
+    nextCandidateIndex = pendingIdx >= 0 ? pendingIdx : null;
+  }
+
+  return { userVotes, nextCandidateIndex };
+}
+
 /**
  * Converts persisted room and participant records into a client-safe snapshot without secrets.
  */
@@ -220,7 +277,8 @@ export function buildSafeRoomSnapshot(
   viewerParticipantId: string,
   now: Date = new Date(),
   roundParticipants: RoundParticipant[] = [],
-  candidates: Candidate[] = []
+  candidates: Candidate[] = [],
+  votes: Vote[] = []
 ): SafeRoomSnapshot {
   if (room.participant_count !== participants.length) {
     throw new CapabilityAuthError(
@@ -237,9 +295,54 @@ export function buildSafeRoomSnapshot(
   const hasFrozenRoster = Boolean(room.current_round_id && roundParticipants.length > 0);
   const frozenIds = new Set(roundParticipants.map((rp) => rp.participant_id.toLowerCase()));
   const deckFilter = resolveEffectiveRoomDeckFilter(room.deck_filter);
-  const deck: SafeDeckCandidate[] = room.current_round_id
-    ? [...candidates].sort((a, b) => a.position - b.position).map(toSafeDeckCandidate)
+  const orderedCandidates = room.current_round_id
+    ? [...candidates].sort((a, b) => a.position - b.position)
     : [];
+  const deck: SafeDeckCandidate[] = orderedCandidates.map(toSafeDeckCandidate);
+
+  let matchedMovieId: number | null = room.matched_movie_id ?? null;
+  let matchedCandidate: SafeDeckCandidate | null =
+    matchedMovieId !== null
+      ? deck.find((candidate) => candidate.movieId === matchedMovieId) ?? null
+      : null;
+  let currentCandidateIndex: number | null =
+    status === "ACTIVE" && deck.length > 0 ? 0 : null;
+  let currentCandidate: SafeDeckCandidate | null =
+    currentCandidateIndex !== null ? deck[currentCandidateIndex] ?? null : null;
+
+  if (orderedCandidates.length > 0) {
+    const eligibleVoterIds = hasFrozenRoster
+      ? new Set(roundParticipants.map((rp) => rp.participant_id))
+      : new Set(participants.map((p) => p.participant_id));
+
+    if (
+      eligibleVoterIds.size >= MIN_PARTICIPANTS &&
+      eligibleVoterIds.size <= MAX_PARTICIPANTS
+    ) {
+      const progression = evaluateDeckProgression(
+        orderedCandidates,
+        votes,
+        eligibleVoterIds
+      );
+      if (matchedMovieId === null && progression.matchedMovieId !== null) {
+        matchedMovieId = progression.matchedMovieId;
+      }
+      matchedCandidate =
+        matchedMovieId !== null
+          ? deck.find((candidate) => candidate.movieId === matchedMovieId) ?? null
+          : null;
+      if (status === "ACTIVE") {
+        currentCandidateIndex = progression.currentCandidateIndex;
+        currentCandidate =
+          progression.currentCandidate !== null
+            ? toSafeDeckCandidate(progression.currentCandidate)
+            : null;
+      } else {
+        currentCandidateIndex = null;
+        currentCandidate = null;
+      }
+    }
+  }
 
   return {
     roomId: room.id,
@@ -261,6 +364,10 @@ export function buildSafeRoomSnapshot(
     expectedDeckSize: DECK_SIZE,
     isDeckShortage: Boolean(room.current_round_id && deck.length > 0 && deck.length < DECK_SIZE),
     deck,
+    matchedMovieId,
+    matchedCandidate,
+    currentCandidateIndex,
+    currentCandidate,
     expiresAt: room.expires_at,
     createdAt: room.created_at,
     participants: participants.map((participant) => {
@@ -470,13 +577,20 @@ export async function getAuthenticatedRoomSnapshot(
     viewerParticipant.participant_id,
     new Date(),
     consistent.roundParticipants,
-    consistent.candidates
+    consistent.candidates,
+    consistent.votes
   );
   const isEligibleVoter = Boolean(
     safeRoom.frozenQuorum !== null &&
       consistent.roundParticipants.some(
         (rp) => rp.participant_id.toLowerCase() === viewerParticipant.participant_id.toLowerCase()
       )
+  );
+  const viewerVoteSummary = buildViewerVoteSummary(
+    viewerParticipant.participant_id,
+    safeRoom.status,
+    consistent.candidates,
+    consistent.votes
   );
 
   return {
@@ -486,6 +600,8 @@ export async function getAuthenticatedRoomSnapshot(
       displayName: viewerParticipant.display_name,
       role,
       isEligibleVoter,
+      userVotes: viewerVoteSummary.userVotes,
+      nextCandidateIndex: viewerVoteSummary.nextCandidateIndex,
     },
   };
 }
@@ -708,6 +824,8 @@ export async function startRoomRoundWithSession(
       isEligibleVoter: started.frozenParticipants.some(
         (rp) => rp.participant_id.toLowerCase() === viewerParticipant.participant_id.toLowerCase()
       ),
+      userVotes: {},
+      nextCandidateIndex: safeRoom.status === "ACTIVE" && safeRoom.deckSize > 0 ? 0 : null,
     },
   };
 }
@@ -746,5 +864,100 @@ export async function leaveRoomWithSession(
     participantCount: left.room.participant_count,
     hostTransferred: Boolean(left.hostTransferredTo),
     cookie: buildClearedGuestCookieAttributes(request, left.room.id),
+  };
+}
+
+/**
+ * Authenticates the actor, validates vote & optional operationId payload, executes
+ * atomic unanimous consensus + immutability checks, and returns a confidential viewer snapshot.
+ */
+export async function submitRoomVoteWithSession(
+  request: Request,
+  roomId: string,
+  store: RoomAuthorityStore = getRoomAuthorityStore(),
+  options?: { beforeCommit?: (result: RecordVoteSessionResult) => void | Promise<void> }
+): Promise<RoomVoteSubmissionResult> {
+  getCapabilitySecret();
+  const actor = await requireRoomActor(request, roomId, store);
+  const token = resolveGuestTokenFromRequest(request, actor.room.id);
+  const headerOperationId = extractOperationIdFromHeaders(request.headers);
+  const body = await parseJsonBodySafe(request);
+  const payload = parseVoteSubmissionPayload(body, headerOperationId);
+
+  const recorded = await store.recordVoteWithSession({
+    roomId: actor.room.id,
+    roundId: payload.roundId,
+    participantId: actor.participant.participant_id,
+    candidateId: payload.candidateId,
+    movieId: payload.movieId,
+    vote: payload.vote,
+    operationId: payload.operationId,
+    verifyLockedSession: ({ minGeneration }) => {
+      verifyGuestCapabilityToken(token, {
+        expectedRoomId: actor.room.id,
+        minGeneration,
+      });
+    },
+    beforeCommit: options?.beforeCommit,
+  });
+
+  const viewerParticipant = recorded.participants.find(
+    (p) => p.participant_id.toLowerCase() === actor.participant.participant_id.toLowerCase()
+  );
+  if (!viewerParticipant) {
+    throw new CapabilityAuthError(
+      403,
+      "PARTICIPANT_NOT_IN_ROOM",
+      "Guest capability no longer matches an active participant."
+    );
+  }
+
+  const role = resolveAuthoritativeRole(recorded.room, viewerParticipant);
+  const safeRoom = buildSafeRoomSnapshot(
+    recorded.room,
+    recorded.participants,
+    viewerParticipant.participant_id,
+    new Date(),
+    recorded.roundParticipants,
+    recorded.candidates,
+    recorded.votes
+  );
+  const isEligibleVoter = Boolean(
+    safeRoom.frozenQuorum !== null &&
+      recorded.roundParticipants.some(
+        (rp) => rp.participant_id.toLowerCase() === viewerParticipant.participant_id.toLowerCase()
+      )
+  );
+  const viewerVoteSummary = buildViewerVoteSummary(
+    viewerParticipant.participant_id,
+    safeRoom.status,
+    recorded.candidates,
+    recorded.votes
+  );
+
+  return {
+    vote: {
+      id: recorded.vote.id,
+      roomId: recorded.vote.room_id,
+      roundId: recorded.vote.round_id,
+      participantId: recorded.vote.participant_id,
+      candidateId: recorded.vote.candidate_id,
+      movieId: recorded.vote.movie_id,
+      vote: recorded.vote.vote,
+      operationId: recorded.vote.operation_id ?? null,
+      createdAt: recorded.vote.created_at,
+    },
+    isMatched: recorded.isMatched,
+    isExhausted: recorded.isExhausted,
+    idempotentReplay: recorded.idempotentReplay,
+    room: safeRoom,
+    viewer: {
+      participantId: viewerParticipant.participant_id,
+      displayName: viewerParticipant.display_name,
+      role,
+      isEligibleVoter,
+      userVotes: viewerVoteSummary.userVotes,
+      nextCandidateIndex: viewerVoteSummary.nextCandidateIndex,
+    },
   };
 }

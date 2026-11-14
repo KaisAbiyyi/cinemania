@@ -32,8 +32,23 @@ import {
   RoomCodeGenerationError,
   generateRoomCode,
 } from "./roomCode";
+import {
+  evaluateDeckProgression,
+  ImmutableVoteError,
+  normalizeOperationId,
+  OperationConflictError,
+  VoterNotEligibleError,
+  type DeckProgressionResult,
+} from "./votingEngine";
 
-export { generateRoomCode, RoomCodeGenerationError };
+export {
+  generateRoomCode,
+  RoomCodeGenerationError,
+  ImmutableVoteError,
+  OperationConflictError,
+  VoterNotEligibleError,
+  type DeckProgressionResult,
+};
 
 export interface CreateRoomOptions {
   hostParticipantId?: string;
@@ -87,6 +102,9 @@ export type RoomCapacityErrorCode =
   | "ROOM_JOIN_CONFLICT"
   | "INSUFFICIENT_PARTICIPANTS"
   | "ROOM_ALREADY_ACTIVE"
+  | "ROOM_ALREADY_MATCHED"
+  | "ROOM_ALREADY_EXHAUSTED"
+  | "ROOM_NOT_ACTIVE"
   | "LOBBY_LEAVE_CLOSED"
   | "FILTER_LOCKED"
   | "DECK_FILTER_CONFLICT";
@@ -117,6 +135,36 @@ export interface StartLobbyRoundResult {
 export interface UpdateDeckFilterResult {
   room: Room;
   participants: RoomParticipant[];
+}
+
+export interface RecordVoteOptions {
+  operationId?: string | null;
+}
+
+export interface RecordVoteResult {
+  vote: Vote;
+  room: Room;
+  isMatched: boolean;
+  isExhausted: boolean;
+  idempotentReplay: boolean;
+  progression: DeckProgressionResult;
+}
+
+export function normalizeSqliteVote(row: Record<string, unknown>): Vote {
+  return {
+    id: String(row.id),
+    room_id: String(row.room_id),
+    round_id: String(row.round_id),
+    participant_id: String(row.participant_id),
+    candidate_id: String(row.candidate_id),
+    movie_id: Number(row.movie_id),
+    vote: row.vote as Vote["vote"],
+    operation_id:
+      row.operation_id !== undefined && row.operation_id !== null
+        ? String(row.operation_id)
+        : null,
+    created_at: String(row.created_at),
+  };
 }
 
 export function normalizeSqliteRoom(row: Record<string, unknown>): Room {
@@ -508,6 +556,11 @@ export class SqliteRoomRepository {
     return Boolean(row);
   }
 
+  private hasVotesOperationIdColumn(): boolean {
+    const columns = this.db.prepare(`PRAGMA table_info(votes);`).all() as Array<{ name?: string }>;
+    return columns.some((col) => col.name === "operation_id");
+  }
+
   private getRoundParticipantsInternal(roomId: string, roundId: string): RoundParticipant[] {
     if (!this.hasRoundParticipantsTable()) {
       return [];
@@ -520,6 +573,17 @@ export class SqliteRoomRepository {
       )
       .all(roomId, roundId);
     return rows as unknown as RoundParticipant[];
+  }
+
+  private resolveEligibleVoterIds(roomId: string, roundId: string): Set<string> {
+    if (this.hasRoundParticipantsTable()) {
+      const frozen = this.getRoundParticipantsInternal(roomId, roundId);
+      if (frozen.length > 0) {
+        return new Set(frozen.map((participant) => participant.participant_id));
+      }
+    }
+    const activeMembers = this.getParticipantsByRoom(roomId);
+    return new Set(activeMembers.map((participant) => participant.participant_id));
   }
 
   private leaveLobbyCore(
@@ -1068,6 +1132,7 @@ export class SqliteRoomRepository {
     participants: RoomParticipant[];
     roundParticipants: RoundParticipant[];
     candidates: Candidate[];
+    votes: Vote[];
   } | null {
     this.db.exec("BEGIN;");
     try {
@@ -1083,8 +1148,11 @@ export class SqliteRoomRepository {
       const candidates = room.current_round_id
         ? this.getCandidatesByRound(room.current_round_id, roomId)
         : [];
+      const votes = room.current_round_id
+        ? this.getVotesByRound(room.current_round_id, roomId)
+        : [];
       this.db.exec("COMMIT;");
-      return { room, participants, roundParticipants, candidates };
+      return { room, participants, roundParticipants, candidates, votes };
     } catch (err) {
       try {
         this.db.exec("ROLLBACK;");
@@ -1110,7 +1178,8 @@ export class SqliteRoomRepository {
       if (!room) throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
 
       assertValidTransition(room.status, "ACTIVE", "Starting voting round");
-      validateStartRoundPrerequisites(room.participant_count, candidates.length);
+      const participants = this.getParticipantsByRoom(roomId);
+      validateStartRoundPrerequisites(participants.length, candidates.length);
 
       // Insert Round
       this.db
@@ -1120,7 +1189,18 @@ export class SqliteRoomRepository {
         )
         .run(roundId, roomId, nowIso);
 
-      // Insert 20 candidates with exact positions 0..19
+      // Freeze voter roster in round_participants when migration 003+ is active
+      if (this.hasRoundParticipantsTable()) {
+        const freezeStmt = this.db.prepare(
+          `INSERT OR IGNORE INTO round_participants (room_id, round_id, participant_id, frozen_role, joined_at, frozen_at)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        );
+        for (const p of participants) {
+          freezeStmt.run(roomId, roundId, p.participant_id, p.role, p.joined_at, nowIso);
+        }
+      }
+
+      // Insert candidates with exact positions 0..N-1
       const candidateStmt = this.db.prepare(
         `INSERT INTO candidates (
           id, round_id, room_id, movie_id, position, title, poster_path, overview, release_date, vote_average
@@ -1189,16 +1269,331 @@ export class SqliteRoomRepository {
     }
   }
 
+  private recordVoteCore(
+    roomId: string,
+    roundId: string | null,
+    participantId: string,
+    candidateId: string,
+    movieId: number,
+    vote: VoteType,
+    options?: RecordVoteOptions,
+    beforeVoteLocked?: (room: Room) => void
+  ): RecordVoteResult {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const operationId = normalizeOperationId(options?.operationId, "operationId");
+
+    const room = this.getRoomById(roomId);
+    if (!room) {
+      throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
+    }
+    if (isRoomRecordExpired(room, now)) {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+
+    if (beforeVoteLocked) {
+      beforeVoteLocked(room);
+    }
+
+    if (room.status === "EXPIRED") {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+    if (room.status === "LOBBY" || !room.current_round_id) {
+      throw new RoomCapacityError(
+        `Cannot record vote: room status is '${room.status}', round has not started.`,
+        "ROOM_NOT_ACTIVE"
+      );
+    }
+    if (roundId !== null && room.current_round_id !== roundId) {
+      throw new RoundNotFoundError(
+        `Round ${roundId} is not the active round for room ${roomId}`
+      );
+    }
+    const targetRoundId = room.current_round_id;
+
+    // Referential integrity verification under room lock
+    const participant = this.getParticipant(roomId, participantId);
+    if (!participant) {
+      throw new ParticipantNotFoundError(
+        `Participant ${participantId} is not a member of room ${roomId}`
+      );
+    }
+
+    const eligibleVoterIds = this.resolveEligibleVoterIds(roomId, targetRoundId);
+    if (!eligibleVoterIds.has(participantId)) {
+      throw new VoterNotEligibleError(
+        `Participant ${participantId} is not in the frozen voter roster for round ${targetRoundId}.`
+      );
+    }
+
+    const supportsOperationId = this.hasVotesOperationIdColumn();
+    if (operationId !== null && supportsOperationId) {
+      const existingByOpRow = this.db
+        .prepare(
+          `SELECT * FROM votes
+           WHERE round_id = ? AND participant_id = ? AND operation_id = ?
+           LIMIT 1;`
+        )
+        .get(targetRoundId, participantId, operationId) as
+        | Record<string, unknown>
+        | undefined;
+
+      if (existingByOpRow) {
+        const existingByOp = normalizeSqliteVote(existingByOpRow);
+        if (
+          existingByOp.candidate_id !== candidateId ||
+          existingByOp.movie_id !== movieId ||
+          existingByOp.vote !== vote
+        ) {
+          throw new OperationConflictError(
+            `operationId '${operationId}' was already used for different vote parameters.`
+          );
+        }
+
+        const allCandidates = this.getCandidatesByRound(targetRoundId, roomId);
+        const allVotes = this.getVotesByRound(targetRoundId, roomId);
+        const progression = evaluateDeckProgression(
+          allCandidates,
+          allVotes,
+          eligibleVoterIds
+        );
+
+        return {
+          vote: existingByOp,
+          room,
+          isMatched:
+            room.status === "MATCHED" &&
+            existingByOp.movie_id === room.matched_movie_id,
+          isExhausted: room.status === "EXHAUSTED",
+          idempotentReplay: true,
+          progression,
+        };
+      }
+    }
+
+    // Validate candidate belongs to this room + round + movieId
+    const candidateRow = this.db
+      .prepare(
+        `SELECT * FROM candidates WHERE id = ? AND round_id = ? AND room_id = ? AND movie_id = ?`
+      )
+      .get(candidateId, targetRoundId, roomId, movieId);
+
+    if (!candidateRow) {
+      throw new CandidateNotFoundError(
+        `Candidate ${candidateId} does not match movie ${movieId} in round ${targetRoundId}`
+      );
+    }
+
+    // Check existing vote for this participant & candidate/movie in this round
+    const existingVoteRow = this.db
+      .prepare(
+        `SELECT * FROM votes
+         WHERE round_id = ? AND participant_id = ? AND (candidate_id = ? OR movie_id = ?)
+         LIMIT 1;`
+      )
+      .get(targetRoundId, participantId, candidateId, movieId) as
+      | Record<string, unknown>
+      | undefined;
+
+    if (existingVoteRow) {
+      const existingVote = normalizeSqliteVote(existingVoteRow);
+      if (existingVote.vote !== vote) {
+        throw new ImmutableVoteError(
+          `Participant ${participantId} has already voted ${existingVote.vote} on candidate ${candidateId}.`
+        );
+      }
+
+      const allCandidates = this.getCandidatesByRound(targetRoundId, roomId);
+      const allVotes = this.getVotesByRound(targetRoundId, roomId);
+      const progression = evaluateDeckProgression(
+        allCandidates,
+        allVotes,
+        eligibleVoterIds
+      );
+
+      return {
+        vote: existingVote,
+        room,
+        isMatched:
+          room.status === "MATCHED" &&
+          existingVote.movie_id === room.matched_movie_id,
+        isExhausted: room.status === "EXHAUSTED",
+        idempotentReplay: true,
+        progression,
+      };
+    }
+
+    if (room.status === "MATCHED") {
+      throw new RoomCapacityError(
+        `Cannot record vote: room is already MATCHED on movie ${room.matched_movie_id}.`,
+        "ROOM_ALREADY_MATCHED"
+      );
+    }
+    if (room.status === "EXHAUSTED") {
+      throw new RoomCapacityError(
+        `Cannot record vote: round deck is already EXHAUSTED.`,
+        "ROOM_ALREADY_EXHAUSTED"
+      );
+    }
+    if (room.status !== "ACTIVE") {
+      throw new RoomCapacityError(
+        `Cannot record vote: room status is '${room.status}', but must be 'ACTIVE'.`,
+        "ROOM_NOT_ACTIVE"
+      );
+    }
+
+    const voteId = crypto.randomUUID();
+    if (supportsOperationId) {
+      this.db
+        .prepare(
+          `INSERT INTO votes (id, room_id, round_id, participant_id, candidate_id, movie_id, vote, operation_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          voteId,
+          roomId,
+          targetRoundId,
+          participantId,
+          candidateId,
+          movieId,
+          vote,
+          operationId,
+          nowIso
+        );
+    } else {
+      this.db
+        .prepare(
+          `INSERT INTO votes (id, room_id, round_id, participant_id, candidate_id, movie_id, vote, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(voteId, roomId, targetRoundId, participantId, candidateId, movieId, vote, nowIso);
+    }
+
+    const allCandidates = this.getCandidatesByRound(targetRoundId, roomId);
+    const allVotes = this.getVotesByRound(targetRoundId, roomId);
+    const progression = evaluateDeckProgression(allCandidates, allVotes, eligibleVoterIds);
+
+    const nextVersion = room.state_version + 1;
+    const newExpiresAt = new Date(
+      now.getTime() + room.inactivity_ttl_seconds * 1000
+    ).toISOString();
+
+    let isMatched = false;
+    let isExhausted = false;
+
+    if (progression.nextStatus === "MATCHED" && progression.matchedMovieId !== null) {
+      assertValidTransition(room.status, "MATCHED", "Unanimous consensus achieved");
+      isMatched = true;
+
+      this.db
+        .prepare(
+          `UPDATE rooms
+           SET status = 'MATCHED', matched_movie_id = ?, state_version = ?,
+               last_activity_at = ?, expires_at = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(progression.matchedMovieId, nextVersion, nowIso, newExpiresAt, nowIso, roomId);
+
+      this.db
+        .prepare(
+          `UPDATE rounds SET status = 'COMPLETED', completed_at = ? WHERE id = ? AND status = 'ACTIVE'`
+        )
+        .run(nowIso, targetRoundId);
+
+      this.db
+        .prepare(
+          `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+           VALUES (?, ?, 'MATCH_ANNOUNCED', ?, 0, 0, 0, ?)`
+        )
+        .run(
+          roomId,
+          nextVersion,
+          JSON.stringify({
+            movieId: progression.matchedMovieId,
+            candidateId: progression.matchedCandidate?.id ?? candidateId,
+            roundId: targetRoundId,
+            unanimousCount: eligibleVoterIds.size,
+          }),
+          nowIso
+        );
+    } else if (progression.nextStatus === "EXHAUSTED") {
+      assertValidTransition(room.status, "EXHAUSTED", "All candidates voted without match");
+      isExhausted = true;
+
+      this.db
+        .prepare(
+          `UPDATE rooms
+           SET status = 'EXHAUSTED', state_version = ?, last_activity_at = ?, expires_at = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(nextVersion, nowIso, newExpiresAt, nowIso, roomId);
+
+      this.db
+        .prepare(
+          `UPDATE rounds SET status = 'COMPLETED', completed_at = ? WHERE id = ? AND status = 'ACTIVE'`
+        )
+        .run(nowIso, targetRoundId);
+
+      this.db
+        .prepare(
+          `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+           VALUES (?, ?, 'DECK_EXHAUSTED', ?, 0, 0, 0, ?)`
+        )
+        .run(
+          roomId,
+          nextVersion,
+          JSON.stringify({
+            roundId: targetRoundId,
+            totalVotes: allVotes.length,
+            deckSize: allCandidates.length,
+          }),
+          nowIso
+        );
+    } else {
+      // Secret vote guarantee (CINE-017/CINE-020): broadcast outbox event reveals ONLY participantId
+      this.db
+        .prepare(
+          `UPDATE rooms
+           SET state_version = ?, last_activity_at = ?, expires_at = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(nextVersion, nowIso, newExpiresAt, nowIso, roomId);
+
+      this.db
+        .prepare(
+          `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+           VALUES (?, ?, 'VOTE_RECORDED', ?, 0, 0, 0, ?)`
+        )
+        .run(roomId, nextVersion, JSON.stringify({ participantId }), nowIso);
+    }
+
+    const updatedRoom = this.getRoomById(roomId)!;
+    const recordedVote: Vote = {
+      id: voteId,
+      room_id: roomId,
+      round_id: targetRoundId,
+      participant_id: participantId,
+      candidate_id: candidateId,
+      movie_id: movieId,
+      vote,
+      operation_id: operationId,
+      created_at: nowIso,
+    };
+
+    return {
+      vote: recordedVote,
+      room: updatedRoom,
+      isMatched,
+      isExhausted,
+      idempotentReplay: false,
+      progression,
+    };
+  }
+
   /**
-   * Records a vote for a candidate in an active round.
-   * Enforces referential integrity under room lock:
-   * - Participant belongs to room
-   * - Round belongs to room and is active
-   * - Candidate belongs to round and room, and matches movie_id
-   * 
-   * Idempotent: returns existing vote if already recorded.
-   * If room is already MATCHED, returns existing matching vote or throws.
-   * Atomically extends expires_at by inactivity_ttl_seconds.
+   * Records a vote for a candidate in an active round against frozen round_participants.
+   * Supports operationId idempotency, strict vote immutability (409 VOTE_IMMUTABLE),
+   * and deterministic unanimous match or deck exhaustion transitions.
    */
   recordVote(
     roomId: string,
@@ -1206,240 +1601,48 @@ export class SqliteRoomRepository {
     participantId: string,
     candidateId: string,
     movieId: number,
-    vote: VoteType
-  ): { vote: Vote; room: Room; isMatched: boolean } {
-    const voteId = crypto.randomUUID();
-    const now = new Date();
-    const nowIso = now.toISOString();
-
-    this.db.exec("BEGIN IMMEDIATE;");
-    try {
-      const room = this.getRoomById(roomId);
-      if (!room) throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
-
-      // If room is already MATCHED, check if this vote was already recorded
-      if (room.status === "MATCHED") {
-        const existingVote = this.db
-          .prepare(
-            `SELECT * FROM votes
-             WHERE round_id = ? AND participant_id = ? AND (candidate_id = ? OR movie_id = ?)`
-          )
-          .get(roundId, participantId, candidateId, movieId) as unknown as Vote | undefined;
-
-        if (existingVote) {
-          this.db.exec("COMMIT;");
-          return {
-            vote: existingVote,
-            room,
-            isMatched: true,
-          };
-        }
-        throw new RoomCapacityError(
-          `Cannot record vote: room is already MATCHED on movie ${room.matched_movie_id}.`
-        );
-      }
-
-      if (room.status !== "ACTIVE") {
-        throw new RoomCapacityError(
-          `Cannot record vote: room status is '${room.status}', but must be 'ACTIVE'.`
-        );
-      }
-
-      // Referential integrity verification under room lock
-      // 1. Participant must belong to the room
-      const participant = this.getParticipant(roomId, participantId);
-      if (!participant) {
-        throw new ParticipantNotFoundError(
-          `Participant ${participantId} is not a member of room ${roomId}`
-        );
-      }
-
-      // 2. Round must belong to room and match active round
-      if (room.current_round_id !== roundId) {
-        throw new RoundNotFoundError(
-          `Round ${roundId} is not the active round for room ${roomId}`
-        );
-      }
-
-      // 3. Candidate must belong to this round and room, and match movieId
-      const candidateRow = this.db
-        .prepare(
-          `SELECT * FROM candidates WHERE id = ? AND round_id = ? AND room_id = ? AND movie_id = ?`
-        )
-        .get(candidateId, roundId, roomId, movieId);
-
-      if (!candidateRow) {
-        throw new CandidateNotFoundError(
-          `Candidate ${candidateId} does not match movie ${movieId} in round ${roundId}`
-        );
-      }
-
-      // Check for duplicate vote (idempotency)
-      const existingVote = this.db
-        .prepare(
-          `SELECT * FROM votes
-           WHERE round_id = ? AND participant_id = ? AND (candidate_id = ? OR movie_id = ?)`
-        )
-        .get(roundId, participantId, candidateId, movieId) as unknown as Vote | undefined;
-
-      if (existingVote) {
-        this.db.exec("COMMIT;");
-        return {
-          vote: existingVote,
-          room,
-          isMatched: false,
-        };
-      }
-
-      // Insert vote with composite foreign keys
-      this.db
-        .prepare(
-          `INSERT INTO votes (id, room_id, round_id, participant_id, candidate_id, movie_id, vote, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(voteId, roomId, roundId, participantId, candidateId, movieId, vote, nowIso);
-
-      const nextVersion = room.state_version + 1;
-      const newExpiresAt = new Date(now.getTime() + room.inactivity_ttl_seconds * 1000).toISOString();
-      let isMatched = false;
-
-      if (vote === "LIKE") {
-        // Count total LIKE votes for this movie in this round
-        const likeCountRow = this.db
-          .prepare(
-            `SELECT COUNT(*) as count FROM votes
-             WHERE round_id = ? AND movie_id = ? AND vote = 'LIKE'`
-          )
-          .get(roundId, movieId) as unknown as { count: number };
-
-        if (likeCountRow.count === room.participant_count) {
-          // Unanimous match consensus reached!
-          assertValidTransition(room.status, "MATCHED", "Unanimous consensus achieved");
-          isMatched = true;
-
-          this.db
-            .prepare(
-              `UPDATE rooms
-               SET status = 'MATCHED', matched_movie_id = ?, state_version = ?,
-                   last_activity_at = ?, expires_at = ?, updated_at = ?
-               WHERE id = ?`
-            )
-            .run(movieId, nextVersion, nowIso, newExpiresAt, nowIso, roomId);
-
-          // Emit MATCH_ANNOUNCED event in outbox
-          this.db
-            .prepare(
-              `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-               VALUES (?, ?, 'MATCH_ANNOUNCED', ?, 0, 0, 0, ?)`
-            )
-            .run(
-              roomId,
-              nextVersion,
-              JSON.stringify({
-                movieId,
-                unanimousCount: room.participant_count,
-              }),
-              nowIso
-            );
-        } else {
-          // Secret vote guarantee (CINE-020): outbox broadcast event only reveals participantId
-          this.db
-            .prepare(
-              `UPDATE rooms
-               SET state_version = ?, last_activity_at = ?, expires_at = ?, updated_at = ?
-               WHERE id = ?`
-            )
-            .run(nextVersion, nowIso, newExpiresAt, nowIso, roomId);
-
-          this.db
-            .prepare(
-              `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-               VALUES (?, ?, 'VOTE_RECORDED', ?, 0, 0, 0, ?)`
-            )
-            .run(roomId, nextVersion, JSON.stringify({ participantId }), nowIso);
-        }
-      } else {
-        // SKIP vote: check if all candidates have been voted by all members
-        const totalVotesRow = this.db
-          .prepare(
-            `SELECT COUNT(*) as count FROM votes WHERE round_id = ?`
-          )
-          .get(roundId) as unknown as { count: number };
-
-        const candCountRow = this.db
-          .prepare(`SELECT COUNT(*) as count FROM candidates WHERE room_id = ? AND round_id = ?`)
-          .get(roomId, roundId) as unknown as { count: number } | undefined;
-        const deckCount = Number(candCountRow?.count ?? 0) || DECK_SIZE;
-        const totalExpectedVotes = room.participant_count * deckCount;
-
-        if (totalVotesRow.count >= totalExpectedVotes) {
-          // 20 cards swiped by all members with no match: deck exhausted!
-          assertValidTransition(room.status, "EXHAUSTED", "Deck exhausted without consensus");
-
-          this.db
-            .prepare(
-              `UPDATE rooms
-               SET status = 'EXHAUSTED', state_version = ?, last_activity_at = ?, expires_at = ?, updated_at = ?
-               WHERE id = ?`
-            )
-            .run(nextVersion, nowIso, newExpiresAt, nowIso, roomId);
-
-          this.db
-            .prepare(
-              `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-               VALUES (?, ?, 'DECK_EXHAUSTED', ?, 0, 0, 0, ?)`
-            )
-            .run(
-              roomId,
-              nextVersion,
-              JSON.stringify({
-                roundId,
-                totalVotes: totalVotesRow.count,
-              }),
-              nowIso
-            );
-        } else {
-          // Normal SKIP: secret vote broadcast
-          this.db
-            .prepare(
-              `UPDATE rooms
-               SET state_version = ?, last_activity_at = ?, expires_at = ?, updated_at = ?
-               WHERE id = ?`
-            )
-            .run(nextVersion, nowIso, newExpiresAt, nowIso, roomId);
-
-          this.db
-            .prepare(
-              `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-               VALUES (?, ?, 'VOTE_RECORDED', ?, 0, 0, 0, ?)`
-            )
-            .run(roomId, nextVersion, JSON.stringify({ participantId }), nowIso);
-        }
-      }
-
-      this.db.exec("COMMIT;");
-
-      const updatedRoom = this.getRoomById(roomId)!;
-      const recordedVote: Vote = {
-        id: voteId,
-        room_id: roomId,
-        round_id: roundId,
-        participant_id: participantId,
-        candidate_id: candidateId,
-        movie_id: movieId,
+    vote: VoteType,
+    options?: RecordVoteOptions
+  ): RecordVoteResult {
+    return this.runInImmediateTransaction(() =>
+      this.recordVoteCore(
+        roomId,
+        roundId,
+        participantId,
+        candidateId,
+        movieId,
         vote,
-        created_at: nowIso,
-      };
+        options
+      )
+    );
+  }
 
-      return {
-        vote: recordedVote,
-        room: updatedRoom,
-        isMatched,
-      };
-    } catch (err) {
-      this.db.exec("ROLLBACK;");
-      throw err;
+  recordVoteInTransaction<T>(
+    roomId: string,
+    roundId: string | null,
+    participantId: string,
+    candidateId: string,
+    movieId: number,
+    vote: VoteType,
+    callbacks: {
+      options?: RecordVoteOptions;
+      beforeVoteLocked?: (room: Room) => void;
+      afterVote: (result: RecordVoteResult) => T;
     }
+  ): T {
+    return this.runInImmediateTransaction(() => {
+      const result = this.recordVoteCore(
+        roomId,
+        roundId,
+        participantId,
+        candidateId,
+        movieId,
+        vote,
+        callbacks.options,
+        callbacks.beforeVoteLocked
+      );
+      return callbacks.afterVote(result);
+    });
   }
 
   /**
@@ -1557,6 +1760,19 @@ export class SqliteRoomRepository {
             .all(roundId)
     ) as unknown as Array<Record<string, unknown>>;
     return rows.map(normalizeSqliteCandidate);
+  }
+
+  getVotesByRound(roundId: string, roomId?: string): Vote[] {
+    const rows = (
+      roomId
+        ? this.db
+            .prepare(`SELECT * FROM votes WHERE room_id = ? AND round_id = ? ORDER BY created_at ASC`)
+            .all(roomId, roundId)
+        : this.db
+            .prepare(`SELECT * FROM votes WHERE round_id = ? ORDER BY created_at ASC`)
+            .all(roundId)
+    ) as unknown as Array<Record<string, unknown>>;
+    return rows.map(normalizeSqliteVote);
   }
 
   getEventsByRoom(roomId: string): RoomEvent[] {

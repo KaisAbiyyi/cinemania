@@ -6,12 +6,18 @@ import {
   ValidationError,
 } from "@/lib/api/errorResponse";
 import {
+  CandidateNotFoundError,
+  ImmutableVoteError,
+  OperationConflictError,
   ParticipantNotFoundError,
   RoomCapacityError,
   RoomCodeGenerationError,
   RoomExpiredError,
   RoomNotFoundError,
+  RoundNotFoundError,
+  VoterNotEligibleError,
 } from "@/lib/server/room/roomRepository";
+import { VotePayloadError } from "@/lib/server/room/votingEngine";
 import {
   DeckEmptyError,
   InvalidStateTransitionError,
@@ -72,6 +78,36 @@ export function handleGuestApiError(err: unknown): NextResponse {
     return NextResponse.json(
       { error: "PARTICIPANT_NOT_FOUND", message: err.message },
       { status: 404, headers: PRIVATE_NO_STORE_HEADERS }
+    );
+  }
+  if (err instanceof RoundNotFoundError) {
+    return NextResponse.json(
+      { error: "ROUND_NOT_FOUND", message: err.message },
+      { status: 404, headers: PRIVATE_NO_STORE_HEADERS }
+    );
+  }
+  if (err instanceof CandidateNotFoundError) {
+    return NextResponse.json(
+      { error: "CANDIDATE_NOT_FOUND", message: err.message },
+      { status: 404, headers: PRIVATE_NO_STORE_HEADERS }
+    );
+  }
+  if (err instanceof VotePayloadError) {
+    return NextResponse.json(
+      { error: err.code, message: err.message },
+      { status: 400, headers: PRIVATE_NO_STORE_HEADERS }
+    );
+  }
+  if (err instanceof VoterNotEligibleError) {
+    return NextResponse.json(
+      { error: err.code, message: err.message },
+      { status: 403, headers: PRIVATE_NO_STORE_HEADERS }
+    );
+  }
+  if (err instanceof ImmutableVoteError || err instanceof OperationConflictError) {
+    return NextResponse.json(
+      { error: err.code, message: err.message },
+      { status: 409, headers: PRIVATE_NO_STORE_HEADERS }
     );
   }
   if (err instanceof RoomExpiredError) {
