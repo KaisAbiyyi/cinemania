@@ -28,7 +28,7 @@ import UserScoreSlider from "./UserScoreSlider";
 import VotesSlider from "./VotesSlider";
 
 // Import custom hooks
-import { useFilterSync } from "../../hooks/useFilterSync";
+import { buildFilterSearchQuery, useFilterSync } from "../../hooks/useFilterSync";
 
 // Import tipe dan default global
 import { Filters } from "@/types/filters";
@@ -51,7 +51,13 @@ const FilterContainerInner: FC<FilterContainerProps> = ({
     onApply,
     onOrientationChange,
 }) => {
-    const { filters: globalFilters, setFilters, resetFilters, baseDefaultFilters } = useFilterContext();
+    const {
+        filters: globalFilters,
+        setFilters,
+        resetFilters,
+        markExpectedUrlSearch,
+        baseDefaultFilters,
+    } = useFilterContext();
     const router = useRouter();
     const pathname = usePathname();
 
@@ -127,14 +133,16 @@ const FilterContainerInner: FC<FilterContainerProps> = ({
             }
         });
 
+        const expectedQuery = buildFilterSearchQuery(cleanedFilters, baseDefaultFilters);
+        markExpectedUrlSearch?.(expectedQuery);
         updateUrl(cleanedFilters);
         console.log("Applied filters:", cleanedFilters);
     };
 
     const handleReset = () => {
+        markExpectedUrlSearch?.("");
         resetFilters(); // Reset state di context ke baseDefaultFilters
         setTempFilters(baseDefaultFilters);
-        updateUrl(baseDefaultFilters);
         router.push(pathname);
     };
 
@@ -328,11 +336,11 @@ const FilterContainerInner: FC<FilterContainerProps> = ({
                         </div>
                         <CardContent className="flex gap-2">
                             {resetAvailable && (
-                                <Button variant="outline" onClick={handleReset}>
+                                <Button type="button" variant="outline" onClick={handleReset}>
                                     Reset
                                 </Button>
                             )}
-                            <Button variant="default" onClick={handleApply}>
+                            <Button type="button" variant="default" onClick={handleApply}>
                                 Apply
                             </Button>
                         </CardContent>

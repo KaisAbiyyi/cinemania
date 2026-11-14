@@ -8,6 +8,7 @@ import { slugify } from "@/lib/utils";
 import MediaDetailAsideSkeleton from "../skeletons/MediaDetailAsideSkeleton";
 import Image from "next/image";
 import ErrorState from "@/components/ErrorState";
+import EmptyState from "@/components/EmptyState";
 
 interface MediaDetailAsideProps {
     id: number;
@@ -17,11 +18,39 @@ interface MediaDetailAsideProps {
 }
 
 const MediaDetailAside: FC<MediaDetailAsideProps> = ({ id, mediaType, detailData }) => {
-    const { data: LanguageData, isLoading: LanguageLoading, error: LanguageError } = useLanguages()
-    const { data: KeywordsData, isLoading: KeywordsLoading, error: KeywordsError } = useMediaKeywords({ id, mediaType })
+    const { data: LanguageData, isLoading: LanguageLoading, error: LanguageError, refetch: refetchLanguages } = useLanguages()
+    const { data: KeywordsData, isLoading: KeywordsLoading, error: KeywordsError, refetch: refetchKeywords } = useMediaKeywords({ id, mediaType })
 
-    if (LanguageLoading || KeywordsLoading) return <MediaDetailAsideSkeleton />;
-    if ((LanguageError || !LanguageData) || (KeywordsError || !KeywordsData)) return <ErrorState message={(LanguageError?.message || KeywordsError?.message) || "There was an error loading the data."} onRetry={() => window.location.reload()} />;
+    const retryAside = () => {
+        void refetchLanguages();
+        void refetchKeywords();
+    };
+
+    if (LanguageLoading || KeywordsLoading) {
+        return (
+            <div role="status" aria-label="Loading media details">
+                <MediaDetailAsideSkeleton />
+            </div>
+        );
+    }
+    if (LanguageError || KeywordsError) {
+        return (
+            <ErrorState
+                message={(LanguageError?.message || KeywordsError?.message) || "There was an error loading the data."}
+                onRetry={retryAside}
+            />
+        );
+    }
+    if (!LanguageData || !KeywordsData) {
+        return (
+            <EmptyState
+                title="Details unavailable"
+                message="No metadata available for this title."
+                actionLabel="Try Again"
+                onAction={retryAside}
+            />
+        );
+    }
     // eslint-disable-next-line
     const original_language = LanguageData.find((lang: any) => lang.iso_639_1 === detailData.original_language);
     const imagePath = process.env.NEXT_PUBLIC_TMDB_POSTER_URL

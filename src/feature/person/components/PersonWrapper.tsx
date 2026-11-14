@@ -8,6 +8,7 @@ import { usePersonCombinedCredits } from '../hooks/usePersonCombinedCredits';
 import PersonBanner from './PersonBanner';
 import PersonCreditsSkeleton from './skeletons/PersonCreditsSkeleton';
 import ErrorState from '@/components/ErrorState';
+import EmptyState from '@/components/EmptyState';
 import PersonWrapperSkeleton from './skeletons/PersonWrapperSkeleton';
 interface Props {
     // Define any props you need here
@@ -25,17 +26,46 @@ const PersonCredits = dynamic(() => import("./PersonCredits"), {
 })
 
 const PersonWrapper: FC<Props> = ({ personId }) => {
-    const { data: PersonDetail, isLoading: PersonDetailLoading, error: PersonDetailError } = usePerson({ id: personId });
-    const { data: PersonCombinedCredits, isLoading: PersonCombinedCreditsLoading, error: PersonCombinedCreditsError } = usePersonCombinedCredits({ id: personId })
+    const {
+        data: PersonDetail,
+        isLoading: PersonDetailLoading,
+        error: PersonDetailError,
+        refetch: refetchPersonDetail,
+    } = usePerson({ id: personId });
+    const {
+        data: PersonCombinedCredits,
+        isLoading: PersonCombinedCreditsLoading,
+        error: PersonCombinedCreditsError,
+        refetch: refetchPersonCredits,
+    } = usePersonCombinedCredits({ id: personId });
+
+    const retryPerson = () => {
+        void refetchPersonDetail();
+        void refetchPersonCredits();
+    };
 
     if (PersonDetailLoading || PersonCombinedCreditsLoading) {
-        return <PersonWrapperSkeleton />;
+        return (
+            <div role="status" aria-label="Loading person details">
+                <PersonWrapperSkeleton />
+            </div>
+        );
     }
-    if ((PersonDetailError || PersonCombinedCreditsError) || (!PersonDetail || !PersonCombinedCredits)) {
+    if (PersonDetailError || PersonCombinedCreditsError) {
         return (
             <ErrorState
                 message={PersonDetailError?.message || PersonCombinedCreditsError?.message || "There was an error loading the data."}
-                onRetry={() => window.location.reload()}
+                onRetry={retryPerson}
+            />
+        );
+    }
+    if (!PersonDetail || !PersonCombinedCredits) {
+        return (
+            <EmptyState
+                title="Person unavailable"
+                message="No details available for this person."
+                actionLabel="Try Again"
+                onAction={retryPerson}
             />
         );
     }

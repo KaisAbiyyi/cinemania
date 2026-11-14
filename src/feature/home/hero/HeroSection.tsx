@@ -1,5 +1,7 @@
 "use client"
 
+import EmptyState from "@/components/EmptyState";
+import ErrorState from "@/components/ErrorState";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
 import { useTrending } from "@/feature/media/hooks/useTrending";
@@ -15,15 +17,35 @@ import HeroSearchBar from "./HeroSearchBar";
 import HeroSectionSkeleton from "./HeroSectionSkeleton";
 
 const HeroSection: FC = () => {
-    const { data, isLoading, error } = useTrending({
+    const { data, isLoading, error, refetch } = useTrending({
         mediaType: "all",
         timeWindow: "week",
         language: "en-US",
     });
 
-    if (isLoading) return <HeroSectionSkeleton />;
-    if (error || !data || !data.results || data.results.length === 0)
-        return <h1>Failed to load movies.</h1>;
+    if (isLoading) {
+        return (
+            <div role="status" aria-label="Loading featured trending media">
+                <HeroSectionSkeleton />
+            </div>
+        );
+    }
+    if (error) {
+        return (
+            <ErrorState
+                message={error.message || "Failed to load featured media."}
+                onRetry={() => void refetch()}
+            />
+        );
+    }
+    if (!data || !data.results || data.results.length === 0) {
+        return (
+            <EmptyState
+                title="No featured titles"
+                message="No featured trending titles are available right now."
+            />
+        );
+    }
 
 
     // Mengambil array media dari properti results pada response

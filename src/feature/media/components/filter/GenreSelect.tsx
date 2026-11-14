@@ -63,6 +63,7 @@ const GenreSelect: FC<GenreSelectProps> = ({
                 {genres?.map((genre: Genre) => (
                     <Button
                         key={genre.id}
+                        type="button"
                         onClick={() => toggleGenre(genre.id)}
                         variant={selectedGenres.includes(genre.id) ? "default" : "outline"}
                         className="rounded-full"

@@ -2,14 +2,18 @@
 
 import React, {
     createContext,
+    Suspense,
     useCallback,
     useContext,
+    useEffect,
     useState,
     useMemo,
+    useRef,
     useSyncExternalStore,
     ReactNode,
     FC,
 } from "react";
+import { useSearchParams } from "next/navigation";
 import { Filters, globalDefaultFilters } from "@/types/filters";
 import {
     DiscoveryDatePreset,
@@ -22,10 +26,53 @@ import { useLocalCalendarDay } from "../../hooks/useLocalCalendarDay";
 
 const emptySubscribe = () => () => {};
 
+const NUMERIC_FILTER_KEYS = new Set<keyof Filters>([
+    "vote_average_gte",
+    "vote_average_lte",
+    "vote_count_gte",
+    "with_runtime_gte",
+    "with_runtime_lte",
+]);
+
+function normalizeParsedUrlFilters(raw: Partial<Filters>): Partial<Filters> {
+    const normalized: Partial<Filters> = {};
+
+    (Object.keys(raw) as (keyof Filters)[]).forEach((key) => {
+        const value = raw[key];
+        if (value === undefined) return;
+        if (NUMERIC_FILTER_KEYS.has(key)) {
+            const numeric = typeof value === "number" ? value : Number(value);
+            if (Number.isFinite(numeric)) {
+                (normalized as Record<string, unknown>)[key] = numeric;
+            }
+            return;
+        }
+        (normalized as Record<string, unknown>)[key] = value;
+    });
+
+    return normalized;
+}
+
+function FilterUrlSyncObserver({
+    onObservedSearchChange,
+}: {
+    onObservedSearchChange: (nextSearch: string) => void;
+}) {
+    const searchParams = useSearchParams();
+    const searchKey = searchParams?.toString() ?? "";
+
+    useEffect(() => {
+        onObservedSearchChange(searchKey);
+    }, [searchKey, onObservedSearchChange]);
+
+    return null;
+}
+
 interface FilterContextProps {
     filters: Filters;
     setFilters: (update: Partial<Filters> | ((prev: Filters) => Partial<Filters>)) => void;
     resetFilters: () => void;
+    markExpectedUrlSearch?: (nextSearch: string) => void;
     baseDefaultFilters: Filters;
     isReady: boolean;
 }
@@ -73,12 +120,75 @@ export const FilterProvider: FC<FilterProviderProps> = ({ children, defaultFilte
         if (!isHydrated || typeof window === "undefined") {
             return {};
         }
-        return parseQuery(window.location.search);
+        return normalizeParsedUrlFilters(parseQuery(window.location.search));
     }, [isHydrated]);
+
+    const [externalUrlFilters, setExternalUrlFilters] = useState<Partial<Filters> | null>(null);
+    const urlFilters = externalUrlFilters ?? initialUrlFilters;
 
     const [customOverrides, setCustomOverrides] = useState<Partial<Filters> | null>(null);
 
-    const activeOverrides = customOverrides ?? initialUrlFilters;
+    const lastObservedSearchRef = useRef<string | null>(null);
+    const expectedInternalSearchRef = useRef<string | null>(null);
+
+    const applyExternalSearch = useCallback((nextSearch: string) => {
+        expectedInternalSearchRef.current = null;
+        lastObservedSearchRef.current = nextSearch;
+        setCustomOverrides(null);
+        setExternalUrlFilters(
+            normalizeParsedUrlFilters(parseQuery(nextSearch ? `?${nextSearch}` : ""))
+        );
+    }, []);
+
+    const handleObservedSearchChange = useCallback(
+        (nextSearch: string) => {
+            if (lastObservedSearchRef.current === null) {
+                lastObservedSearchRef.current = nextSearch;
+                return;
+            }
+            if (lastObservedSearchRef.current === nextSearch) {
+                return;
+            }
+            lastObservedSearchRef.current = nextSearch;
+            if (
+                expectedInternalSearchRef.current !== null &&
+                nextSearch === expectedInternalSearchRef.current
+            ) {
+                expectedInternalSearchRef.current = null;
+                return;
+            }
+            applyExternalSearch(nextSearch);
+        },
+        [applyExternalSearch]
+    );
+
+    const markExpectedUrlSearch = useCallback((nextSearch: string) => {
+        const normalizedSearch = nextSearch.replace(/^\?/, "");
+        if (lastObservedSearchRef.current === normalizedSearch) {
+            expectedInternalSearchRef.current = null;
+            return;
+        }
+        expectedInternalSearchRef.current = normalizedSearch;
+    }, []);
+
+    useEffect(() => {
+        if (typeof window === "undefined") {
+            return;
+        }
+        const handlePopState = () => {
+            const nextSearch = window.location.search.replace(/^\?/, "");
+            if (lastObservedSearchRef.current === nextSearch && customOverrides === null && externalUrlFilters === null) {
+                return;
+            }
+            applyExternalSearch(nextSearch);
+        };
+        window.addEventListener("popstate", handlePopState);
+        return () => {
+            window.removeEventListener("popstate", handlePopState);
+        };
+    }, [applyExternalSearch, customOverrides, externalUrlFilters]);
+
+    const activeOverrides = customOverrides ?? urlFilters;
 
     const filters = useMemo<Filters>(
         () => ({ ...baseDefaultFilters, ...activeOverrides }),
@@ -88,7 +198,7 @@ export const FilterProvider: FC<FilterProviderProps> = ({ children, defaultFilte
     const setFilters = useCallback(
         (update: Partial<Filters> | ((prev: Filters) => Partial<Filters>)) => {
             setCustomOverrides((prev) => {
-                const baseOverrides = prev ?? initialUrlFilters;
+                const baseOverrides = prev ?? urlFilters;
                 const currentFilters: Filters = { ...baseDefaultFilters, ...baseOverrides };
                 const updateObj = typeof update === "function" ? update(currentFilters) : update;
 
@@ -119,15 +229,28 @@ export const FilterProvider: FC<FilterProviderProps> = ({ children, defaultFilte
                 return nextOverrides;
             });
         },
-        [baseDefaultFilters, initialUrlFilters]
+        [baseDefaultFilters, urlFilters]
     );
 
     const resetFilters = useCallback(() => {
-        setCustomOverrides({});
+        setCustomOverrides(null);
+        setExternalUrlFilters({});
     }, []);
 
     return (
-        <FilterContext.Provider value={{ filters, setFilters, resetFilters, baseDefaultFilters, isReady }}>
+        <FilterContext.Provider
+            value={{
+                filters,
+                setFilters,
+                resetFilters,
+                markExpectedUrlSearch,
+                baseDefaultFilters,
+                isReady,
+            }}
+        >
+            <Suspense fallback={null}>
+                <FilterUrlSyncObserver onObservedSearchChange={handleObservedSearchChange} />
+            </Suspense>
             {children}
         </FilterContext.Provider>
     );

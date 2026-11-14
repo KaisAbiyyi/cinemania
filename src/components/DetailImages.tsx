@@ -1,5 +1,8 @@
 "use client";
 
+import ErrorState from "@/components/ErrorState";
+import EmptyState from "@/components/EmptyState";
+
 import { FC } from "react";
 import Image from "next/image";
 import Link from "next/link";
@@ -38,10 +41,26 @@ const DetailImages: FC<DetailImagesProps> = ({ id, type, mediaType, className })
 
     // Fetch data based on the type
     const query = type === "media" ? mediaQuery : personQuery;
-    const { data, isLoading, error } = query;
+    const { data, isLoading, error, refetch } = query;
 
-    if (isLoading) return <MediaDetailImagesSkeleton />;
-    if (error || !data) return <p className="text-muted-foreground">Failed to load images.</p>;
+    if (isLoading) {
+        return (
+            <div role="status" aria-label="Loading images">
+                <MediaDetailImagesSkeleton />
+            </div>
+        );
+    }
+    if (error) {
+        return (
+            <ErrorState
+                message={error.message || "Failed to load images."}
+                onRetry={() => void refetch()}
+            />
+        );
+    }
+    if (!data) {
+        return <EmptyState title="No images" message="No images available." />;
+    }
 
     // Select best images based on their appropriate type and orientation
     const selectedImages =

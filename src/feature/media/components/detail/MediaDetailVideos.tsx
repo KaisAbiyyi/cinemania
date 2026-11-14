@@ -1,6 +1,8 @@
 "use client";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import ErrorState from "@/components/ErrorState";
+import EmptyState from "@/components/EmptyState";
+
 import { buttonVariants } from "@/components/ui/button";
 import {
     Dialog,
@@ -25,26 +27,40 @@ interface MediaDetailVideosProps {
 const MediaDetailVideos: FC<MediaDetailVideosProps> = ({ id, mediaType }) => {
     const pathname = usePathname();
 
-    const { data, isLoading, error } = useMediaVideos({
+    const { data, isLoading, error, refetch } = useMediaVideos({
         id,
         mediaType,
     });
 
     if (isLoading) {
-        return <MediaDetailVideosSkeleton />;
+        return (
+            <div role="status" aria-label="Loading videos">
+                <MediaDetailVideosSkeleton />
+            </div>
+        );
     }
 
-    if (error || !data || !data.results.length) {
+    if (error) {
         return (
             <div className="flex flex-col gap-4 md:gap-6 lg:gap-8 xl:gap-10">
                 <div className="flex flex-col gap-2 md:gap-4 lg:gap-8">
-                    <h1 className="text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl">Videos</h1>
+                    <h2 className="text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl">Videos</h2>
                 </div>
-                <Alert>
-                    <AlertDescription>
-                        No videos available.
-                    </AlertDescription>
-                </Alert>
+                <ErrorState
+                    message={error.message || "Failed to load videos."}
+                    onRetry={() => void refetch()}
+                />
+            </div>
+        );
+    }
+
+    if (!data || !data.results.length) {
+        return (
+            <div className="flex flex-col gap-4 md:gap-6 lg:gap-8 xl:gap-10">
+                <div className="flex flex-col gap-2 md:gap-4 lg:gap-8">
+                    <h2 className="text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl">Videos</h2>
+                </div>
+                <EmptyState title="No videos" message="No videos available." />
             </div>
         );
     }
@@ -104,7 +120,7 @@ const MediaDetailVideos: FC<MediaDetailVideosProps> = ({ id, mediaType }) => {
                 ))}
             </div>
             {sortedVideos.length === 0 && (
-                <p className="text-muted-foreground">No videos available.</p>
+                <EmptyState title="No videos" message="No videos available." />
             )}
         </div>
     );

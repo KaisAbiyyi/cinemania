@@ -1,10 +1,14 @@
 // TrendingContainer.tsx
 "use client";
 
+import EmptyState from "@/components/EmptyState";
+import ErrorState from "@/components/ErrorState";
 import { cn } from "@/lib/utils";
-import { FC, useEffect, useRef } from "react";
+import { FC, useMemo } from "react";
+import { useInfiniteScrollObserver } from "../hooks/useInfiniteScrollObserver";
 import { useInfiniteTrending } from "../hooks/useTrending";
 import { useTrendingFilters } from "../hooks/useTrendingFilters";
+import { dedupeInfinitePages } from "../utils/mediaPagination";
 import MediaCard from "./MediaCard";
 import MediaContainerSkeleton from "./skeletons/MediaContainerSkeleton";
 import TrendingLoadMoreSkeleton from "./skeletons/TrendingLoadMoreSkeleton";
@@ -36,74 +40,107 @@ const TrendingContainer: FC = () => {
         data,
         isLoading,
         error,
+        refetch,
         fetchNextPage,
         hasNextPage,
         isFetchingNextPage,
+        isFetchNextPageError,
     } = useInfiniteTrending({
         mediaType,
         timeWindow,
         language: "en-US",
     });
 
-    const loadMoreRef = useRef<HTMLDivElement | null>(null);
+    const loadMoreRef = useInfiniteScrollObserver({
+        hasNextPage,
+        isFetchingNextPage,
+        isFetchNextPageError,
+        pageCount: data?.pages?.length ?? 0,
+        fetchNextPage,
+    });
 
-    useEffect(() => {
-        const observer = new IntersectionObserver(
-            (entries) => {
-                if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage) {
-                    fetchNextPage();
-                }
-            },
-            { threshold: 1 }
+    const items = useMemo(
+        () =>
+            dedupeInfinitePages(
+                data?.pages,
+                (item) => `${resolveTrendingMediaType(item, mediaType)}-${item.id}`
+            ),
+        [data?.pages, mediaType]
+    );
+
+    if (isLoading) {
+        return (
+            <div role="status" aria-label="Loading trending media">
+                <MediaContainerSkeleton orientation={orientation} />
+                <span className="sr-only">Loading trending media...</span>
+            </div>
         );
+    }
 
-        const currentRef = loadMoreRef.current;
-        if (currentRef) observer.observe(currentRef);
+    if (error && !isFetchNextPageError) {
+        return (
+            <ErrorState
+                message={error.message || "Failed to load trending media."}
+                onRetry={() => void refetch()}
+            />
+        );
+    }
 
-        return () => {
-            if (currentRef) observer.unobserve(currentRef);
-        };
-    }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
-
-    if (isLoading) return <MediaContainerSkeleton orientation={orientation} />;
-    if (error) return <h1 className="text-center text-xl text-red-500">Failed to load media.</h1>;
+    if (items.length === 0) {
+        return (
+            <EmptyState
+                title="No trending results"
+                message="No trending titles matched the selected filter combination."
+            />
+        );
+    }
 
     const gridClass = cn("grid gap-4", GRID_CLASSES[orientation]);
 
     return (
-        <section className={gridClass}>
-            {data?.pages.map((page, pageIndex) =>
-                page.results.map((item) => (
-                    <MediaCard
-                        key={`${item.id}-${pageIndex}`}
-                        id={item.id}
-                        mediaType={resolveTrendingMediaType(item, mediaType)}
-                        posterPath={item.poster_path}
-                        rating={item.vote_average}
-                        releaseDate={item.release_date || item.first_air_date}
-                        title={item.title || item.name}
-                        layout={orientation}
-                        description={item.overview}
-                        genre_ids={item.genre_ids}
-                    />
-                ))
-            )}
+        <div className="flex flex-col gap-6">
+            <section className={gridClass}>
+                {items.map((item) => {
+                    const resolvedType = resolveTrendingMediaType(item, mediaType);
+                    return (
+                        <MediaCard
+                            key={`${resolvedType}-${item.id}`}
+                            id={item.id}
+                            mediaType={resolvedType}
+                            posterPath={item.poster_path}
+                            rating={item.vote_average}
+                            releaseDate={item.release_date || item.first_air_date}
+                            title={item.title || item.name}
+                            layout={orientation}
+                            description={item.overview}
+                            genre_ids={item.genre_ids}
+                        />
+                    );
+                })}
 
-            {isFetchingNextPage && (
-                <TrendingLoadMoreSkeleton
-                    orientation={orientation}
-                    itemsPerPage={ITEMS_PER_PAGE}
+                {isFetchingNextPage && (
+                    <TrendingLoadMoreSkeleton
+                        orientation={orientation}
+                        itemsPerPage={ITEMS_PER_PAGE}
+                    />
+                )}
+            </section>
+
+            {isFetchNextPageError && (
+                <ErrorState
+                    message="Failed to load more trending results."
+                    onRetry={() => void fetchNextPage()}
                 />
             )}
 
-            {hasNextPage && (
+            {hasNextPage && !isFetchNextPageError && (
                 <div
                     ref={loadMoreRef}
                     className="h-4 w-full"
                     aria-hidden="true"
                 />
             )}
-        </section>
+        </div>
     );
 };
 

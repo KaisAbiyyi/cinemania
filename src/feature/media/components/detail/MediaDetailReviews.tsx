@@ -1,5 +1,8 @@
 "use client";
 
+import ErrorState from "@/components/ErrorState";
+import EmptyState from "@/components/EmptyState";
+
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -19,7 +22,7 @@ interface MediaDetailReviewsProps {
 const MediaDetailReviews: FC<MediaDetailReviewsProps> = ({ id, mediaType }) => {
     const pathname = usePathname();
 
-    const { data, isLoading, error } = useMediaReviews({
+    const { data, isLoading, error, refetch } = useMediaReviews({
         id,
         mediaType,
         language: "en-US",
@@ -32,11 +35,24 @@ const MediaDetailReviews: FC<MediaDetailReviewsProps> = ({ id, mediaType }) => {
     }, [data]);
 
     if (isLoading) {
-        return <MediaDetailReviewsSkeleton />;
+        return (
+            <div role="status" aria-label="Loading reviews">
+                <MediaDetailReviewsSkeleton />
+            </div>
+        );
     }
 
-    if (error || !data) {
-        return <p className="text-muted-foreground">No reviews available.</p>;
+    if (error) {
+        return (
+            <ErrorState
+                message={error.message || "Failed to load reviews."}
+                onRetry={() => void refetch()}
+            />
+        );
+    }
+
+    if (!data || !data.results.length) {
+        return <EmptyState title="No reviews" message="No reviews available." />;
     }
 
     return (
