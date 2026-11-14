@@ -1,6 +1,15 @@
 "use client";
 
-import React, { createContext, useContext, useState, useMemo, useSyncExternalStore, ReactNode, FC } from "react";
+import React, {
+    createContext,
+    useCallback,
+    useContext,
+    useState,
+    useMemo,
+    useSyncExternalStore,
+    ReactNode,
+    FC,
+} from "react";
 import { Filters, globalDefaultFilters } from "@/types/filters";
 import {
     DiscoveryDatePreset,
@@ -67,24 +76,55 @@ export const FilterProvider: FC<FilterProviderProps> = ({ children, defaultFilte
         return parseQuery(window.location.search);
     }, [isHydrated]);
 
-    const [customFilters, setCustomFilters] = useState<Filters | null>(null);
+    const [customOverrides, setCustomOverrides] = useState<Partial<Filters> | null>(null);
+
+    const activeOverrides = customOverrides ?? initialUrlFilters;
 
     const filters = useMemo<Filters>(
-        () => customFilters ?? { ...baseDefaultFilters, ...initialUrlFilters },
-        [customFilters, baseDefaultFilters, initialUrlFilters]
+        () => ({ ...baseDefaultFilters, ...activeOverrides }),
+        [baseDefaultFilters, activeOverrides]
     );
 
-    const setFilters = (update: Partial<Filters> | ((prev: Filters) => Partial<Filters>)) => {
-        setCustomFilters((prev) => {
-            const current = prev ?? { ...baseDefaultFilters, ...initialUrlFilters };
-            const updateObj = typeof update === "function" ? update(current) : update;
-            return { ...current, ...updateObj };
-        });
-    };
+    const setFilters = useCallback(
+        (update: Partial<Filters> | ((prev: Filters) => Partial<Filters>)) => {
+            setCustomOverrides((prev) => {
+                const baseOverrides = prev ?? initialUrlFilters;
+                const currentFilters: Filters = { ...baseDefaultFilters, ...baseOverrides };
+                const updateObj = typeof update === "function" ? update(currentFilters) : update;
 
-    const resetFilters = () => {
-        setCustomFilters(null);
-    };
+                const baseKeys = Object.keys(baseDefaultFilters) as (keyof Filters)[];
+                const isFullSnapshot = baseKeys.every((key) => key in updateObj);
+
+                if (!isFullSnapshot) {
+                    return { ...baseOverrides, ...updateObj };
+                }
+
+                const nextOverrides: Partial<Filters> = {};
+                (Object.keys(updateObj) as (keyof Filters)[]).forEach((key) => {
+                    const nextValue = updateObj[key];
+                    const prevValue = currentFilters[key];
+                    const baseValue = baseDefaultFilters[key];
+                    const hadExplicitOverride = Object.prototype.hasOwnProperty.call(baseOverrides, key);
+
+                    if (nextValue !== prevValue) {
+                        const isUnsetNonPreset =
+                            baseValue === undefined && (nextValue === undefined || nextValue === "");
+                        if (!isUnsetNonPreset && nextValue !== baseValue) {
+                            (nextOverrides as Record<string, unknown>)[key] = nextValue;
+                        }
+                    } else if (hadExplicitOverride) {
+                        (nextOverrides as Record<string, unknown>)[key] = baseOverrides[key];
+                    }
+                });
+                return nextOverrides;
+            });
+        },
+        [baseDefaultFilters, initialUrlFilters]
+    );
+
+    const resetFilters = useCallback(() => {
+        setCustomOverrides({});
+    }, []);
 
     return (
         <FilterContext.Provider value={{ filters, setFilters, resetFilters, baseDefaultFilters, isReady }}>
