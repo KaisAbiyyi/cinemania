@@ -4,7 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Pool, type PoolConfig } from "pg";
-import type { Candidate, Room, RoomParticipant, RoundParticipant } from "@/db/schema";
+import type {
+  Candidate,
+  Room,
+  RoomParticipant,
+  RoundParticipant,
+  Vote,
+  VoteType,
+} from "@/db/schema";
 import type { CanonicalRoomDeckFilter } from "@/lib/schemas/roomDeck";
 import { CapabilityAuthError } from "@/lib/server/auth/guestCapability";
 import {
@@ -14,12 +21,14 @@ import {
   normalizeParticipant,
   normalizeRoom,
   normalizeRoundParticipant,
+  normalizeVote,
 } from "./postgresRoomRepository";
 import {
   SqliteRoomRepository,
   normalizeSqliteRoom,
   type CreateRoomOptions,
   type LeaveLobbyResult,
+  type RecordVoteResult,
   type StartLobbyRoundOptions,
   type StartLobbyRoundResult,
   type UpdateDeckFilterResult,
@@ -82,6 +91,25 @@ export interface UpdateRoomDeckFilterSessionOptions {
   beforeCommit?: (updated: UpdateDeckFilterResult) => void | Promise<void>;
 }
 
+export interface RecordVoteSessionOptions {
+  roomId: string;
+  roundId: string | null;
+  participantId: string;
+  candidateId: string;
+  movieId: number;
+  vote: VoteType;
+  operationId?: string | null;
+  verifyLockedSession?: (context: { room: Room; minGeneration: number }) => void;
+  beforeCommit?: (result: RecordVoteSessionResult) => void | Promise<void>;
+}
+
+export interface RecordVoteSessionResult extends RecordVoteResult {
+  participants: RoomParticipant[];
+  roundParticipants: RoundParticipant[];
+  candidates: Candidate[];
+  votes: Vote[];
+}
+
 function assertSyncHookResult(value: unknown, hookName: string): void {
   if (value && typeof (value as PromiseLike<unknown>).then === "function") {
     throw new CapabilityAuthError(
@@ -102,6 +130,7 @@ export interface RoomAuthorityStore {
     options: UpdateRoomDeckFilterSessionOptions
   ): Promise<UpdateDeckFilterResult>;
   startLobbyRoundWithSession(options: StartLobbyRoundSessionOptions): Promise<StartLobbyRoundResult>;
+  recordVoteWithSession(options: RecordVoteSessionOptions): Promise<RecordVoteSessionResult>;
   getConsistentRoomSnapshot(
     roomId: string
   ): Promise<{
@@ -109,6 +138,7 @@ export interface RoomAuthorityStore {
     participants: RoomParticipant[];
     roundParticipants: RoundParticipant[];
     candidates: Candidate[];
+    votes: Vote[];
   } | null>;
   getRoundParticipants(roomId: string, roundId: string): Promise<RoundParticipant[]>;
   getRoomById(roomId: string): Promise<Room | null>;
@@ -148,19 +178,35 @@ const globalForStore = globalThis as typeof globalThis & {
   __cinematchPostgresConnection?: { fingerprint: string; pool: Pool; store: PostgresRoomAuthorityStore };
 };
 
-function loadSqliteMigrations(): string[] {
+function loadSqliteMigrations(): { preColumnSqls: string[]; postColumnSqls: string[] } {
   const baseDir = path.join(process.cwd(), "src", "db", "migrations", "sqlite");
-  return [
-    fs.readFileSync(path.join(baseDir, "001_create_room_schema.sql"), "utf8"),
-    fs.readFileSync(path.join(baseDir, "002_guest_capability_sessions.sql"), "utf8"),
-    fs.readFileSync(path.join(baseDir, "003_round_roster_freeze.sql"), "utf8"),
-  ];
+  return {
+    preColumnSqls: [
+      fs.readFileSync(path.join(baseDir, "001_create_room_schema.sql"), "utf8"),
+      fs.readFileSync(path.join(baseDir, "002_guest_capability_sessions.sql"), "utf8"),
+      fs.readFileSync(path.join(baseDir, "003_round_roster_freeze.sql"), "utf8"),
+    ],
+    postColumnSqls: [
+      fs.readFileSync(path.join(baseDir, "004_vote_operation_idempotency.sql"), "utf8"),
+    ],
+  };
 }
 
 export function applySqliteMigrations(db: DatabaseSync): void {
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA busy_timeout = 5000;");
-  for (const sql of loadSqliteMigrations()) {
+  const { preColumnSqls, postColumnSqls } = loadSqliteMigrations();
+  for (const sql of preColumnSqls) {
+    db.exec(sql);
+  }
+  const voteColumns = db.prepare("PRAGMA table_info(votes);").all() as Array<{ name?: string }>;
+  const hasOperationId = voteColumns.some((col) => col.name === "operation_id");
+  if (!hasOperationId) {
+    db.exec(
+      "ALTER TABLE votes ADD COLUMN operation_id TEXT CHECK (operation_id IS NULL OR LENGTH(TRIM(operation_id)) > 0);"
+    );
+  }
+  for (const sql of postColumnSqls) {
     db.exec(sql);
   }
 }
@@ -408,6 +454,7 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
     participants: RoomParticipant[];
     roundParticipants: RoundParticipant[];
     candidates: Candidate[];
+    votes: Vote[];
   } | null> {
     return this.repo.getConsistentSnapshot(roomId);
   }
@@ -500,6 +547,56 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
             assertSyncHookResult(options.beforeCommit(started), "beforeCommit");
           }
           return started;
+        },
+      }
+    );
+  }
+
+  async recordVoteWithSession(
+    options: RecordVoteSessionOptions
+  ): Promise<RecordVoteSessionResult> {
+    return this.repo.recordVoteInTransaction(
+      options.roomId,
+      options.roundId,
+      options.participantId,
+      options.candidateId,
+      options.movieId,
+      options.vote,
+      {
+        options: { operationId: options.operationId },
+        beforeVoteLocked: (room) => {
+          const row = this.db
+            .prepare(
+              "SELECT min_generation FROM guest_capability_sessions WHERE room_id = ? AND participant_id = ? LIMIT 1;"
+            )
+            .get(room.id, options.participantId) as unknown as
+            | { min_generation: number }
+            | undefined;
+          const minGeneration = row ? Number(row.min_generation) : 1;
+          options.verifyLockedSession?.({ room, minGeneration });
+        },
+        afterVote: (result) => {
+          const participants = this.repo.getParticipantsByRoom(result.room.id);
+          const roundParticipants = result.room.current_round_id
+            ? this.repo.getRoundParticipants(result.room.id, result.room.current_round_id)
+            : [];
+          const candidates = result.room.current_round_id
+            ? this.repo.getCandidatesByRound(result.room.current_round_id, result.room.id)
+            : [];
+          const votes = result.room.current_round_id
+            ? this.repo.getVotesByRound(result.room.current_round_id, result.room.id)
+            : [];
+          const sessionResult: RecordVoteSessionResult = {
+            ...result,
+            participants,
+            roundParticipants,
+            candidates,
+            votes,
+          };
+          if (options.beforeCommit) {
+            assertSyncHookResult(options.beforeCommit(sessionResult), "beforeCommit");
+          }
+          return sessionResult;
         },
       }
     );
@@ -759,6 +856,7 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     participants: RoomParticipant[];
     roundParticipants: RoundParticipant[];
     candidates: Candidate[];
+    votes: Vote[];
   } | null> {
     return this.repo.getConsistentSnapshot(roomId);
   }
@@ -849,6 +947,69 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
         return started;
       },
     });
+  }
+
+  async recordVoteWithSession(
+    options: RecordVoteSessionOptions
+  ): Promise<RecordVoteSessionResult> {
+    return this.repo.recordVoteWithTx(
+      options.roomId,
+      options.roundId,
+      options.participantId,
+      options.candidateId,
+      options.movieId,
+      options.vote,
+      {
+        options: { operationId: options.operationId },
+        beforeVoteLocked: async (client, room) => {
+          const genRes = await client.query(
+            "SELECT min_generation FROM guest_capability_sessions WHERE room_id = $1 AND participant_id = $2 LIMIT 1;",
+            [room.id, options.participantId]
+          );
+          const minGeneration =
+            genRes.rows.length > 0
+              ? Number((genRes.rows[0] as { min_generation: number }).min_generation)
+              : 1;
+          options.verifyLockedSession?.({ room, minGeneration });
+        },
+        afterVote: async (client, result) => {
+          const partRes = await client.query(
+            "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+            [result.room.id]
+          );
+          const frozenRes = result.room.current_round_id
+            ? await client.query(
+                "SELECT * FROM round_participants WHERE room_id = $1 AND round_id = $2 ORDER BY joined_at ASC, participant_id ASC;",
+                [result.room.id, result.room.current_round_id]
+              )
+            : { rows: [] };
+          const candsRes = result.room.current_round_id
+            ? await client.query(
+                "SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2 ORDER BY position ASC;",
+                [result.room.id, result.room.current_round_id]
+              )
+            : { rows: [] };
+          const votesRes = result.room.current_round_id
+            ? await client.query(
+                "SELECT * FROM votes WHERE room_id = $1 AND round_id = $2 ORDER BY created_at ASC;",
+                [result.room.id, result.room.current_round_id]
+              )
+            : { rows: [] };
+
+          const sessionResult: RecordVoteSessionResult = {
+            ...result,
+            participants: partRes.rows.map((row) => normalizeParticipant(row)),
+            roundParticipants: frozenRes.rows.map((row) => normalizeRoundParticipant(row)),
+            candidates: candsRes.rows.map((row) => normalizeCandidate(row)),
+            votes: votesRes.rows.map((row) => normalizeVote(row)),
+          };
+          if (options.beforeCommit) {
+            await options.beforeCommit(sessionResult);
+          }
+          return sessionResult;
+        },
+      }
+    );
   }
 
   async getRoundParticipants(roomId: string, roundId: string): Promise<RoundParticipant[]> {

@@ -34,6 +34,8 @@ import {
   StartLobbyRoundOptions,
   StartLobbyRoundResult,
   UpdateDeckFilterResult,
+  RecordVoteOptions,
+  RecordVoteResult,
   assertValidUniqueRoundCandidates,
   computeCanonicalLobbyFilterJson,
   RoomNotFoundError,
@@ -43,6 +45,13 @@ import {
   RoomCapacityError,
   RoomExpiredError,
 } from "./roomRepository";
+import {
+  evaluateDeckProgression,
+  ImmutableVoteError,
+  normalizeOperationId,
+  OperationConflictError,
+  VoterNotEligibleError,
+} from "./votingEngine";
 
 export function assertValidPgSchema(schema?: string): string | undefined {
   if (!schema) return undefined;
@@ -132,7 +141,7 @@ export function normalizeCandidate(row: Record<string, unknown>): Candidate {
   };
 }
 
-function normalizeVote(row: Record<string, unknown>): Vote {
+export function normalizeVote(row: Record<string, unknown>): Vote {
   return {
     id: String(row.id),
     room_id: String(row.room_id),
@@ -141,6 +150,10 @@ function normalizeVote(row: Record<string, unknown>): Vote {
     candidate_id: String(row.candidate_id),
     movie_id: Number(row.movie_id),
     vote: row.vote as Vote["vote"],
+    operation_id:
+      row.operation_id !== undefined && row.operation_id !== null
+        ? String(row.operation_id)
+        : null,
     created_at: toIso(row.created_at),
   };
 }
@@ -1106,15 +1119,59 @@ export class PostgresRoomRepository {
     });
   }
 
+  private async hasRoundParticipantsTable(client: Queryable): Promise<boolean> {
+    const res = await client.query("SELECT to_regclass('round_participants') IS NOT NULL AS present;");
+    return Boolean((res.rows[0] as { present?: boolean } | undefined)?.present);
+  }
+
+  private async hasVotesOperationIdColumn(client: Queryable): Promise<boolean> {
+    const res = await client.query(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'votes'
+           AND column_name = 'operation_id'
+       ) AS present;`
+    );
+    return Boolean((res.rows[0] as { present?: boolean } | undefined)?.present);
+  }
+
+  private async resolveEligibleVoterIdsWithClient(
+    client: Queryable,
+    roomId: string,
+    roundId: string
+  ): Promise<Set<string>> {
+    if (await this.hasRoundParticipantsTable(client)) {
+      const frozenRes = await client.query(
+        "SELECT participant_id FROM round_participants WHERE room_id = $1 AND round_id = $2;",
+        [roomId, roundId]
+      );
+      if (frozenRes.rows.length > 0) {
+        return new Set(
+          frozenRes.rows.map((row) => String((row as { participant_id: string }).participant_id))
+        );
+      }
+    }
+    const membersRes = await client.query(
+      "SELECT participant_id FROM room_participants WHERE room_id = $1;",
+      [roomId]
+    );
+    return new Set(
+      membersRes.rows.map((row) => String((row as { participant_id: string }).participant_id))
+    );
+  }
+
   /**
-   * Reads room, ordered participant roster, frozen round voters, and ordered deck candidates within a single
-   * REPEATABLE READ READ ONLY snapshot transaction so stateVersion, roster, frozen quorum, and deck agree.
+   * Reads room, ordered participant roster, frozen round voters, ordered deck candidates, and votes within a single
+   * REPEATABLE READ READ ONLY snapshot transaction so stateVersion, roster, frozen quorum, deck, and votes agree.
    */
   async getConsistentSnapshot(roomId: string): Promise<{
     room: Room;
     participants: RoomParticipant[];
     roundParticipants: RoundParticipant[];
     candidates: Candidate[];
+    votes: Vote[];
   } | null> {
     return this.withTransaction(async (client) => {
       const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1 LIMIT 1;", [roomId]);
@@ -1138,11 +1195,18 @@ export class PostgresRoomRepository {
             [roomId, room.current_round_id]
           )
         : { rows: [] };
+      const votesRes = room.current_round_id
+        ? await client.query(
+            "SELECT * FROM votes WHERE room_id = $1 AND round_id = $2 ORDER BY created_at ASC;",
+            [roomId, room.current_round_id]
+          )
+        : { rows: [] };
       return {
         room,
         participants: partRes.rows.map((row) => normalizeParticipant(row)),
         roundParticipants: frozenRes.rows.map((row) => normalizeRoundParticipant(row)),
         candidates: candsRes.rows.map((row) => normalizeCandidate(row)),
+        votes: votesRes.rows.map((row) => normalizeVote(row)),
       };
     }, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;");
   }
@@ -1163,7 +1227,11 @@ export class PostgresRoomRepository {
       const room = roomRes.rows[0];
 
       assertValidTransition(room.status, "ACTIVE", "Starting voting round");
-      validateStartRoundPrerequisites(room.participant_count, candidates.length);
+      const participantsRes = await client.query(
+        "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+        [roomId]
+      );
+      validateStartRoundPrerequisites(participantsRes.rows.length, candidates.length);
 
       // Insert Round
       await client.query(
@@ -1171,7 +1239,20 @@ export class PostgresRoomRepository {
         [roundId, roomId, nowIso]
       );
 
-      // Insert 20 candidates
+      // Freeze voter roster into round_participants when migration 003+ is present
+      if (await this.hasRoundParticipantsTable(client)) {
+        for (const memberRow of participantsRes.rows) {
+          const member = normalizeParticipant(memberRow);
+          await client.query(
+            `INSERT INTO round_participants (room_id, round_id, participant_id, frozen_role, joined_at, frozen_at)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (round_id, participant_id) DO NOTHING;`,
+            [roomId, roundId, member.participant_id, member.role, member.joined_at, nowIso]
+          );
+        }
+      }
+
+      // Insert candidates
       for (let i = 0; i < candidates.length; i++) {
         const c = candidates[i];
         await client.query(
@@ -1227,11 +1308,366 @@ export class PostgresRoomRepository {
     });
   }
 
+  private async recordVoteCoreWithClient(
+    client: Client | PoolClient,
+    roomId: string,
+    roundId: string | null,
+    participantId: string,
+    candidateId: string,
+    movieId: number,
+    vote: VoteType,
+    options?: RecordVoteOptions,
+    beforeVoteLocked?: (client: Client | PoolClient, room: Room) => Promise<void>
+  ): Promise<RecordVoteResult> {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const operationId = normalizeOperationId(options?.operationId, "operationId");
+
+    // Acquire exclusive row lock on the room
+    const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1 FOR UPDATE;", [roomId]);
+    if (roomRes.rows.length === 0) {
+      throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
+    }
+    const room = normalizeRoom(roomRes.rows[0]);
+    if (isRoomRecordExpired(room, now)) {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+
+    if (beforeVoteLocked) {
+      await beforeVoteLocked(client, room);
+    }
+
+    if (room.status === "EXPIRED") {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+    if (room.status === "LOBBY" || !room.current_round_id) {
+      throw new RoomCapacityError(
+        `Cannot record vote: room status is '${room.status}', round has not started.`,
+        "ROOM_NOT_ACTIVE"
+      );
+    }
+    if (roundId !== null && room.current_round_id !== roundId) {
+      throw new RoundNotFoundError(
+        `Round ${roundId} is not the active round for room ${roomId}`
+      );
+    }
+    const targetRoundId = room.current_round_id;
+
+    // 1. Participant must belong to the room
+    const partRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
+      [roomId, participantId]
+    );
+    if (partRes.rows.length === 0) {
+      throw new ParticipantNotFoundError(
+        `Participant ${participantId} is not a member of room ${roomId}`
+      );
+    }
+
+    // 2. Participant must belong to the frozen round voter roster
+    const eligibleVoterIds = await this.resolveEligibleVoterIdsWithClient(
+      client,
+      roomId,
+      targetRoundId
+    );
+    if (!eligibleVoterIds.has(participantId)) {
+      throw new VoterNotEligibleError(
+        `Participant ${participantId} is not in the frozen voter roster for round ${targetRoundId}.`
+      );
+    }
+
+    // 3. Check operationId idempotency & parameter conflict
+    const supportsOperationId = await this.hasVotesOperationIdColumn(client);
+    if (operationId !== null && supportsOperationId) {
+      const existingByOpRes = await client.query(
+        `SELECT * FROM votes
+         WHERE round_id = $1 AND participant_id = $2 AND operation_id = $3
+         LIMIT 1;`,
+        [targetRoundId, participantId, operationId]
+      );
+      if (existingByOpRes.rows.length > 0) {
+        const existingByOp = normalizeVote(existingByOpRes.rows[0]);
+        if (
+          existingByOp.candidate_id !== candidateId ||
+          existingByOp.movie_id !== movieId ||
+          existingByOp.vote !== vote
+        ) {
+          throw new OperationConflictError(
+            `operationId '${operationId}' was already used for different vote parameters.`
+          );
+        }
+
+        const candsRes = await client.query(
+          "SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2 ORDER BY position ASC;",
+          [roomId, targetRoundId]
+        );
+        const votesRes = await client.query(
+          "SELECT * FROM votes WHERE room_id = $1 AND round_id = $2 ORDER BY created_at ASC;",
+          [roomId, targetRoundId]
+        );
+        const progression = evaluateDeckProgression(
+          candsRes.rows.map(normalizeCandidate),
+          votesRes.rows.map(normalizeVote),
+          eligibleVoterIds
+        );
+
+        return {
+          vote: existingByOp,
+          room,
+          isMatched:
+            room.status === "MATCHED" &&
+            existingByOp.movie_id === room.matched_movie_id,
+          isExhausted: room.status === "EXHAUSTED",
+          idempotentReplay: true,
+          progression,
+        };
+      }
+    }
+
+    // 4. Candidate must belong to this room & active round and match movieId
+    const candidateRes = await client.query(
+      "SELECT * FROM candidates WHERE id = $1 AND round_id = $2 AND room_id = $3 AND movie_id = $4;",
+      [candidateId, targetRoundId, roomId, movieId]
+    );
+    if (candidateRes.rows.length === 0) {
+      throw new CandidateNotFoundError(
+        `Candidate ${candidateId} does not match movie ${movieId} in round ${targetRoundId}`
+      );
+    }
+
+    // 5. Check for existing vote for this participant & candidate/movie (strict immutability + duplicate replay)
+    const existingVoteRes = await client.query(
+      `SELECT * FROM votes
+       WHERE round_id = $1 AND participant_id = $2 AND (candidate_id = $3 OR movie_id = $4)
+       LIMIT 1;`,
+      [targetRoundId, participantId, candidateId, movieId]
+    );
+    if (existingVoteRes.rows.length > 0) {
+      const existingVote = normalizeVote(existingVoteRes.rows[0]);
+      if (existingVote.vote !== vote) {
+        throw new ImmutableVoteError(
+          `Participant ${participantId} has already voted ${existingVote.vote} on candidate ${candidateId}.`
+        );
+      }
+
+      const candsRes = await client.query(
+        "SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2 ORDER BY position ASC;",
+        [roomId, targetRoundId]
+      );
+      const votesRes = await client.query(
+        "SELECT * FROM votes WHERE room_id = $1 AND round_id = $2 ORDER BY created_at ASC;",
+        [roomId, targetRoundId]
+      );
+      const progression = evaluateDeckProgression(
+        candsRes.rows.map(normalizeCandidate),
+        votesRes.rows.map(normalizeVote),
+        eligibleVoterIds
+      );
+
+      return {
+        vote: existingVote,
+        room,
+        isMatched:
+          room.status === "MATCHED" &&
+          existingVote.movie_id === room.matched_movie_id,
+        isExhausted: room.status === "EXHAUSTED",
+        idempotentReplay: true,
+        progression,
+      };
+    }
+
+    // 6. Reject fresh votes once room reached terminal state or non-ACTIVE state
+    if (room.status === "MATCHED") {
+      throw new RoomCapacityError(
+        `Cannot record vote: room is already MATCHED on movie ${room.matched_movie_id}.`,
+        "ROOM_ALREADY_MATCHED"
+      );
+    }
+    if (room.status === "EXHAUSTED") {
+      throw new RoomCapacityError(
+        "Cannot record vote: round deck is already EXHAUSTED.",
+        "ROOM_ALREADY_EXHAUSTED"
+      );
+    }
+    if (room.status !== "ACTIVE") {
+      throw new RoomCapacityError(
+        `Cannot record vote: room status is '${room.status}', but must be 'ACTIVE'.`,
+        "ROOM_NOT_ACTIVE"
+      );
+    }
+
+    // 7. Insert immutable vote (with savepoint defense-in-depth)
+    const voteId = crypto.randomUUID();
+    let recordedVote: Vote;
+    await client.query("SAVEPOINT sp_insert_vote;");
+    try {
+      const voteInsertRes = supportsOperationId
+        ? await client.query(
+            `INSERT INTO votes (id, room_id, round_id, participant_id, candidate_id, movie_id, vote, operation_id, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             RETURNING *;`,
+            [
+              voteId,
+              roomId,
+              targetRoundId,
+              participantId,
+              candidateId,
+              movieId,
+              vote,
+              operationId,
+              nowIso,
+            ]
+          )
+        : await client.query(
+            `INSERT INTO votes (id, room_id, round_id, participant_id, candidate_id, movie_id, vote, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             RETURNING *;`,
+            [voteId, roomId, targetRoundId, participantId, candidateId, movieId, vote, nowIso]
+          );
+      recordedVote = normalizeVote(voteInsertRes.rows[0]);
+      await client.query("RELEASE SAVEPOINT sp_insert_vote;");
+    } catch (insertErr: unknown) {
+      await client.query("ROLLBACK TO SAVEPOINT sp_insert_vote;");
+      await client.query("RELEASE SAVEPOINT sp_insert_vote;");
+      const pgCode =
+        typeof insertErr === "object" && insertErr !== null && "code" in insertErr
+          ? String((insertErr as { code?: unknown }).code)
+          : "";
+      if (pgCode === "23514" && String(insertErr).includes("VOTE_IMMUTABLE")) {
+        throw new ImmutableVoteError();
+      }
+      throw insertErr;
+    }
+
+    const candsRes = await client.query(
+      "SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2 ORDER BY position ASC;",
+      [roomId, targetRoundId]
+    );
+    const votesRes = await client.query(
+      "SELECT * FROM votes WHERE room_id = $1 AND round_id = $2 ORDER BY created_at ASC;",
+      [roomId, targetRoundId]
+    );
+    const allCandidates = candsRes.rows.map(normalizeCandidate);
+    const allVotes = votesRes.rows.map(normalizeVote);
+    const progression = evaluateDeckProgression(allCandidates, allVotes, eligibleVoterIds);
+
+    const nextVersion = room.state_version + 1;
+    const newExpiresAt = new Date(
+      now.getTime() + room.inactivity_ttl_seconds * 1000
+    ).toISOString();
+
+    if (progression.nextStatus === "MATCHED" && progression.matchedMovieId !== null) {
+      assertValidTransition(room.status, "MATCHED", "Unanimous consensus achieved");
+
+      const updatedRoomRes = await client.query(
+        `UPDATE rooms
+         SET status = 'MATCHED', matched_movie_id = $1, state_version = $2,
+             last_activity_at = $3, expires_at = $4, updated_at = $3
+         WHERE id = $5
+         RETURNING *;`,
+        [progression.matchedMovieId, nextVersion, nowIso, newExpiresAt, roomId]
+      );
+
+      await client.query(
+        `UPDATE rounds SET status = 'COMPLETED', completed_at = $1 WHERE id = $2 AND status = 'ACTIVE';`,
+        [nowIso, targetRoundId]
+      );
+
+      await client.query(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES ($1, $2, 'MATCH_ANNOUNCED', $3, false, 0, false, $4);`,
+        [
+          roomId,
+          nextVersion,
+          JSON.stringify({
+            movieId: progression.matchedMovieId,
+            candidateId: progression.matchedCandidate?.id ?? candidateId,
+            roundId: targetRoundId,
+            unanimousCount: eligibleVoterIds.size,
+          }),
+          nowIso,
+        ]
+      );
+
+      return {
+        vote: recordedVote,
+        room: normalizeRoom(updatedRoomRes.rows[0]),
+        isMatched: true,
+        isExhausted: false,
+        idempotentReplay: false,
+        progression,
+      };
+    }
+
+    if (progression.nextStatus === "EXHAUSTED") {
+      assertValidTransition(room.status, "EXHAUSTED", "All candidates voted without match");
+
+      const updatedRoomRes = await client.query(
+        `UPDATE rooms
+         SET status = 'EXHAUSTED', state_version = $1, last_activity_at = $2, expires_at = $3, updated_at = $2
+         WHERE id = $4
+         RETURNING *;`,
+        [nextVersion, nowIso, newExpiresAt, roomId]
+      );
+
+      await client.query(
+        `UPDATE rounds SET status = 'COMPLETED', completed_at = $1 WHERE id = $2 AND status = 'ACTIVE';`,
+        [nowIso, targetRoundId]
+      );
+
+      await client.query(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES ($1, $2, 'DECK_EXHAUSTED', $3, false, 0, false, $4);`,
+        [
+          roomId,
+          nextVersion,
+          JSON.stringify({
+            roundId: targetRoundId,
+            totalVotes: allVotes.length,
+            deckSize: allCandidates.length,
+          }),
+          nowIso,
+        ]
+      );
+
+      return {
+        vote: recordedVote,
+        room: normalizeRoom(updatedRoomRes.rows[0]),
+        isMatched: false,
+        isExhausted: true,
+        idempotentReplay: false,
+        progression,
+      };
+    }
+
+    // Normal progression: strict vote confidentiality in public outbox broadcast (only participantId)
+    const updatedRoomRes = await client.query(
+      `UPDATE rooms
+       SET state_version = $1, last_activity_at = $2, expires_at = $3, updated_at = $2
+       WHERE id = $4
+       RETURNING *;`,
+      [nextVersion, nowIso, newExpiresAt, roomId]
+    );
+
+    await client.query(
+      `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+       VALUES ($1, $2, 'VOTE_RECORDED', $3, false, 0, false, $4);`,
+      [roomId, nextVersion, JSON.stringify({ participantId }), nowIso]
+    );
+
+    return {
+      vote: recordedVote,
+      room: normalizeRoom(updatedRoomRes.rows[0]),
+      isMatched: false,
+      isExhausted: false,
+      idempotentReplay: false,
+      progression,
+    };
+  }
+
   /**
-   * Records a vote for a candidate in an active round.
+   * Records a vote for a candidate in an active round against frozen round_participants.
    * Enforces referential integrity and strict serial consistency under exclusive room lock (SELECT ... FOR UPDATE).
-   * Idempotent: returns existing vote if already recorded.
-   * If room is already MATCHED, returns existing matching vote or throws RoomCapacityError.
    */
   async recordVote(
     roomId: string,
@@ -1239,213 +1675,49 @@ export class PostgresRoomRepository {
     participantId: string,
     candidateId: string,
     movieId: number,
-    vote: VoteType
-  ): Promise<{ vote: Vote; room: Room; isMatched: boolean }> {
+    vote: VoteType,
+    options?: RecordVoteOptions
+  ): Promise<RecordVoteResult> {
+    return this.withTransaction((client) =>
+      this.recordVoteCoreWithClient(
+        client,
+        roomId,
+        roundId,
+        participantId,
+        candidateId,
+        movieId,
+        vote,
+        options
+      )
+    );
+  }
+
+  async recordVoteWithTx<T>(
+    roomId: string,
+    roundId: string | null,
+    participantId: string,
+    candidateId: string,
+    movieId: number,
+    vote: VoteType,
+    callbacks: {
+      options?: RecordVoteOptions;
+      beforeVoteLocked?: (client: Client | PoolClient, room: Room) => Promise<void>;
+      afterVote: (client: Client | PoolClient, result: RecordVoteResult) => Promise<T>;
+    }
+  ): Promise<T> {
     return this.withTransaction(async (client) => {
-      const voteId = crypto.randomUUID();
-      const now = new Date();
-      const nowIso = now.toISOString();
-
-      // Acquire exclusive row lock on the room
-      const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1 FOR UPDATE;", [roomId]);
-      if (roomRes.rows.length === 0) {
-        throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
-      }
-      const room = roomRes.rows[0];
-
-      // If room is already MATCHED, check if this vote was already recorded
-      if (room.status === "MATCHED") {
-        const existingVoteRes = await client.query(
-          "SELECT * FROM votes WHERE round_id = $1 AND participant_id = $2 AND (candidate_id = $3 OR movie_id = $4);",
-          [roundId, participantId, candidateId, movieId]
-        );
-        if (existingVoteRes.rows.length > 0) {
-          return {
-            vote: normalizeVote(existingVoteRes.rows[0]),
-            room: normalizeRoom(room),
-            isMatched: true,
-          };
-        }
-        throw new RoomCapacityError(
-          `Cannot record vote: room is already MATCHED on movie ${room.matched_movie_id}.`
-        );
-      }
-
-      if (room.status !== "ACTIVE") {
-        throw new RoomCapacityError(
-          `Cannot record vote: room status is '${room.status}', but must be 'ACTIVE'.`
-        );
-      }
-
-      // Referential integrity verification under room lock
-      // 1. Participant must belong to the room
-      const partRes = await client.query(
-        "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
-        [roomId, participantId]
+      const result = await this.recordVoteCoreWithClient(
+        client,
+        roomId,
+        roundId,
+        participantId,
+        candidateId,
+        movieId,
+        vote,
+        callbacks.options,
+        callbacks.beforeVoteLocked
       );
-      if (partRes.rows.length === 0) {
-        throw new ParticipantNotFoundError(
-          `Participant ${participantId} is not a member of room ${roomId}`
-        );
-      }
-
-      // 2. Round must belong to room and match active round
-      if (room.current_round_id !== roundId) {
-        throw new RoundNotFoundError(
-          `Round ${roundId} is not the active round for room ${roomId}`
-        );
-      }
-
-      // 3. Candidate must belong to this round and room, and match movieId
-      const candidateRes = await client.query(
-        "SELECT * FROM candidates WHERE id = $1 AND round_id = $2 AND room_id = $3 AND movie_id = $4;",
-        [candidateId, roundId, roomId, movieId]
-      );
-      if (candidateRes.rows.length === 0) {
-        throw new CandidateNotFoundError(
-          `Candidate ${candidateId} does not match movie ${movieId} in round ${roundId}`
-        );
-      }
-
-      // 4. Check for duplicate vote (idempotency)
-      const existingVoteRes = await client.query(
-        "SELECT * FROM votes WHERE round_id = $1 AND participant_id = $2 AND (candidate_id = $3 OR movie_id = $4);",
-        [roundId, participantId, candidateId, movieId]
-      );
-      if (existingVoteRes.rows.length > 0) {
-        return {
-          vote: normalizeVote(existingVoteRes.rows[0]),
-          room: normalizeRoom(room),
-          isMatched: false,
-        };
-      }
-
-      // 5. Insert vote
-      const voteInsertRes = await client.query(
-        `INSERT INTO votes (id, room_id, round_id, participant_id, candidate_id, movie_id, vote, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING *;`,
-        [voteId, roomId, roundId, participantId, candidateId, movieId, vote, nowIso]
-      );
-      const recordedVote = voteInsertRes.rows[0];
-
-      const nextVersion = room.state_version + 1;
-      const newExpiresAt = new Date(now.getTime() + room.inactivity_ttl_seconds * 1000).toISOString();
-
-      if (vote === "LIKE") {
-        const likeCountRes = await client.query(
-          "SELECT COUNT(*)::int as count FROM votes WHERE round_id = $1 AND movie_id = $2 AND vote = 'LIKE';",
-          [roundId, movieId]
-        );
-        const likeCount = Number(likeCountRes.rows[0].count);
-
-        if (likeCount === room.participant_count) {
-          assertValidTransition(room.status, "MATCHED", "Unanimous consensus achieved");
-
-          const updatedRoomRes = await client.query(
-            `UPDATE rooms
-             SET status = 'MATCHED', matched_movie_id = $1, state_version = $2,
-                 last_activity_at = $3, expires_at = $4, updated_at = $3
-             WHERE id = $5
-             RETURNING *;`,
-            [movieId, nextVersion, nowIso, newExpiresAt, roomId]
-          );
-
-          await client.query(
-            `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-             VALUES ($1, $2, 'MATCH_ANNOUNCED', $3, false, 0, false, $4);`,
-            [
-              roomId,
-              nextVersion,
-              JSON.stringify({ movieId, unanimousCount: room.participant_count }),
-              nowIso,
-            ]
-          );
-
-          return {
-            vote: normalizeVote(recordedVote),
-            room: normalizeRoom(updatedRoomRes.rows[0]),
-            isMatched: true,
-          };
-        } else {
-          const updatedRoomRes = await client.query(
-            `UPDATE rooms
-             SET state_version = $1, last_activity_at = $2, expires_at = $3, updated_at = $2
-             WHERE id = $4
-             RETURNING *;`,
-            [nextVersion, nowIso, newExpiresAt, roomId]
-          );
-
-          await client.query(
-            `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-             VALUES ($1, $2, 'VOTE_RECORDED', $3, false, 0, false, $4);`,
-            [roomId, nextVersion, JSON.stringify({ participantId }), nowIso]
-          );
-
-          return {
-            vote: normalizeVote(recordedVote),
-            room: normalizeRoom(updatedRoomRes.rows[0]),
-            isMatched: false,
-          };
-        }
-      } else {
-        // SKIP vote: check if all candidates have been voted by all members
-        const totalVotesRes = await client.query(
-          "SELECT COUNT(*)::int as count FROM votes WHERE round_id = $1;",
-          [roundId]
-        );
-        const candCountRes = await client.query(
-          "SELECT COUNT(*)::int as count FROM candidates WHERE room_id = $1 AND round_id = $2;",
-          [roomId, roundId]
-        );
-        const totalVotes = Number(totalVotesRes.rows[0].count);
-        const deckCount = Number(candCountRes.rows[0]?.count ?? 0) || DECK_SIZE;
-        const maxVotes = room.participant_count * deckCount;
-
-        if (totalVotes >= maxVotes) {
-          assertValidTransition(room.status, "EXHAUSTED", "All candidates voted without match");
-
-          const updatedRoomRes = await client.query(
-            `UPDATE rooms
-             SET status = 'EXHAUSTED', state_version = $1, last_activity_at = $2, expires_at = $3, updated_at = $2
-             WHERE id = $4
-             RETURNING *;`,
-            [nextVersion, nowIso, newExpiresAt, roomId]
-          );
-
-          await client.query(
-            `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-             VALUES ($1, $2, 'DECK_EXHAUSTED', $3, false, 0, false, $4);`,
-            [roomId, nextVersion, JSON.stringify({ roundId, totalVotes }), nowIso]
-          );
-
-          return {
-            vote: normalizeVote(recordedVote),
-            room: normalizeRoom(updatedRoomRes.rows[0]),
-            isMatched: false,
-          };
-        } else {
-          const updatedRoomRes = await client.query(
-            `UPDATE rooms
-             SET state_version = $1, last_activity_at = $2, expires_at = $3, updated_at = $2
-             WHERE id = $4
-             RETURNING *;`,
-            [nextVersion, nowIso, newExpiresAt, roomId]
-          );
-
-          await client.query(
-            `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-             VALUES ($1, $2, 'VOTE_RECORDED', $3, false, 0, false, $4);`,
-            [roomId, nextVersion, JSON.stringify({ participantId }), nowIso]
-          );
-
-          return {
-            vote: normalizeVote(recordedVote),
-            room: normalizeRoom(updatedRoomRes.rows[0]),
-            isMatched: false,
-          };
-        }
-      }
+      return callbacks.afterVote(client, result);
     });
   }
 
