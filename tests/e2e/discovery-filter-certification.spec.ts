@@ -352,30 +352,36 @@ test.describe("CINE-010: Discovery, filter, pagination & error certification", (
     });
 
     await page.goto("/movie");
-    await expect(page.getByRole("status")).toContainText("No results found");
+    await expect(page.getByRole("status").filter({ hasText: "No results found" })).toBeVisible();
     await expect(page.locator("article")).toHaveCount(0);
 
     await page.goto("/trending");
-    await expect(page.getByRole("status")).toContainText("No trending results");
+    await expect(page.getByRole("status").filter({ hasText: "No trending results" })).toBeVisible();
 
     await page.goto("/genre/28-action/movie");
-    await expect(page.getByRole("status")).toContainText("No movies were found for this genre");
+    await expect(
+      page.getByRole("status").filter({ hasText: "No movies were found for this genre" })
+    ).toBeVisible();
 
     await page.goto("/keyword/123-dream/movie");
-    await expect(page.getByRole("status")).toContainText("No movies were found for this keyword");
+    await expect(
+      page.getByRole("status").filter({ hasText: "No movies were found for this keyword" })
+    ).toBeVisible();
 
     // Empty /search route with no query should show accessible empty state, not error
     await page.goto("/search");
-    await expect(page.getByRole("status")).toContainText("Search Cinemania");
+    await expect(page.getByRole("status").filter({ hasText: "Search Cinemania" })).toBeVisible();
 
     // /search with 0 results
     await page.goto("/search?q=nonexistenttitle999");
     await expect(page.getByRole("tab", { name: /Movies \(0\)/i })).toBeVisible();
-    await expect(page.getByRole("status")).toContainText('No movies matched "nonexistenttitle999"');
+    await expect(
+      page.getByRole("status").filter({ hasText: 'No movies matched "nonexistenttitle999"' })
+    ).toBeVisible();
 
     // Detail subview /cast empty
     await page.goto("/movie/27205-inception/cast");
-    await expect(page.getByRole("status")).toContainText("No cast or crew");
+    await expect(page.getByRole("status").filter({ hasText: "No cast or crew" })).toBeVisible();
   });
 
   test("handles 429 and timeout failures gracefully with accessible retry recovery without full reload", async ({ page }) => {
