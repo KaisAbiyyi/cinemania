@@ -1,5 +1,7 @@
 "use client";
 
+import ErrorState from "@/components/ErrorState";
+
 import { buttonVariants } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { ChevronRight } from "lucide-react";
@@ -11,7 +13,7 @@ import { useMediaAggregateCredits } from "../../hooks/useMediaAggregateCredits";
 import CastCard from "../cast/CastCard";
 import { MovieDetail, TVDetail } from "@/types/media";
 import MediaCastCrewSkeleton from "../skeletons/MediaCastCrewSkeleton";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import EmptyState from "@/components/EmptyState";
 
 type MediaDetailCastCrewProps =
     | {
@@ -37,14 +39,32 @@ const MediaDetailCastCrew: FC<MediaDetailCastCrewProps> = ({ data, mediaType, me
     const topWriters = writers.slice(0, 3);
 
     // Gunakan hook untuk TV aggregate credits hanya jika mediaType adalah "tv"
-    const { data: aggregateCredits, isLoading } = useMediaAggregateCredits({ id: mediaData.id, enabled: !isMovie });
+    const {
+        data: aggregateCredits,
+        isLoading,
+        error: aggregateError,
+        refetch: refetchAggregate,
+    } = useMediaAggregateCredits({ id: mediaData.id, enabled: !isMovie });
 
     // Tentukan sumber data cast
     const cast = isMovie ? data.cast : aggregateCredits?.cast || [];
 
     // Tampilkan skeleton loading jika sedang memuat data
     if (!isMovie && isLoading) {
-        return <MediaCastCrewSkeleton />;
+        return (
+            <div role="status" aria-label="Loading cast">
+                <MediaCastCrewSkeleton />
+            </div>
+        );
+    }
+
+    if (!isMovie && aggregateError) {
+        return (
+            <ErrorState
+                message={aggregateError.message || "Failed to load cast."}
+                onRetry={() => void refetchAggregate()}
+            />
+        );
     }
 
     return (
@@ -88,9 +108,10 @@ const MediaDetailCastCrew: FC<MediaDetailCastCrewProps> = ({ data, mediaType, me
                         </div>
                     </>
                     :
-                    <Alert>
-                        <AlertDescription>We don&apos;t have any cast added tot his movie yet.</AlertDescription>
-                    </Alert>
+                    <EmptyState
+                        title="No cast available"
+                        message="We don't have any cast added to this title yet."
+                    />
                 }
             </div>
         </div>

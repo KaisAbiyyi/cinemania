@@ -1,6 +1,7 @@
 "use client"
 
 import ErrorState from "@/components/ErrorState";
+import EmptyState from "@/components/EmptyState";
 import ImagesCard from "@/feature/media/components/images/ImageCard";
 import { cn } from "@/lib/utils";
 import { FC } from "react";
@@ -12,16 +13,28 @@ interface PersonImageWrapperProps {
 }
 
 const PersonImageWrapper: FC<PersonImageWrapperProps> = ({ id }) => {
-    const { data, isLoading, error } = usePersonImages({ id });
+    const { data, isLoading, error, refetch } = usePersonImages({ id });
 
     if (isLoading) {
-        return <PersonImageWrapperSkeleton />;
+        return (
+            <div role="status" aria-label="Loading person images">
+                <PersonImageWrapperSkeleton />
+            </div>
+        );
     }
-    if (error || !data) {
+    if (error) {
         return (
             <ErrorState
-                message={error?.message || "There was an error loading the data."}
-                onRetry={() => window.location.reload()}
+                message={error.message || "There was an error loading the data."}
+                onRetry={() => void refetch()}
+            />
+        );
+    }
+    if (!data || data.profiles.length === 0) {
+        return (
+            <EmptyState
+                title="No images"
+                message="No profile images available."
             />
         );
     }

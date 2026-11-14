@@ -1,7 +1,11 @@
 "use client"
 
-import { FC, Suspense, useEffect, useRef } from "react";
+import EmptyState from "@/components/EmptyState";
+import ErrorState from "@/components/ErrorState";
+import { FC, Suspense, useMemo } from "react";
 import { useInfiniteMedia } from "../../hooks/useMedia";
+import { useInfiniteScrollObserver } from "../../hooks/useInfiniteScrollObserver";
+import { dedupeInfinitePages } from "../../utils/mediaPagination";
 import MediaCard from "../../components/MediaCard";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useSearchParams, useRouter } from "next/navigation";
@@ -26,40 +30,42 @@ const MediaByGenreInner: FC<MediaByGenreProps> = ({ id, mediaType }) => {
     const router = useRouter();
 
     // Get initial sort value from URL or default to the first option
-    const sortBy = searchParams.get("sort_by") || SORT_OPTIONS[0].value;
+    const sortBy = searchParams?.get("sort_by") || SORT_OPTIONS[0].value;
 
-    const { data, isLoading, error, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteMedia({ mediaType, with_genres: id, sort_by: sortBy });
-    const loadMoreRef = useRef<HTMLDivElement | null>(null);
+    const {
+        data,
+        isLoading,
+        error,
+        refetch,
+        fetchNextPage,
+        hasNextPage,
+        isFetchingNextPage,
+        isFetchNextPageError,
+    } = useInfiniteMedia({ mediaType, with_genres: id, sort_by: sortBy });
+
+    const loadMoreRef = useInfiniteScrollObserver({
+        hasNextPage,
+        isFetchingNextPage,
+        isFetchNextPageError,
+        pageCount: data?.pages?.length ?? 0,
+        fetchNextPage,
+    });
+
+    const items = useMemo(
+        () => dedupeInfinitePages(data?.pages, (item) => item.id),
+        [data?.pages]
+    );
 
     const handleSortChange = (value: string) => {
-        const params = new URLSearchParams(searchParams.toString());
+        const params = new URLSearchParams(searchParams?.toString() ?? "");
         params.set("sort_by", value);
         router.push(`?${params.toString()}`);
     };
 
-    useEffect(() => {
-        const observer = new IntersectionObserver(
-            (entries) => {
-                if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage) {
-                    fetchNextPage();
-                }
-            },
-            { threshold: 0.1, rootMargin: "100px" }
-        );
-
-        const current = loadMoreRef.current;
-        if (current) observer.observe(current);
-
-        return () => {
-            if (current) observer.unobserve(current);
-            observer.disconnect();
-        };
-    }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
-
     return (
         <div className="flex flex-col gap-6">
             <Select value={sortBy} onValueChange={handleSortChange}>
-                <SelectTrigger className="w-48">
+                <SelectTrigger aria-label="Sort genre results" className="w-48">
                     <SelectValue placeholder="Sort By" />
                 </SelectTrigger>
                 <SelectContent>
@@ -71,31 +77,52 @@ const MediaByGenreInner: FC<MediaByGenreProps> = ({ id, mediaType }) => {
                 </SelectContent>
             </Select>
             {isLoading ? (
-                <MediaByGenreSkeleton />
-            ) : error || !data ? (
-                <p>There was an error retrieving the data</p>
+                <div role="status" aria-label="Loading genre media">
+                    <MediaByGenreSkeleton />
+                    <span className="sr-only">Loading genre media...</span>
+                </div>
+            ) : (error && !isFetchNextPageError) || !data ? (
+                <ErrorState
+                    message={error?.message || "Failed to load genre results."}
+                    onRetry={() => void refetch()}
+                />
+            ) : items.length === 0 ? (
+                <EmptyState
+                    title="No titles found"
+                    message={`No ${mediaType === "movie" ? "movies" : "TV shows"} were found for this genre.`}
+                />
             ) : (
                 <>
-                    {data.pages.map((page, pageIndex) => (
-                        <div key={pageIndex} className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                            {page.results.map((media) => (
-                                <MediaCard
-                                    key={media.id}
-                                    id={media.id}
-                                    description={media.overview}
-                                    title={media.title || media.name}
-                                    posterPath={media.poster_path}
-                                    releaseDate={media.release_date || media.first_air_date}
-                                    rating={media.vote_average}
-                                    mediaType={mediaType}
-                                    genre_ids={media.genre_ids}
-                                    layout="vertical"
-                                />
-                            ))}
-                        </div>
-                    ))}
-                    {isFetchingNextPage && <p className="text-center">Loading more...</p>}
-                    {hasNextPage && <div ref={loadMoreRef} className="w-full h-4" aria-hidden="true" />}
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                        {items.map((media) => (
+                            <MediaCard
+                                key={media.id}
+                                id={media.id}
+                                description={media.overview}
+                                title={media.title || media.name}
+                                posterPath={media.poster_path}
+                                releaseDate={media.release_date || media.first_air_date}
+                                rating={media.vote_average}
+                                mediaType={mediaType}
+                                genre_ids={media.genre_ids}
+                                layout="vertical"
+                            />
+                        ))}
+                    </div>
+                    {isFetchingNextPage && (
+                        <p role="status" className="text-center text-sm text-muted-foreground">
+                            Loading more...
+                        </p>
+                    )}
+                    {isFetchNextPageError && (
+                        <ErrorState
+                            message="Failed to load more results."
+                            onRetry={() => void fetchNextPage()}
+                        />
+                    )}
+                    {hasNextPage && !isFetchNextPageError && (
+                        <div ref={loadMoreRef} className="w-full h-4" aria-hidden="true" />
+                    )}
                 </>
             )}
         </div>

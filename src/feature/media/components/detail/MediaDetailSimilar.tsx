@@ -2,7 +2,8 @@ import { FC } from "react";
 import { useMediaSimilar } from "../../hooks/useMediaSimilar";
 import MediaCard from "../MediaCard";
 import MediaDetailSimilarSkeleton from "../skeletons/MediaDetailSimilarSkeleton";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import EmptyState from "@/components/EmptyState";
+import ErrorState from "@/components/ErrorState";
 
 interface MediaDetailSimilarProps {
     id: number
@@ -14,10 +15,27 @@ const MediaDetailSimilar: FC<MediaDetailSimilarProps> = ({ id, mediaType }) => {
         data: similarData,
         isLoading: similarLoading,
         error: similarError,
+        refetch,
     } = useMediaSimilar({ id, mediaType });
 
-    if (similarLoading) return <MediaDetailSimilarSkeleton />;
-    if (similarError || !similarData) return <div>Error fetching similar media</div>;
+    if (similarLoading) {
+        return (
+            <div role="status" aria-label="Loading similar titles">
+                <MediaDetailSimilarSkeleton />
+            </div>
+        );
+    }
+    if (similarError) {
+        return (
+            <ErrorState
+                message={similarError.message || "Failed to load similar titles."}
+                onRetry={() => void refetch()}
+            />
+        );
+    }
+    if (!similarData) {
+        return <EmptyState title="No similar titles" message="No similar titles available." />;
+    }
 
     return (
         <div className="flex flex-col gap-4 md:gap-6 lg:gap-8 xl:gap-10">
@@ -26,27 +44,29 @@ const MediaDetailSimilar: FC<MediaDetailSimilarProps> = ({ id, mediaType }) => {
                     <h1 className="text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl">Similar</h1>
                 </div>
             </div>
-            <div className="flex flex-row gap-4 pb-6 overflow-x-auto">
-                {similarData.results.map((media) => (
-                    <div key={media.id} className="flex-shrink-0 md:w-40 lg:w-52">
-                        {/* Use the MediaCard component to display each media item */}
-                        <MediaCard
-                            id={media.id}
-                            posterPath={media.poster_path}
-                            rating={media.vote_average}
-                            title={media.title || media.name}
-                            releaseDate={media.release_date || media.first_air_date}
-                            description={media.overview}
-                            genre_ids={media.genre_ids}
-                            layout="horizontal"
-                            mediaType={mediaType} />
-                    </div>
-                ))}
-            </div>
-            {similarData.results.length === 0 && (
-                <Alert className="-mt-20">
-                    <AlertDescription>No similar media available.</AlertDescription>
-                </Alert>
+            {similarData.results.length === 0 ? (
+                <EmptyState
+                    title="No similar media"
+                    message="No similar media available."
+                />
+            ) : (
+                <div className="flex flex-row gap-4 pb-6 overflow-x-auto">
+                    {similarData.results.map((media) => (
+                        <div key={media.id} className="flex-shrink-0 md:w-40 lg:w-52">
+                            {/* Use the MediaCard component to display each media item */}
+                            <MediaCard
+                                id={media.id}
+                                posterPath={media.poster_path}
+                                rating={media.vote_average}
+                                title={media.title || media.name}
+                                releaseDate={media.release_date || media.first_air_date}
+                                description={media.overview}
+                                genre_ids={media.genre_ids}
+                                layout="horizontal"
+                                mediaType={mediaType} />
+                        </div>
+                    ))}
+                </div>
             )}
         </div>
     );

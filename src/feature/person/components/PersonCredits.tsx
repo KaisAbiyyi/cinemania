@@ -1,3 +1,4 @@
+import EmptyState from '@/components/EmptyState';
 import MediaCastCard from '@/feature/media/components/MediaCastCard';
 import { FC } from 'react';
 import { PersonCombinedCredits } from '../hooks/usePersonCombinedCredits';
@@ -19,6 +20,10 @@ const PersonCredits: FC<Props> = ({ data }) => {
         return dateB.getTime() - dateA.getTime(); // Sort descending
     });
 
+    if (cast.length === 0 && crew.length === 0) {
+        return <EmptyState title="No credits" message="No acting or crew credits available." />;
+    }
+
     const upcomingCast = cast.filter(
         (item) => !item.release_date && !item.first_air_date
     );
@@ -39,6 +44,11 @@ const PersonCredits: FC<Props> = ({ data }) => {
             <h1 className='text-lg font-bold md:text-xl lg:text-2xl xl:text-3xl'>Credits</h1>
             <div className="flex flex-col gap-1 md:gap-3 lg:gap-5">
                 <h2 className='text-base font-semibold md:text-lg lg:text-xl xl:text-2xl'>Acting</h2>
+                {cast.length === 0 ? (
+                    <p className="text-muted-foreground" role="status">
+                        No acting credits available.
+                    </p>
+                ) : (
                 <div className="flex flex-col gap-1 md:gap-2 lg:gap-3">
                     {upcomingCast.map((item, index) => (
                         <MediaCastCard
@@ -70,6 +80,7 @@ const PersonCredits: FC<Props> = ({ data }) => {
                         />
                     ))}
                 </div>
+                )}
             </div>
 
             {/* Crew Section */}

@@ -18,6 +18,7 @@ import MediaDetailRecommendationsSkeleton from "../skeletons/MediaDetailRecommen
 import MediaDetailAside from "./MediaDetailAside";
 import { TVContentRatingsResponse, useTVContentRatings } from "../../hooks/useTVContentRating";
 import ErrorState from "@/components/ErrorState";
+import EmptyState from "@/components/EmptyState";
 
 const MediaDetailReviews = dynamic(() => import("./MediaDetailReviews"), {
     ssr: false,
@@ -53,12 +54,14 @@ const MediaDetailWrapper: React.FC<MediaDetailProps> = ({ id, mediaType }) => {
         data: detailData,
         isLoading: detailLoading,
         error: detailError,
+        refetch: refetchDetail,
     } = useMediaDetails({ id, mediaType, language: "en-US" });
 
     const {
         data: creditsData,
         isLoading: creditsLoading,
         error: creditsError,
+        refetch: refetchCredits,
     } = useMediaCredits({ id, mediaType, language: "en-US" });
 
     const releaseQuery = mediaType === "movie" ?
@@ -77,17 +80,26 @@ const MediaDetailWrapper: React.FC<MediaDetailProps> = ({ id, mediaType }) => {
 
     const contentRatings = contentRatingsQuery.data;
     const contentRatingsLoading = contentRatingsQuery.isLoading;
-    const contentRatingsError = contentRatingsQuery.error
-
-
+    const contentRatingsError = contentRatingsQuery.error;
 
     const {
         data: regionData,
         isLoading: langLoading,
         error: langError,
+        refetch: refetchRegion,
     } = useGeolocation();
 
-
+    const retryPrimary = () => {
+        void refetchDetail();
+        void refetchCredits();
+        void refetchRegion();
+        if (mediaType === "movie" && "refetch" in releaseQuery && typeof releaseQuery.refetch === "function") {
+            void releaseQuery.refetch();
+        }
+        if (mediaType === "tv" && "refetch" in contentRatingsQuery && typeof contentRatingsQuery.refetch === "function") {
+            void contentRatingsQuery.refetch();
+        }
+    };
 
     const isPrimaryLoading =
         detailLoading || creditsLoading || (mediaType === "movie" && releaseLoading) || (mediaType === "tv" && contentRatingsLoading) || langLoading;
@@ -97,19 +109,31 @@ const MediaDetailWrapper: React.FC<MediaDetailProps> = ({ id, mediaType }) => {
         !detailData || !creditsData || (mediaType === "movie" && !releaseData) || (mediaType === "tv" && !contentRatings) || !regionData;
 
     if (isPrimaryLoading || isPrimaryError || isPrimaryNoData) {
-        const message = isPrimaryLoading
-            ? <MediaDetailHeaderSkeleton />
-            : isPrimaryError
-                ? <ErrorState
+        if (isPrimaryLoading) {
+            return (
+                <div role="status" aria-label="Loading media details">
+                    <MediaDetailHeaderSkeleton />
+                </div>
+            );
+        }
+
+        if (isPrimaryError) {
+            return (
+                <ErrorState
                     message={isPrimaryError?.message || "There was an error loading the data."}
-                    onRetry={() => window.location.reload()}
+                    onRetry={retryPrimary}
                 />
-                : <ErrorState
-                    message={"No Data Available."}
-                    onRetry={() => window.location.reload()}
-                />
-            ;
-        return message;
+            );
+        }
+
+        return (
+            <EmptyState
+                title="Media unavailable"
+                message="No data available for this title."
+                actionLabel="Try Again"
+                onAction={retryPrimary}
+            />
+        );
     }
     const crew = creditsData.crew as MediaDetails["crew"];
     const releaseDates = releaseData;

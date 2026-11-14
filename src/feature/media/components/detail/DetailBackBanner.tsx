@@ -1,5 +1,8 @@
 "use client"
 
+import ErrorState from "@/components/ErrorState";
+import EmptyState from "@/components/EmptyState";
+
 import { FC } from "react";
 import Image from "next/image";
 import Link from "next/link";
@@ -17,17 +20,28 @@ interface DetailBackBannerProps {
 }
 
 const DetailBackBanner: FC<DetailBackBannerProps> = ({ id, title, slug, context, mediaType }) => {
-    const { data: movieDetails, isLoading, error } = useMediaDetails({ id, mediaType });
+    const { data: movieDetails, isLoading, error, refetch } = useMediaDetails({ id, mediaType });
     const imagePath = process.env.NEXT_PUBLIC_IMAGE_BASE_URL || "https://image.tmdb.org/t/p";
 
-    if (isLoading) return <DetailBackBannerSkeleton />;
-
-    if (error || !movieDetails) {
+    if (isLoading) {
         return (
-            <div className="p-4 text-red-500">
-                Failed to load movie details. Please try again later.
+            <div role="status" aria-label="Loading title header">
+                <DetailBackBannerSkeleton />
             </div>
         );
+    }
+
+    if (error) {
+        return (
+            <ErrorState
+                message={error.message || "Failed to load title details. Please try again later."}
+                onRetry={() => void refetch()}
+            />
+        );
+    }
+
+    if (!movieDetails) {
+        return <EmptyState title="Title unavailable" message="No details available for this title." />;
     }
 
     return (

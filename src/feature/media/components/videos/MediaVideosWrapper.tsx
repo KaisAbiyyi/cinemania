@@ -1,5 +1,8 @@
 "use client"
 
+import ErrorState from "@/components/ErrorState";
+import EmptyState from "@/components/EmptyState";
+
 import { FC } from "react";
 import { useMediaVideos } from "../../hooks/useMediaVideos";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -12,14 +15,27 @@ interface MediaVideosWrapperProps {
 }
 
 const MediaVideosWrapper: FC<MediaVideosWrapperProps> = ({ id, mediaType }) => {
-    const { data, isLoading, error } = useMediaVideos({ id, mediaType });
+    const { data, isLoading, error, refetch } = useMediaVideos({ id, mediaType });
 
     if (isLoading) {
-        return <MediaVideosWrapperSkeleton />;
+        return (
+            <div role="status" aria-label="Loading videos">
+                <MediaVideosWrapperSkeleton />
+            </div>
+        );
     }
 
-    if (error || !data) {
-        return <div>Error loading videos</div>;
+    if (error) {
+        return (
+            <ErrorState
+                message={error.message || "Error loading videos."}
+                onRetry={() => void refetch()}
+            />
+        );
+    }
+
+    if (!data || !data.results.length) {
+        return <EmptyState title="No videos" message="No videos available." />;
     }
 
     const Videos = [
@@ -47,9 +63,7 @@ const MediaVideosWrapper: FC<MediaVideosWrapperProps> = ({ id, mediaType }) => {
             type: "Bloopers",
             data: data.results.filter((video) => video.type === "Bloopers"),
         },
-    ]
-
-console.log(data)
+    ];
 
     return (
         <Tabs defaultValue="Trailer" className="w-full">

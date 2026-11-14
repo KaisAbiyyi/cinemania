@@ -33,7 +33,16 @@ function MainContent({ children }: { children: ReactNode }) {
 }
 
 export function AppShell({ children }: Readonly<{ children: ReactNode }>) {
-  const [queryClient] = useState(() => new QueryClient());
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            retry: false,
+          },
+        },
+      })
+  );
 
   return (
     <ThemeProvider attribute="class" defaultTheme="light">

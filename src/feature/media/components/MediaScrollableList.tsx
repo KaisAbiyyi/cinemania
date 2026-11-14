@@ -1,5 +1,7 @@
 "use client";
 
+import EmptyState from "@/components/EmptyState";
+import ErrorState from "@/components/ErrorState";
 import { cn } from "@/lib/utils";
 import {
     DiscoveryDatePreset,
@@ -10,6 +12,7 @@ import {
 import { FC, HTMLAttributes, useMemo, useSyncExternalStore } from "react";
 import { MediaQueryParams, useMedia } from "../hooks/useMedia";
 import { useLocalCalendarDay } from "../hooks/useLocalCalendarDay";
+import { dedupeByKey } from "../utils/mediaPagination";
 import MediaCard from "./MediaCard";
 import { buttonVariants } from "@/components/ui/button";
 import Link from "next/link";
@@ -72,15 +75,29 @@ const MediaScrollableList: FC<MediaScrollableListProps> = ({
         ...presetQueryParams,
     };
 
-    const { data, isLoading, error } = useMedia(baseParams, { enabled: isReady });
+    const { data, isLoading, error, refetch } = useMedia(baseParams, { enabled: isReady });
+
+    const mediaItems = useMemo(() => {
+        const deduped = dedupeByKey(data?.results ?? [], (item) => item.id);
+        return showOnly ? deduped.slice(0, showOnly) : deduped;
+    }, [data?.results, showOnly]);
 
     if (!isReady || isLoading) {
-        return <MediaScrollableListSkeleton className={className} title={title} redirectTo={redirectTo} orientation={orientation} />;
+        return (
+            <div role="status" aria-label={`Loading ${title || "media"}`}>
+                <MediaScrollableListSkeleton className={className} title={title} redirectTo={redirectTo} orientation={orientation} />
+                <span className="sr-only">Loading {title || "media"}...</span>
+            </div>
+        );
     }
-    if (error) return <div>Error fetching media</div>;
-
-    const allMediaItems = data?.results || [];
-    const mediaItems = showOnly ? allMediaItems.slice(0, showOnly) : allMediaItems;
+    if (error) {
+        return (
+            <ErrorState
+                message={error.message || `Failed to load ${title || "media"}.`}
+                onRetry={() => void refetch()}
+            />
+        );
+    }
 
     return (
         <section {...props} className={cn("flex flex-col gap-6", !title && "-mt-12")}>
@@ -93,24 +110,28 @@ const MediaScrollableList: FC<MediaScrollableListProps> = ({
                     </Link>
                 )}
             </div>
-            <div className={cn("gap-4 flex", orientation === "vertical" ? " flex-col overflow-y-auto" : "overflow-x-auto pb-6", className)}>
-                {/* eslint-disable-next-line */}
-                {mediaItems.map((media: any) => (
-                    <MediaCard
-                        className={orientation === "horizontal" ? "min-w-52" : ""}
-                        key={media.id}
-                        id={media.id}
-                        title={media.title || media.name}
-                        posterPath={media.poster_path}
-                        rating={media.vote_average}
-                        releaseDate={media.release_date || media.first_air_date}
-                        mediaType={type}
-                        description={media.overview}
-                        genre_ids={media.genre_ids}
-                        layout={orientation}
-                    />
-                ))}
-            </div>
+            {mediaItems.length === 0 ? (
+                <EmptyState message={`No ${title ? title.toLowerCase() : "media"} available.`} />
+            ) : (
+                <div className={cn("gap-4 flex", orientation === "vertical" ? " flex-col overflow-y-auto" : "overflow-x-auto pb-6", className)}>
+                    {/* eslint-disable-next-line */}
+                    {mediaItems.map((media: any) => (
+                        <MediaCard
+                            className={orientation === "horizontal" ? "min-w-52" : ""}
+                            key={media.id}
+                            id={media.id}
+                            title={media.title || media.name}
+                            posterPath={media.poster_path}
+                            rating={media.vote_average}
+                            releaseDate={media.release_date || media.first_air_date}
+                            mediaType={type}
+                            description={media.overview}
+                            genre_ids={media.genre_ids}
+                            layout={orientation}
+                        />
+                    ))}
+                </div>
+            )}
         </section>
     );
 };

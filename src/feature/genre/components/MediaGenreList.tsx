@@ -1,5 +1,7 @@
 "use client"
 
+import EmptyState from "@/components/EmptyState";
+import ErrorState from "@/components/ErrorState";
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious } from "@/components/ui/carousel";
 import Link from "next/link";
 import { buttonVariants } from "../../../components/ui/button";
@@ -10,9 +12,25 @@ import { Genre } from "@/types/genre";
 
 
 const MediaGenreList = ({ type }: { type: "movie" | "tv" }) => {
-    const { data: genres, isLoading, error } = useGenres(type);
-    if (isLoading) return <GenreListSkeleton />;
-    if (error) return <p>Error loading genres</p>;
+    const { data: genres, isLoading, error, refetch } = useGenres(type);
+    if (isLoading) {
+        return (
+            <div role="status" aria-label="Loading genres">
+                <GenreListSkeleton />
+            </div>
+        );
+    }
+    if (error) {
+        return (
+            <ErrorState
+                message={error.message || "Failed to load genres."}
+                onRetry={() => void refetch()}
+            />
+        );
+    }
+    if (!genres || genres.length === 0) {
+        return <EmptyState title="No genres" message="No genres available." />;
+    }
 
     return (
         <Carousel className="flex items-center gap-4 mt-5" opts={{ dragFree: true }}>

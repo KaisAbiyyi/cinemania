@@ -1,7 +1,11 @@
 "use client";
 
-import { FC, useEffect, useRef } from "react";
+import EmptyState from "@/components/EmptyState";
+import ErrorState from "@/components/ErrorState";
+import { FC, useMemo } from "react";
 import { useInfiniteMedia, MediaQueryParams } from "../hooks/useMedia";
+import { useInfiniteScrollObserver } from "../hooks/useInfiniteScrollObserver";
+import { dedupeInfinitePages } from "../utils/mediaPagination";
 import MediaCard from "./MediaCard";
 import MediaContainerSkeleton from "./skeletons/MediaContainerSkeleton";
 import TrendingLoadMoreSkeleton from "./skeletons/TrendingLoadMoreSkeleton";
@@ -34,48 +38,65 @@ const MediaContainer: FC<MediaContainerProps> = ({ mediaType }) => {
         data,
         isLoading,
         error,
+        refetch,
         fetchNextPage,
         hasNextPage,
         isFetchingNextPage,
+        isFetchNextPageError,
     } = useInfiniteMedia(query, { enabled: isReady });
 
-    const loadMoreRef = useRef<HTMLDivElement | null>(null);
+    const pageCount = data?.pages?.length ?? 0;
+    const loadMoreRef = useInfiniteScrollObserver({
+        enabled: isReady,
+        hasNextPage,
+        isFetchingNextPage,
+        isFetchNextPageError,
+        pageCount,
+        fetchNextPage,
+    });
 
-    useEffect(() => {
-        const observer = new IntersectionObserver(
-            (entries) => {
-                if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage) {
-                    fetchNextPage();
-                }
-            },
-            { threshold: 0.1, rootMargin: '100px' }
-        );
+    const items = useMemo(
+        () => dedupeInfinitePages(data?.pages, (item) => item.id),
+        [data?.pages]
+    );
 
-        const current = loadMoreRef.current;
-        if (current) observer.observe(current);
-
-        return () => {
-            if (current) observer.unobserve(current);
-            observer.disconnect(); // Tambahkan ini untuk memastikan observer dihapus
-        };
-    }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
-
-    if (!isReady || isLoading) return <MediaContainerSkeleton orientation={orientation} />;
-    if (error)
+    if (!isReady || isLoading) {
         return (
-            <h1 className="text-xl text-center text-red-500">
-                Failed to load media.
-            </h1>
+            <div role="status" aria-label={`Loading ${mediaType === "movie" ? "movies" : "TV shows"}`}>
+                <MediaContainerSkeleton orientation={orientation} />
+                <span className="sr-only">
+                    Loading {mediaType === "movie" ? "movies" : "TV shows"}...
+                </span>
+            </div>
         );
+    }
+
+    if (error && !isFetchNextPageError) {
+        return (
+            <ErrorState
+                message={error.message || `Failed to load ${mediaType === "movie" ? "movies" : "TV shows"}.`}
+                onRetry={() => void refetch()}
+            />
+        );
+    }
+
+    if (items.length === 0) {
+        return (
+            <EmptyState
+                title="No results found"
+                message={`No ${mediaType === "movie" ? "movies" : "TV shows"} match the selected filters.`}
+            />
+        );
+    }
 
     const gridClass = cn("grid gap-4", GRID_CLASSES[orientation]);
 
     return (
-        <section className={gridClass}>
-            {data?.pages.map((page, pageIndex) =>
-                page.results.map((item) => (
+        <div className="flex flex-col gap-6">
+            <section className={gridClass}>
+                {items.map((item) => (
                     <MediaCard
-                        key={`${item.id}-${pageIndex}`}
+                        key={item.id}
                         id={item.id}
                         mediaType={mediaType}
                         posterPath={item.poster_path}
@@ -86,20 +107,27 @@ const MediaContainer: FC<MediaContainerProps> = ({ mediaType }) => {
                         description={item.overview}
                         genre_ids={item.genre_ids}
                     />
-                ))
-            )}
+                ))}
 
-            {isFetchingNextPage && (
-                <TrendingLoadMoreSkeleton
-                    orientation={orientation}
-                    itemsPerPage={ITEMS_PER_PAGE}
+                {isFetchingNextPage && (
+                    <TrendingLoadMoreSkeleton
+                        orientation={orientation}
+                        itemsPerPage={ITEMS_PER_PAGE}
+                    />
+                )}
+            </section>
+
+            {isFetchNextPageError && (
+                <ErrorState
+                    message="Failed to load more results."
+                    onRetry={() => void fetchNextPage()}
                 />
             )}
 
-            {hasNextPage && (
+            {hasNextPage && !isFetchNextPageError && (
                 <div ref={loadMoreRef} className="w-full h-4" aria-hidden="true" />
             )}
-        </section>
+        </div>
     );
 };
 
