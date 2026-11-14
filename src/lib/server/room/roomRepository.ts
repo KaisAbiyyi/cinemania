@@ -4,14 +4,17 @@ import {
   Room,
   RoomParticipant,
   Round,
+  RoundParticipant,
   Candidate,
   Vote,
   RoomEvent,
   VoteType,
+  MIN_PARTICIPANTS,
   MAX_PARTICIPANTS,
   DEFAULT_INACTIVITY_TTL_SECONDS,
   DECK_SIZE,
 } from "@/db/schema";
+import { CapabilityAuthError } from "../auth/guestCapability";
 import {
   assertValidTransition,
   isRoomRecordExpired,
@@ -71,7 +74,28 @@ export class CandidateNotFoundError extends Error {
   }
 }
 
-export type RoomCapacityErrorCode = "ROOM_FULL" | "ROOM_NOT_JOINABLE" | "ROOM_JOIN_CONFLICT";
+export type RoomCapacityErrorCode =
+  | "ROOM_FULL"
+  | "ROOM_NOT_JOINABLE"
+  | "ROOM_JOIN_CONFLICT"
+  | "INSUFFICIENT_PARTICIPANTS"
+  | "ROOM_ALREADY_ACTIVE"
+  | "LOBBY_LEAVE_CLOSED";
+
+export interface LeaveLobbyResult {
+  room: Room;
+  participants: RoomParticipant[];
+  leftParticipantId: string;
+  roomClosed: boolean;
+  hostTransferredTo: RoomParticipant | null;
+}
+
+export interface StartLobbyRoundResult {
+  room: Room;
+  round: Round;
+  participants: RoomParticipant[];
+  frozenParticipants: RoundParticipant[];
+}
 
 export class RoomCapacityError extends Error {
   public readonly code: RoomCapacityErrorCode;
@@ -374,10 +398,397 @@ export class SqliteRoomRepository {
     });
   }
 
+  private hasRoundParticipantsTable(): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'round_participants' LIMIT 1;`)
+      .get();
+    return Boolean(row);
+  }
+
+  private getRoundParticipantsInternal(roomId: string, roundId: string): RoundParticipant[] {
+    if (!this.hasRoundParticipantsTable()) {
+      return [];
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM round_participants
+         WHERE room_id = ? AND round_id = ?
+         ORDER BY joined_at ASC, participant_id ASC;`
+      )
+      .all(roomId, roundId);
+    return rows as unknown as RoundParticipant[];
+  }
+
+  private leaveLobbyCore(
+    roomId: string,
+    participantId: string,
+    beforeLeaveLocked?: (room: Room) => void
+  ): LeaveLobbyResult {
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    const room = this.getRoomById(roomId);
+    if (!room) {
+      throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
+    }
+    if (isRoomRecordExpired(room, now)) {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+
+    if (beforeLeaveLocked) {
+      beforeLeaveLocked(room);
+    }
+
+    const participant = this.getParticipant(roomId, participantId);
+    if (!participant) {
+      throw new CapabilityAuthError(
+        403,
+        "PARTICIPANT_NOT_IN_ROOM",
+        "Guest is not a member of this room."
+      );
+    }
+
+    if (room.status !== "LOBBY") {
+      throw new RoomCapacityError(
+        `Cannot leave lobby roster: room status is '${room.status}', not 'LOBBY'. Frozen voter roster is locked.`,
+        "LOBBY_LEAVE_CLOSED"
+      );
+    }
+
+    const participants = this.getParticipantsByRoom(roomId);
+    if (participants.length <= 1) {
+      assertValidTransition(room.status, "EXPIRED", "Last participant left lobby");
+      const nextVersion = room.state_version + 1;
+
+      this.db
+        .prepare(
+          `UPDATE room_participants
+           SET is_connected = 0, last_seen_at = ?
+           WHERE room_id = ? AND participant_id = ?;`
+        )
+        .run(nowIso, roomId, participantId);
+
+      this.db
+        .prepare(
+          `UPDATE rooms
+           SET status = 'EXPIRED', state_version = ?, last_activity_at = ?, expires_at = ?, updated_at = ?
+           WHERE id = ?;`
+        )
+        .run(nextVersion, nowIso, nowIso, nowIso, roomId);
+
+      this.db
+        .prepare(
+          `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+           VALUES (?, ?, 'ROOM_EXPIRED', ?, 0, 0, 0, ?);`
+        )
+        .run(
+          roomId,
+          nextVersion,
+          JSON.stringify({ reason: "LAST_PARTICIPANT_LEFT", participantId }),
+          nowIso
+        );
+
+      return {
+        room: this.getRoomById(roomId)!,
+        participants: this.getParticipantsByRoom(roomId),
+        leftParticipantId: participantId,
+        roomClosed: true,
+        hostTransferredTo: null,
+      };
+    }
+
+    const remaining = participants.filter(
+      (p) => p.participant_id.toLowerCase() !== participantId.toLowerCase()
+    );
+    const wasHost =
+      room.host_participant_id?.toLowerCase() === participantId.toLowerCase();
+    const nextHost = wasHost ? remaining[0] ?? null : null;
+
+    this.db
+      .prepare(`DELETE FROM room_participants WHERE room_id = ? AND participant_id = ?;`)
+      .run(roomId, participantId);
+
+    if (nextHost) {
+      this.db
+        .prepare(
+          `UPDATE room_participants SET role = 'HOST' WHERE room_id = ? AND participant_id = ?;`
+        )
+        .run(roomId, nextHost.participant_id);
+    }
+
+    const leaveVersion = room.state_version + 1;
+    const finalVersion = nextHost ? room.state_version + 2 : leaveVersion;
+    const newExpiresAt = new Date(
+      now.getTime() + room.inactivity_ttl_seconds * 1000
+    ).toISOString();
+    const nextHostId = nextHost ? nextHost.participant_id : room.host_participant_id;
+
+    this.db
+      .prepare(
+        `UPDATE rooms
+         SET host_participant_id = ?, participant_count = ?, state_version = ?,
+             last_activity_at = ?, expires_at = ?, updated_at = ?
+         WHERE id = ?;`
+      )
+      .run(
+        nextHostId,
+        remaining.length,
+        finalVersion,
+        nowIso,
+        newExpiresAt,
+        nowIso,
+        roomId
+      );
+
+    this.db
+      .prepare(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES (?, ?, 'PARTICIPANT_LEFT', ?, 0, 0, 0, ?);`
+      )
+      .run(
+        roomId,
+        leaveVersion,
+        JSON.stringify({
+          displayName: participant.display_name,
+          participantCount: remaining.length,
+          hostTransferred: Boolean(nextHost),
+        }),
+        nowIso
+      );
+
+    if (nextHost) {
+      this.db
+        .prepare(
+          `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+           VALUES (?, ?, 'HOST_TRANSFERRED', ?, 0, 0, 0, ?);`
+        )
+        .run(
+          roomId,
+          finalVersion,
+          JSON.stringify({
+            newHostDisplayName: nextHost.display_name,
+            participantCount: remaining.length,
+          }),
+          nowIso
+        );
+    }
+
+    return {
+      room: this.getRoomById(roomId)!,
+      participants: this.getParticipantsByRoom(roomId),
+      leftParticipantId: participantId,
+      roomClosed: false,
+      hostTransferredTo: nextHost
+        ? this.getParticipant(roomId, nextHost.participant_id)
+        : null,
+    };
+  }
+
+  leaveLobby(roomId: string, participantId: string): LeaveLobbyResult {
+    return this.runInImmediateTransaction(() =>
+      this.leaveLobbyCore(roomId, participantId)
+    );
+  }
+
+  leaveLobbyInTransaction<T>(
+    roomId: string,
+    participantId: string,
+    callbacks: {
+      beforeLeaveLocked?: (room: Room) => void;
+      afterLeave: (left: LeaveLobbyResult) => T;
+    }
+  ): T {
+    return this.runInImmediateTransaction(() => {
+      const left = this.leaveLobbyCore(roomId, participantId, callbacks.beforeLeaveLocked);
+      return callbacks.afterLeave(left);
+    });
+  }
+
+  private startLobbyRoundCore(
+    roomId: string,
+    actorParticipantId: string,
+    beforeStartLocked?: (room: Room) => void
+  ): StartLobbyRoundResult {
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    const room = this.getRoomById(roomId);
+    if (!room) {
+      throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
+    }
+    if (isRoomRecordExpired(room, now)) {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+
+    if (beforeStartLocked) {
+      beforeStartLocked(room);
+    }
+
+    const actor = this.getParticipant(roomId, actorParticipantId);
+    if (!actor) {
+      throw new CapabilityAuthError(
+        403,
+        "PARTICIPANT_NOT_IN_ROOM",
+        "Guest is not a member of this room."
+      );
+    }
+
+    const authoritativeIsHost =
+      actor.role === "HOST" &&
+      room.host_participant_id?.toLowerCase() === actor.participant_id.toLowerCase();
+    if (!authoritativeIsHost) {
+      throw new CapabilityAuthError(
+        403,
+        "HOST_ONLY_ACTION",
+        "Only the room host can perform this action."
+      );
+    }
+
+    if (room.status !== "LOBBY") {
+      throw new RoomCapacityError(
+        `Cannot start round: room status is '${room.status}', but must be 'LOBBY'.`,
+        "ROOM_ALREADY_ACTIVE"
+      );
+    }
+
+    const participants = this.getParticipantsByRoom(roomId);
+    if (participants.length !== room.participant_count) {
+      throw new CapabilityAuthError(
+        500,
+        "SNAPSHOT_INCOHERENT",
+        `Incoherent room snapshot: participant_count (${room.participant_count}) does not match participant roster (${participants.length}).`
+      );
+    }
+
+    if (participants.length < MIN_PARTICIPANTS) {
+      throw new RoomCapacityError(
+        `Cannot start round: at least ${MIN_PARTICIPANTS} participants required (current: ${participants.length}).`,
+        "INSUFFICIENT_PARTICIPANTS"
+      );
+    }
+    if (participants.length > MAX_PARTICIPANTS) {
+      throw new RoomCapacityError(
+        `Cannot start round: maximum allowed participants is ${MAX_PARTICIPANTS} (current: ${participants.length}).`,
+        "ROOM_FULL"
+      );
+    }
+
+    const maxRoundRow = this.db
+      .prepare(`SELECT COALESCE(MAX(round_number), 0) AS max_round FROM rounds WHERE room_id = ?;`)
+      .get(roomId) as unknown as { max_round: number } | undefined;
+    const roundNumber = Number(maxRoundRow?.max_round ?? 0) + 1;
+    const roundId = crypto.randomUUID();
+
+    this.db
+      .prepare(
+        `INSERT INTO rounds (id, room_id, round_number, status, started_at)
+         VALUES (?, ?, ?, 'ACTIVE', ?);`
+      )
+      .run(roundId, roomId, roundNumber, nowIso);
+
+    const insertFrozenStmt = this.db.prepare(
+      `INSERT INTO round_participants (room_id, round_id, participant_id, frozen_role, joined_at, frozen_at)
+       VALUES (?, ?, ?, ?, ?, ?);`
+    );
+    for (const member of participants) {
+      insertFrozenStmt.run(
+        roomId,
+        roundId,
+        member.participant_id,
+        member.role,
+        member.joined_at,
+        nowIso
+      );
+    }
+
+    const freezeVersion = room.state_version + 1;
+    const startVersion = room.state_version + 2;
+    const newExpiresAt = new Date(
+      now.getTime() + room.inactivity_ttl_seconds * 1000
+    ).toISOString();
+
+    this.db
+      .prepare(
+        `UPDATE rooms
+         SET status = 'ACTIVE', current_round_id = ?, state_version = ?,
+             last_activity_at = ?, expires_at = ?, updated_at = ?
+         WHERE id = ?;`
+      )
+      .run(roundId, startVersion, nowIso, newExpiresAt, nowIso, roomId);
+
+    this.db
+      .prepare(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES (?, ?, 'ROSTER_FROZEN', ?, 0, 0, 0, ?);`
+      )
+      .run(
+        roomId,
+        freezeVersion,
+        JSON.stringify({
+          roundId,
+          roundNumber,
+          frozenQuorum: participants.length,
+          frozenParticipantIds: participants.map((p) => p.participant_id),
+        }),
+        nowIso
+      );
+
+    this.db
+      .prepare(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES (?, ?, 'ROUND_STARTED', ?, 0, 0, 0, ?);`
+      )
+      .run(
+        roomId,
+        startVersion,
+        JSON.stringify({
+          roundId,
+          roundNumber,
+          frozenQuorum: participants.length,
+        }),
+        nowIso
+      );
+
+    return {
+      room: this.getRoomById(roomId)!,
+      round: this.getRoundById(roundId)!,
+      participants: this.getParticipantsByRoom(roomId),
+      frozenParticipants: this.getRoundParticipantsInternal(roomId, roundId),
+    };
+  }
+
+  startLobbyRound(roomId: string, actorParticipantId: string): StartLobbyRoundResult {
+    return this.runInImmediateTransaction(() =>
+      this.startLobbyRoundCore(roomId, actorParticipantId)
+    );
+  }
+
+  startLobbyRoundInTransaction<T>(
+    roomId: string,
+    actorParticipantId: string,
+    callbacks: {
+      beforeStartLocked?: (room: Room) => void;
+      afterStart: (started: StartLobbyRoundResult) => T;
+    }
+  ): T {
+    return this.runInImmediateTransaction(() => {
+      const started = this.startLobbyRoundCore(
+        roomId,
+        actorParticipantId,
+        callbacks.beforeStartLocked
+      );
+      return callbacks.afterStart(started);
+    });
+  }
+
   /**
-   * Reads room and ordered participant roster within a single SQLite read transaction.
+   * Reads room, ordered participant roster, and active round frozen voters within a single SQLite read transaction.
    */
-  getConsistentSnapshot(roomId: string): { room: Room; participants: RoomParticipant[] } | null {
+  getConsistentSnapshot(roomId: string): {
+    room: Room;
+    participants: RoomParticipant[];
+    roundParticipants: RoundParticipant[];
+  } | null {
     this.db.exec("BEGIN;");
     try {
       const room = this.getRoomById(roomId);
@@ -386,8 +797,11 @@ export class SqliteRoomRepository {
         return null;
       }
       const participants = this.getParticipantsByRoom(roomId);
+      const roundParticipants = room.current_round_id
+        ? this.getRoundParticipantsInternal(roomId, room.current_round_id)
+        : [];
       this.db.exec("COMMIT;");
-      return { room, participants };
+      return { room, participants, roundParticipants };
     } catch (err) {
       try {
         this.db.exec("ROLLBACK;");
@@ -831,6 +1245,10 @@ export class SqliteRoomRepository {
       .prepare(`SELECT * FROM room_participants WHERE room_id = ? ORDER BY joined_at ASC, participant_id ASC`)
       .all(roomId);
     return rows as unknown as RoomParticipant[];
+  }
+
+  getRoundParticipants(roomId: string, roundId: string): RoundParticipant[] {
+    return this.getRoundParticipantsInternal(roomId, roundId);
   }
 
   getRoundById(id: string): Round | null {

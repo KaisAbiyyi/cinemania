@@ -6,10 +6,12 @@ import {
   Room,
   RoomParticipant,
   RoomStatus,
+  RoundParticipant,
 } from "@/db/schema";
 import {
   CapabilityAuthError,
   type CookieAttributes,
+  buildClearedGuestCookieAttributes,
   buildGuestCookieAttributes,
   extractCookieValue,
   getCapabilitySecret,
@@ -18,9 +20,14 @@ import {
   mintGuestCapabilityToken,
   verifyGuestCapabilityToken,
 } from "@/lib/server/auth/guestCapability";
-import { requireRoomActor } from "@/lib/server/auth/roomAuth";
+import { requireRoomActor, resolveGuestTokenFromRequest } from "@/lib/server/auth/roomAuth";
 import { buildRoomInvitePath, normalizeRoomCodeInput } from "./roomCode";
-import { RoomExpiredError, RoomNotFoundError } from "./roomRepository";
+import {
+  RoomExpiredError,
+  RoomNotFoundError,
+  type LeaveLobbyResult,
+  type StartLobbyRoundResult,
+} from "./roomRepository";
 import {
   getRoomAuthorityStore,
   type AtomicRoomSessionResult,
@@ -35,6 +42,7 @@ export interface SafeRoomParticipant {
   isConnected: boolean;
   joinedAt: string;
   isSelf: boolean;
+  isEligibleVoter?: boolean;
 }
 
 export interface RoomSessionMutationOptions {
@@ -51,6 +59,8 @@ export interface SafeRoomSnapshot {
   maxParticipants: number;
   minParticipantsToStart: number;
   canStart: boolean;
+  currentRoundId: string | null;
+  frozenQuorum: number | null;
   expiresAt: string;
   createdAt: string;
   participants: SafeRoomParticipant[];
@@ -60,12 +70,24 @@ export interface RoomSessionViewer {
   participantId: string;
   displayName: string;
   role: ParticipantRole;
+  isEligibleVoter: boolean;
 }
 
 export interface RoomSnapshotResult {
   room: SafeRoomSnapshot;
   viewer: RoomSessionViewer;
   cookie?: CookieAttributes;
+}
+
+export interface LeaveRoomResult {
+  left: true;
+  roomClosed: boolean;
+  roomId: string;
+  status: RoomStatus;
+  stateVersion: number;
+  participantCount: number;
+  hostTransferred: boolean;
+  cookie: CookieAttributes;
 }
 
 const DISPLAY_NAME_MAX_LENGTH = 32;
@@ -94,7 +116,8 @@ export async function parseJsonBodySafe(request: Request): Promise<Record<string
 }
 
 /**
- * Normalizes a participant display name by trimming and collapsing whitespace.
+ * Sanitizes and bounds a participant display name against HTML/XSS injection,
+ * control/bidi characters, and excessive Unicode code-point length.
  */
 export function normalizeDisplayName(rawName: unknown, defaultName: string): string {
   if (rawName === undefined) {
@@ -103,15 +126,29 @@ export function normalizeDisplayName(rawName: unknown, defaultName: string): str
   if (typeof rawName !== "string") {
     throw new CapabilityAuthError(400, "INVALID_DISPLAY_NAME", "Display name must be a string.");
   }
-  const normalized = rawName.trim().replace(/\s+/g, " ");
-  if (normalized.length < 1 || normalized.length > DISPLAY_NAME_MAX_LENGTH) {
+
+  const sanitized = rawName
+    .normalize("NFKC")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<\/?[a-z][^>]*>?/gi, " ")
+    .replace(
+      /[\u0000-\u001F\u007F-\u009F\u061C\u200B\u200C\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g,
+      ""
+    )
+    .replace(/[<>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const codePointLength = Array.from(sanitized).length;
+  if (codePointLength < 1 || codePointLength > DISPLAY_NAME_MAX_LENGTH || sanitized.length > 50) {
     throw new CapabilityAuthError(
       400,
       "INVALID_DISPLAY_NAME",
       `Display name must be between 1 and ${DISPLAY_NAME_MAX_LENGTH} characters.`
     );
   }
-  return normalized;
+  return sanitized;
 }
 
 function resolveJoinLookup(
@@ -142,7 +179,8 @@ export function buildSafeRoomSnapshot(
   room: Room,
   participants: RoomParticipant[],
   viewerParticipantId: string,
-  now: Date = new Date()
+  now: Date = new Date(),
+  roundParticipants: RoundParticipant[] = []
 ): SafeRoomSnapshot {
   if (room.participant_count !== participants.length) {
     throw new CapabilityAuthError(
@@ -156,6 +194,8 @@ export function buildSafeRoomSnapshot(
   const expired = isRoomRecordExpired(room, now);
   const status: RoomStatus = expired ? "EXPIRED" : room.status;
   const participantCount = room.participant_count;
+  const hasFrozenRoster = Boolean(room.current_round_id && roundParticipants.length > 0);
+  const frozenIds = new Set(roundParticipants.map((rp) => rp.participant_id.toLowerCase()));
 
   return {
     roomId: room.id,
@@ -170,15 +210,21 @@ export function buildSafeRoomSnapshot(
       status === "LOBBY" &&
       participantCount >= MIN_PARTICIPANTS &&
       participantCount <= MAX_PARTICIPANTS,
+    currentRoundId: room.current_round_id,
+    frozenQuorum: hasFrozenRoster ? roundParticipants.length : null,
     expiresAt: room.expires_at,
     createdAt: room.created_at,
-    participants: participants.map((participant) => ({
-      displayName: participant.display_name,
-      role: participant.role,
-      isConnected: Boolean(participant.is_connected),
-      joinedAt: participant.joined_at,
-      isSelf: participant.participant_id.toLowerCase() === normalizedViewerId,
-    })),
+    participants: participants.map((participant) => {
+      const normalizedPid = participant.participant_id.toLowerCase();
+      return {
+        displayName: participant.display_name,
+        role: participant.role,
+        isConnected: Boolean(participant.is_connected),
+        joinedAt: participant.joined_at,
+        isSelf: normalizedPid === normalizedViewerId,
+        ...(hasFrozenRoster ? { isEligibleVoter: frozenIds.has(normalizedPid) } : {}),
+      };
+    }),
   };
 }
 
@@ -215,16 +261,27 @@ function buildAtomicSnapshotResult(
   mintedToken: string
 ): RoomSnapshotResult {
   const role = resolveAuthoritativeRole(result.room, result.participant);
+  const roundParticipants = result.roundParticipants ?? [];
+  const safeRoom = buildSafeRoomSnapshot(
+    result.room,
+    result.participants,
+    result.participant.participant_id,
+    new Date(),
+    roundParticipants
+  );
+  const isEligibleVoter = Boolean(
+    safeRoom.frozenQuorum !== null &&
+      roundParticipants.some(
+        (rp) => rp.participant_id.toLowerCase() === result.participant.participant_id.toLowerCase()
+      )
+  );
   return {
-    room: buildSafeRoomSnapshot(
-      result.room,
-      result.participants,
-      result.participant.participant_id
-    ),
+    room: safeRoom,
     viewer: {
       participantId: result.participant.participant_id,
       displayName: result.participant.display_name,
       role,
+      isEligibleVoter,
     },
     cookie: buildGuestCookieAttributes(request, result.room.id, mintedToken),
   };
@@ -354,17 +411,123 @@ export async function getAuthenticatedRoomSnapshot(
   }
 
   const role = resolveAuthoritativeRole(consistent.room, viewerParticipant);
+  const safeRoom = buildSafeRoomSnapshot(
+    consistent.room,
+    consistent.participants,
+    viewerParticipant.participant_id,
+    new Date(),
+    consistent.roundParticipants
+  );
+  const isEligibleVoter = Boolean(
+    safeRoom.frozenQuorum !== null &&
+      consistent.roundParticipants.some(
+        (rp) => rp.participant_id.toLowerCase() === viewerParticipant.participant_id.toLowerCase()
+      )
+  );
 
   return {
-    room: buildSafeRoomSnapshot(
-      consistent.room,
-      consistent.participants,
-      viewerParticipant.participant_id
-    ),
+    room: safeRoom,
     viewer: {
       participantId: viewerParticipant.participant_id,
       displayName: viewerParticipant.display_name,
       role,
+      isEligibleVoter,
     },
+  };
+}
+
+/**
+ * Host-only action to start the voting round from LOBBY (2..5 participants) and
+ * freeze eligible voter IDs in round_participants. Ignores any client roster/quorum fields.
+ */
+export async function startRoomRoundWithSession(
+  request: Request,
+  roomId: string,
+  store: RoomAuthorityStore = getRoomAuthorityStore(),
+  options?: { beforeCommit?: (started: StartLobbyRoundResult) => void | Promise<void> }
+): Promise<RoomSnapshotResult> {
+  getCapabilitySecret();
+  const actor = await requireRoomActor(request, roomId, store, { requireHost: true });
+  const token = resolveGuestTokenFromRequest(request, actor.room.id);
+
+  const started = await store.startLobbyRoundWithSession({
+    roomId: actor.room.id,
+    actorParticipantId: actor.participant.participant_id,
+    verifyLockedSession: ({ minGeneration }) => {
+      verifyGuestCapabilityToken(token, {
+        expectedRoomId: actor.room.id,
+        minGeneration,
+      });
+    },
+    beforeCommit: options?.beforeCommit,
+  });
+
+  const viewerParticipant = started.participants.find(
+    (p) => p.participant_id.toLowerCase() === actor.participant.participant_id.toLowerCase()
+  );
+  if (!viewerParticipant) {
+    throw new CapabilityAuthError(
+      403,
+      "PARTICIPANT_NOT_IN_ROOM",
+      "Host capability no longer matches an active participant."
+    );
+  }
+
+  const role = resolveAuthoritativeRole(started.room, viewerParticipant);
+  const safeRoom = buildSafeRoomSnapshot(
+    started.room,
+    started.participants,
+    viewerParticipant.participant_id,
+    new Date(),
+    started.frozenParticipants
+  );
+
+  return {
+    room: safeRoom,
+    viewer: {
+      participantId: viewerParticipant.participant_id,
+      displayName: viewerParticipant.display_name,
+      role,
+      isEligibleVoter: started.frozenParticipants.some(
+        (rp) => rp.participant_id.toLowerCase() === viewerParticipant.participant_id.toLowerCase()
+      ),
+    },
+  };
+}
+
+/**
+ * Removes the authenticated participant from a LOBBY room, transfers host cleanly if
+ * the host departed with remaining members, or closes the room when the lone member leaves.
+ */
+export async function leaveRoomWithSession(
+  request: Request,
+  roomId: string,
+  store: RoomAuthorityStore = getRoomAuthorityStore(),
+  options?: { beforeCommit?: (left: LeaveLobbyResult) => void | Promise<void> }
+): Promise<LeaveRoomResult> {
+  const actor = await requireRoomActor(request, roomId, store);
+  const token = resolveGuestTokenFromRequest(request, actor.room.id);
+
+  const left = await store.leaveLobbyWithSession({
+    roomId: actor.room.id,
+    participantId: actor.participant.participant_id,
+    verifyLockedSession: ({ minGeneration }) => {
+      verifyGuestCapabilityToken(token, {
+        expectedRoomId: actor.room.id,
+        minGeneration,
+      });
+    },
+    beforeCommit: options?.beforeCommit,
+  });
+
+  return {
+    left: true,
+    roomClosed: left.roomClosed,
+    roomId: left.room.id,
+    status: left.room.status,
+    stateVersion: left.room.state_version,
+    participantCount: left.room.participant_count,
+    hostTransferred: Boolean(left.hostTransferredTo),
+    cookie: buildClearedGuestCookieAttributes(request, left.room.id),
   };
 }

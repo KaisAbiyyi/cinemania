@@ -64,6 +64,18 @@ export function assertValidTransition(from: RoomStatus, to: RoomStatus, reason?:
  * - Deck candidate count must equal exactly 20 titles
  */
 export function validateStartRoundPrerequisites(participantCount: number, candidateCount: number): void {
+  validateStartLobbyRoundPrerequisites(participantCount);
+  if (candidateCount !== DECK_SIZE) {
+    throw new Error(
+      `Cannot start round: movie deck must contain exactly ${DECK_SIZE} titles (provided: ${candidateCount}).`
+    );
+  }
+}
+
+/**
+ * Validates lobby roster bounds (2..5 participants) before freezing voters and entering ACTIVE.
+ */
+export function validateStartLobbyRoundPrerequisites(participantCount: number): void {
   if (participantCount < MIN_PARTICIPANTS) {
     throw new RoomCapacityError(
       `Cannot start round: at least ${MIN_PARTICIPANTS} participants required (current: ${participantCount}).`
@@ -72,11 +84,6 @@ export function validateStartRoundPrerequisites(participantCount: number, candid
   if (participantCount > MAX_PARTICIPANTS) {
     throw new RoomCapacityError(
       `Cannot start round: maximum allowed participants is ${MAX_PARTICIPANTS} (current: ${participantCount}).`
-    );
-  }
-  if (candidateCount !== DECK_SIZE) {
-    throw new Error(
-      `Cannot start round: movie deck must contain exactly ${DECK_SIZE} titles (provided: ${candidateCount}).`
     );
   }
 }

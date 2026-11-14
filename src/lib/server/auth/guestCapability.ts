@@ -360,3 +360,10 @@ export function buildGuestCookieAttributes(
     maxAge: maxAgeSeconds,
   };
 }
+
+export function buildClearedGuestCookieAttributes(
+  request: Request,
+  roomId: string
+): CookieAttributes {
+  return buildGuestCookieAttributes(request, roomId, "", 0);
+}

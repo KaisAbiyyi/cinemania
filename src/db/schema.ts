@@ -14,6 +14,9 @@ export type VoteType = "LIKE" | "SKIP";
 export type RoomEventType =
   | "ROOM_CREATED"
   | "PARTICIPANT_JOINED"
+  | "PARTICIPANT_LEFT"
+  | "HOST_TRANSFERRED"
+  | "ROSTER_FROZEN"
   | "ROUND_STARTED"
   | "VOTE_RECORDED"
   | "MATCH_ANNOUNCED"
@@ -54,6 +57,15 @@ export interface Round {
   status: RoundStatus;
   started_at: string;
   completed_at: string | null;
+}
+
+export interface RoundParticipant {
+  room_id: string;
+  round_id: string;
+  participant_id: string;
+  frozen_role: ParticipantRole;
+  joined_at: string;
+  frozen_at: string;
 }
 
 export interface Candidate {
