@@ -6,15 +6,67 @@ import { DatabaseSync } from "node:sqlite";
 import { Pool, type PoolConfig } from "pg";
 import type { Room, RoomParticipant } from "@/db/schema";
 import { CapabilityAuthError } from "@/lib/server/auth/guestCapability";
-import { PostgresRoomRepository } from "./postgresRoomRepository";
+import {
+  PostgresRoomRepository,
+  assertValidPgSchema,
+  normalizeParticipant,
+} from "./postgresRoomRepository";
 import { SqliteRoomRepository, type CreateRoomOptions } from "./roomRepository";
+
+export interface RoomMutationHooks {
+  afterWriteBeforeSessionInit?: () => void | Promise<void>;
+  beforeCommit?: (context: {
+    room: Room;
+    participants: RoomParticipant[];
+    participant: RoomParticipant;
+    sessionGeneration: number;
+    rejoined: boolean;
+  }) => void | Promise<void>;
+}
+
+export interface CreateRoomSessionOptions extends CreateRoomOptions {
+  hooks?: RoomMutationHooks;
+}
+
+export interface JoinRoomSessionOptions {
+  roomId: string;
+  participantId: string;
+  displayName: string;
+  requireExistingParticipant?: boolean;
+  verifyLockedSession?: (context: { room: Room; minGeneration: number }) => void;
+  hooks?: RoomMutationHooks;
+}
+
+export interface AtomicRoomSessionResult {
+  room: Room;
+  participants: RoomParticipant[];
+  participant: RoomParticipant;
+  sessionGeneration: number;
+  rejoined: boolean;
+}
+
+function assertSyncHookResult(value: unknown, hookName: string): void {
+  if (value && typeof (value as PromiseLike<unknown>).then === "function") {
+    throw new CapabilityAuthError(
+      500,
+      "ASYNC_HOOK_UNSUPPORTED_IN_SQLITE",
+      `SQLite synchronous transaction hook '${hookName}' must execute synchronously.`
+    );
+  }
+}
 
 export interface RoomAuthorityStore {
   createRoom(options: CreateRoomOptions): Promise<{ room: Room; host: RoomParticipant }>;
   joinRoom(roomId: string, participantId: string, displayName: string): Promise<RoomParticipant>;
+  createRoomWithSession(options: CreateRoomSessionOptions): Promise<AtomicRoomSessionResult>;
+  joinRoomWithSession(options: JoinRoomSessionOptions): Promise<AtomicRoomSessionResult>;
+  getConsistentRoomSnapshot(
+    roomId: string
+  ): Promise<{ room: Room; participants: RoomParticipant[] } | null>;
   getRoomById(roomId: string): Promise<Room | null>;
   getRoomByCode(code: string): Promise<Room | null>;
   getParticipant(roomId: string, participantId: string): Promise<RoomParticipant | null>;
+  getParticipantsByRoom(roomId: string): Promise<RoomParticipant[]>;
   getMinGeneration(roomId: string, participantId: string): Promise<number>;
   setMinGeneration(
     roomId: string,
@@ -211,6 +263,93 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
     return this.repo.joinRoom(roomId, participantId, displayName);
   }
 
+  private finalizeSqliteSessionInTx(
+    room: Room,
+    participant: RoomParticipant,
+    rejoined: boolean,
+    hooks?: RoomMutationHooks
+  ): AtomicRoomSessionResult {
+    if (hooks?.afterWriteBeforeSessionInit) {
+      assertSyncHookResult(
+        hooks.afterWriteBeforeSessionInit(),
+        "afterWriteBeforeSessionInit"
+      );
+    }
+
+    const rotatedAt = new Date().toISOString();
+    const sessionRow = this.db
+      .prepare(
+        `INSERT INTO guest_capability_sessions (room_id, participant_id, min_generation, rotated_at, expires_at)
+         VALUES (?, ?, 1, ?, ?)
+         ON CONFLICT(room_id, participant_id) DO UPDATE SET
+           expires_at = excluded.expires_at
+         RETURNING min_generation;`
+      )
+      .get(room.id, participant.participant_id, rotatedAt, room.expires_at) as unknown as
+      | { min_generation: number }
+      | undefined;
+    const sessionGeneration = sessionRow ? Number(sessionRow.min_generation) : 1;
+    const participants = this.repo.getParticipantsByRoom(room.id);
+
+    const result: AtomicRoomSessionResult = {
+      room,
+      participants,
+      participant,
+      sessionGeneration,
+      rejoined,
+    };
+    if (hooks?.beforeCommit) {
+      assertSyncHookResult(hooks.beforeCommit(result), "beforeCommit");
+    }
+    return result;
+  }
+
+  async createRoomWithSession(options: CreateRoomSessionOptions): Promise<AtomicRoomSessionResult> {
+    return this.repo.createRoomInTransaction(options, ({ room, host }) =>
+      this.finalizeSqliteSessionInTx(room, host, false, options.hooks)
+    );
+  }
+
+  async joinRoomWithSession(options: JoinRoomSessionOptions): Promise<AtomicRoomSessionResult> {
+    return this.repo.joinRoomInTransaction(
+      options.roomId,
+      options.participantId,
+      options.displayName,
+      {
+        beforeJoinLocked: (room) => {
+          const row = this.db
+            .prepare(
+              "SELECT min_generation FROM guest_capability_sessions WHERE room_id = ? AND participant_id = ? LIMIT 1;"
+            )
+            .get(room.id, options.participantId) as unknown as
+            | { min_generation: number }
+            | undefined;
+          const minGeneration = row ? Number(row.min_generation) : 1;
+          options.verifyLockedSession?.({ room, minGeneration });
+
+          if (options.requireExistingParticipant) {
+            const existing = this.repo.getParticipant(room.id, options.participantId);
+            if (!existing) {
+              throw new CapabilityAuthError(
+                403,
+                "PARTICIPANT_NOT_IN_ROOM",
+                "Capability does not match an active participant in this room."
+              );
+            }
+          }
+        },
+        afterJoin: ({ room, participant, rejoined }) =>
+          this.finalizeSqliteSessionInTx(room, participant, rejoined, options.hooks),
+      }
+    );
+  }
+
+  async getConsistentRoomSnapshot(
+    roomId: string
+  ): Promise<{ room: Room; participants: RoomParticipant[] } | null> {
+    return this.repo.getConsistentSnapshot(roomId);
+  }
+
   async getRoomById(roomId: string): Promise<Room | null> {
     return this.repo.getRoomById(roomId);
   }
@@ -223,6 +362,10 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
 
   async getParticipant(roomId: string, participantId: string): Promise<RoomParticipant | null> {
     return this.repo.getParticipant(roomId, participantId);
+  }
+
+  async getParticipantsByRoom(roomId: string): Promise<RoomParticipant[]> {
+    return this.repo.getParticipantsByRoom(roomId);
   }
 
   async getMinGeneration(roomId: string, participantId: string): Promise<number> {
@@ -308,11 +451,12 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
   private readonly schema?: string;
 
   constructor(pool: Pool, options?: { schema?: string }) {
-    if (options?.schema && !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(options.schema)) {
+    try {
+      this.schema = assertValidPgSchema(options?.schema);
+    } catch {
       throw new CapabilityAuthError(500, "DATABASE_CONFIG_INVALID", "Invalid PostgreSQL schema identifier.");
     }
     this.pool = pool;
-    this.schema = options?.schema;
     this.repo = new PostgresRoomRepository(pool, options);
   }
 
@@ -330,12 +474,107 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     }
   }
 
+  private async finalizeSessionInTx(
+    client: import("pg").Client | import("pg").PoolClient,
+    room: Room,
+    participant: RoomParticipant,
+    rejoined: boolean,
+    hooks?: RoomMutationHooks
+  ): Promise<AtomicRoomSessionResult> {
+    if (hooks?.afterWriteBeforeSessionInit) {
+      await hooks.afterWriteBeforeSessionInit();
+    }
+
+    const rotatedAt = new Date().toISOString();
+    const sessRes = await client.query(
+      `INSERT INTO guest_capability_sessions (room_id, participant_id, min_generation, rotated_at, expires_at)
+       VALUES ($1, $2, 1, $3, $4)
+       ON CONFLICT (room_id, participant_id) DO UPDATE SET
+         expires_at = EXCLUDED.expires_at
+       RETURNING min_generation;`,
+      [room.id, participant.participant_id, rotatedAt, room.expires_at]
+    );
+    const sessionGeneration =
+      sessRes.rows.length > 0
+        ? Number((sessRes.rows[0] as { min_generation: number }).min_generation)
+        : 1;
+
+    const partRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+      [room.id]
+    );
+    const participants = partRes.rows.map((row) =>
+      normalizeParticipant(row as Record<string, unknown>)
+    );
+
+    const result: AtomicRoomSessionResult = {
+      room,
+      participants,
+      participant,
+      sessionGeneration,
+      rejoined,
+    };
+    if (hooks?.beforeCommit) {
+      await hooks.beforeCommit(result);
+    }
+    return result;
+  }
+
   async createRoom(options: CreateRoomOptions): Promise<{ room: Room; host: RoomParticipant }> {
     return this.repo.createRoom(options);
   }
 
   async joinRoom(roomId: string, participantId: string, displayName: string): Promise<RoomParticipant> {
     return this.repo.joinRoom(roomId, participantId, displayName);
+  }
+
+  async createRoomWithSession(options: CreateRoomSessionOptions): Promise<AtomicRoomSessionResult> {
+    return this.repo.createRoomWithTx(options, async (client, { room, host }) =>
+      this.finalizeSessionInTx(client, room, host, false, options.hooks)
+    );
+  }
+
+  async joinRoomWithSession(options: JoinRoomSessionOptions): Promise<AtomicRoomSessionResult> {
+    return this.repo.joinRoomWithTx(
+      options.roomId,
+      options.participantId,
+      options.displayName,
+      {
+        beforeJoinLocked: async (client, room) => {
+          const genRes = await client.query(
+            "SELECT min_generation FROM guest_capability_sessions WHERE room_id = $1 AND participant_id = $2 LIMIT 1;",
+            [room.id, options.participantId]
+          );
+          const minGeneration =
+            genRes.rows.length > 0
+              ? Number((genRes.rows[0] as { min_generation: number }).min_generation)
+              : 1;
+          options.verifyLockedSession?.({ room, minGeneration });
+
+          if (options.requireExistingParticipant) {
+            const partRes = await client.query(
+              "SELECT 1 FROM room_participants WHERE room_id = $1 AND participant_id = $2 LIMIT 1;",
+              [room.id, options.participantId]
+            );
+            if (partRes.rows.length === 0) {
+              throw new CapabilityAuthError(
+                403,
+                "PARTICIPANT_NOT_IN_ROOM",
+                "Capability does not match an active participant in this room."
+              );
+            }
+          }
+        },
+        afterJoin: async (client, { room, participant, rejoined }) =>
+          this.finalizeSessionInTx(client, room, participant, rejoined, options.hooks),
+      }
+    );
+  }
+
+  async getConsistentRoomSnapshot(
+    roomId: string
+  ): Promise<{ room: Room; participants: RoomParticipant[] } | null> {
+    return this.repo.getConsistentSnapshot(roomId);
   }
 
   async getRoomById(roomId: string): Promise<Room | null> {
@@ -363,6 +602,10 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
 
   async getParticipant(roomId: string, participantId: string): Promise<RoomParticipant | null> {
     return this.repo.getParticipant(roomId, participantId);
+  }
+
+  async getParticipantsByRoom(roomId: string): Promise<RoomParticipant[]> {
+    return this.repo.getParticipantsByRoom(roomId);
   }
 
   async getMinGeneration(roomId: string, participantId: string): Promise<number> {

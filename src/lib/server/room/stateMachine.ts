@@ -1,4 +1,4 @@
-import { RoomStatus, DEFAULT_INACTIVITY_TTL_SECONDS, MIN_PARTICIPANTS, MAX_PARTICIPANTS, DECK_SIZE } from "../../../db/schema";
+import { Room, RoomStatus, DEFAULT_INACTIVITY_TTL_SECONDS, MIN_PARTICIPANTS, MAX_PARTICIPANTS, DECK_SIZE } from "../../../db/schema";
 
 export class InvalidStateTransitionError extends Error {
   readonly status = 409;
@@ -101,4 +101,19 @@ export function isRoomExpired(
 ): boolean {
   const expiry = calculateExpiryTimestamp(lastActivityDate, ttlSeconds);
   return now.getTime() >= expiry.getTime();
+}
+
+/**
+ * Evaluates whether a persisted room record is already terminal EXPIRED
+ * or past its explicit expires_at deadline.
+ */
+export function isRoomRecordExpired(
+  room: Pick<Room, "status" | "expires_at">,
+  now: Date = new Date()
+): boolean {
+  if (room.status === "EXPIRED") {
+    return true;
+  }
+  const expiresAtMs = new Date(room.expires_at).getTime();
+  return Number.isFinite(expiresAtMs) && expiresAtMs <= now.getTime();
 }

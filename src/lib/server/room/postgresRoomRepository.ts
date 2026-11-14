@@ -13,8 +13,14 @@ import {
 } from "../../../db/schema";
 import {
   assertValidTransition,
+  isRoomRecordExpired,
   validateStartRoundPrerequisites,
 } from "./stateMachine";
+import {
+  DEFAULT_CODE_GENERATION_MAX_RETRIES,
+  RoomCodeGenerationError,
+  generateRoomCode,
+} from "./roomCode";
 import {
   CreateRoomOptions,
   CandidateInput,
@@ -23,8 +29,16 @@ import {
   RoundNotFoundError,
   CandidateNotFoundError,
   RoomCapacityError,
-  generateRoomCode,
+  RoomExpiredError,
 } from "./roomRepository";
+
+export function assertValidPgSchema(schema?: string): string | undefined {
+  if (!schema) return undefined;
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(schema)) {
+    throw new Error(`Invalid PostgreSQL schema identifier: '${schema}'`);
+  }
+  return schema;
+}
 
 export interface PostgresRepositoryOptions {
   schema?: string;
@@ -38,7 +52,7 @@ function toIso(val: unknown): string {
   return String(val);
 }
 
-function normalizeRoom(row: Record<string, unknown>): Room {
+export function normalizeRoom(row: Record<string, unknown>): Room {
   return {
     id: String(row.id),
     code: String(row.code),
@@ -57,7 +71,7 @@ function normalizeRoom(row: Record<string, unknown>): Room {
   };
 }
 
-function normalizeParticipant(row: Record<string, unknown>): RoomParticipant {
+export function normalizeParticipant(row: Record<string, unknown>): RoomParticipant {
   return {
     room_id: String(row.room_id),
     participant_id: String(row.participant_id),
@@ -134,7 +148,7 @@ export class PostgresRoomRepository {
 
   constructor(db: Queryable, options?: PostgresRepositoryOptions) {
     this.db = db;
-    this.schema = options?.schema;
+    this.schema = assertValidPgSchema(options?.schema);
   }
 
   /**
@@ -147,16 +161,19 @@ export class PostgresRoomRepository {
   /**
    * Executes a callback within a managed transaction block with search path applied.
    */
-  private async withTransaction<T>(fn: (client: Client | PoolClient) => Promise<T>): Promise<T> {
+  public async withTransaction<T>(
+    fn: (client: Client | PoolClient) => Promise<T>,
+    beginSql = "BEGIN;"
+  ): Promise<T> {
     const isPool = "totalCount" in this.db && typeof (this.db as { connect?: unknown }).connect === "function";
     const client = isPool ? await (this.db as Pool).connect() : (this.db as Client | PoolClient);
     const shouldRelease = isPool && "release" in client;
 
     try {
       if (this.schema) {
-        await client.query(`SET search_path TO ${this.schema}, pg_temp;`);
+        await client.query(`SET search_path TO "${this.schema}", pg_temp;`);
       }
-      await client.query("BEGIN;");
+      await client.query(beginSql);
       const result = await fn(client);
       await client.query("COMMIT;");
       return result;
@@ -184,7 +201,7 @@ export class PostgresRoomRepository {
 
     try {
       if (this.schema) {
-        await client.query(`SET search_path TO ${this.schema}, pg_temp;`);
+        await client.query(`SET search_path TO "${this.schema}", pg_temp;`);
       }
       return await fn(client);
     } finally {
@@ -194,89 +211,261 @@ export class PostgresRoomRepository {
     }
   }
 
+  private async createRoomWithClient(
+    client: Client | PoolClient,
+    options: CreateRoomOptions
+  ): Promise<{ room: Room; host: RoomParticipant }> {
+    const roomId = crypto.randomUUID();
+    const hostParticipantId = options.hostParticipantId || crypto.randomUUID();
+    const ttlSeconds = options.inactivityTtlSeconds || DEFAULT_INACTIVITY_TTL_SECONDS;
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const expiresAt = new Date(now.getTime() + ttlSeconds * 1000).toISOString();
+
+    const codeGenerator = options.codeGenerator ?? generateRoomCode;
+    const maxAttempts = Math.max(1, options.maxCodeAttempts ?? DEFAULT_CODE_GENERATION_MAX_RETRIES);
+    let roomCode = "";
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      attempts++;
+      const candidateCode = codeGenerator();
+      const existing = await client.query("SELECT 1 FROM rooms WHERE code = $1 LIMIT 1;", [candidateCode]);
+      if (existing.rows.length > 0) {
+        continue;
+      }
+
+      // Step 1: Insert Room under savepoint so unique-code race retries do not abort the transaction
+      await client.query("SAVEPOINT sp_create_room_code;");
+      try {
+        await client.query(
+          `INSERT INTO rooms (
+            id, code, status, host_participant_id, state_version, participant_count,
+            matched_movie_id, current_round_id, deck_filter, inactivity_ttl_seconds,
+            last_activity_at, expires_at, created_at, updated_at
+          ) VALUES ($1, $2, 'LOBBY', NULL, 1, 1, NULL, NULL, $3, $4, $5, $6, $5, $5);`,
+          [
+            roomId,
+            candidateCode,
+            options.deckFilter ? JSON.stringify(options.deckFilter) : null,
+            ttlSeconds,
+            nowIso,
+            expiresAt,
+          ]
+        );
+        await client.query("RELEASE SAVEPOINT sp_create_room_code;");
+        roomCode = candidateCode;
+        break;
+      } catch (insertErr: unknown) {
+        await client.query("ROLLBACK TO SAVEPOINT sp_create_room_code;");
+        const pgCode =
+          typeof insertErr === "object" && insertErr !== null && "code" in insertErr
+            ? String((insertErr as { code?: unknown }).code)
+            : "";
+        const pgConstraint =
+          typeof insertErr === "object" && insertErr !== null && "constraint" in insertErr
+            ? String((insertErr as { constraint?: unknown }).constraint)
+            : "";
+        if (pgCode === "23505" && (!pgConstraint || pgConstraint.includes("code"))) {
+          continue;
+        }
+        throw insertErr;
+      }
+    }
+
+    if (!roomCode) {
+      throw new RoomCodeGenerationError(
+        `Failed to generate unique room code after ${maxAttempts} attempts`
+      );
+    }
+
+    // Step 2: Insert Host in room_participants
+    await client.query(
+      `INSERT INTO room_participants (
+        room_id, participant_id, display_name, role, is_connected, joined_at, last_seen_at
+      ) VALUES ($1, $2, $3, 'HOST', true, $4, $4);`,
+      [roomId, hostParticipantId, options.hostDisplayName, nowIso]
+    );
+
+    // Step 3: Link host_participant_id in rooms
+    await client.query(
+      "UPDATE rooms SET host_participant_id = $1 WHERE id = $2;",
+      [hostParticipantId, roomId]
+    );
+
+    // Step 4: Emit ROOM_CREATED outbox event
+    await client.query(
+      `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+       VALUES ($1, 1, 'ROOM_CREATED', $2, false, 0, false, $3);`,
+      [
+        roomId,
+        JSON.stringify({
+          roomCode,
+          hostParticipantId,
+          hostDisplayName: options.hostDisplayName,
+        }),
+        nowIso,
+      ]
+    );
+
+    const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1;", [roomId]);
+    const hostRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
+      [roomId, hostParticipantId]
+    );
+
+    return {
+      room: normalizeRoom(roomRes.rows[0]),
+      host: normalizeParticipant(hostRes.rows[0]),
+    };
+  }
+
+  private async joinRoomWithClient(
+    client: Client | PoolClient,
+    roomId: string,
+    participantId: string,
+    displayName: string,
+    beforeJoinLocked?: (client: Client | PoolClient, room: Room) => Promise<void>
+  ): Promise<{ room: Room; participant: RoomParticipant; rejoined: boolean }> {
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    // Acquire exclusive lock on the room to serialize concurrent joins
+    const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1 FOR UPDATE;", [roomId]);
+    if (roomRes.rows.length === 0) {
+      throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
+    }
+    const room = normalizeRoom(roomRes.rows[0]);
+
+    if (isRoomRecordExpired(room, now)) {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+
+    if (beforeJoinLocked) {
+      await beforeJoinLocked(client, room);
+    }
+
+    // 1. Idempotency check FIRST
+    const existingRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
+      [roomId, participantId]
+    );
+    if (existingRes.rows.length > 0) {
+      const newExpiresAt = new Date(now.getTime() + room.inactivity_ttl_seconds * 1000).toISOString();
+      await client.query(
+        "UPDATE room_participants SET last_seen_at = $1, is_connected = true WHERE room_id = $2 AND participant_id = $3;",
+        [nowIso, roomId, participantId]
+      );
+      await client.query(
+        "UPDATE rooms SET last_activity_at = $1, expires_at = $2, updated_at = $1 WHERE id = $3;",
+        [nowIso, newExpiresAt, roomId]
+      );
+      const updatedRoomRes = await client.query("SELECT * FROM rooms WHERE id = $1;", [roomId]);
+      const updatedPartRes = await client.query(
+        "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
+        [roomId, participantId]
+      );
+      const updatedRoom = updatedRoomRes.rows.length > 0 ? normalizeRoom(updatedRoomRes.rows[0]) : {
+        ...room,
+        last_activity_at: nowIso,
+        expires_at: newExpiresAt,
+        updated_at: nowIso,
+      };
+      const updatedParticipant = updatedPartRes.rows.length > 0
+        ? normalizeParticipant(updatedPartRes.rows[0])
+        : {
+            ...normalizeParticipant(existingRes.rows[0]),
+            last_seen_at: nowIso,
+            is_connected: true,
+          };
+      return {
+        room: updatedRoom,
+        participant: updatedParticipant,
+        rejoined: true,
+      };
+    }
+
+    // 2. Room lifecycle check
+    if (room.status !== "LOBBY") {
+      throw new RoomCapacityError(
+        `Cannot join room: status is '${room.status}', but must be 'LOBBY'.`,
+        "ROOM_NOT_JOINABLE"
+      );
+    }
+
+    // 3. Capacity check
+    if (room.participant_count >= MAX_PARTICIPANTS) {
+      throw new RoomCapacityError(
+        `Room has reached maximum capacity of ${MAX_PARTICIPANTS} participants.`,
+        "ROOM_FULL"
+      );
+    }
+
+    // 4. Insert participant
+    await client.query(
+      `INSERT INTO room_participants (
+        room_id, participant_id, display_name, role, is_connected, joined_at, last_seen_at
+      ) VALUES ($1, $2, $3, 'MEMBER', true, $4, $4);`,
+      [roomId, participantId, displayName, nowIso]
+    );
+
+    const nextVersion = room.state_version + 1;
+    const newParticipantCount = room.participant_count + 1;
+    const newExpiresAt = new Date(now.getTime() + room.inactivity_ttl_seconds * 1000).toISOString();
+
+    // 5. Update room state_version, participant_count, and extend expires_at
+    await client.query(
+      `UPDATE rooms
+       SET state_version = $1, participant_count = $2, last_activity_at = $3, expires_at = $4, updated_at = $3
+       WHERE id = $5;`,
+      [nextVersion, newParticipantCount, nowIso, newExpiresAt, roomId]
+    );
+
+    // 6. Insert PARTICIPANT_JOINED outbox event
+    await client.query(
+      `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+       VALUES ($1, $2, 'PARTICIPANT_JOINED', $3, false, 0, false, $4);`,
+      [
+        roomId,
+        nextVersion,
+        JSON.stringify({ participantId, displayName, participantCount: newParticipantCount }),
+        nowIso,
+      ]
+    );
+
+    const updatedRoomRes = await client.query("SELECT * FROM rooms WHERE id = $1;", [roomId]);
+    const partRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
+      [roomId, participantId]
+    );
+    return {
+      room: normalizeRoom(updatedRoomRes.rows[0]),
+      participant: normalizeParticipant(partRes.rows[0]),
+      rejoined: false,
+    };
+  }
+
   /**
    * Creates a new room in LOBBY status and registers the host participant.
    */
   async createRoom(options: CreateRoomOptions): Promise<{ room: Room; host: RoomParticipant }> {
+    return this.withTransaction((client) => this.createRoomWithClient(client, options));
+  }
+
+  /**
+   * Executes room creation plus caller-supplied follow-up work on the same
+   * transaction client prior to COMMIT.
+   */
+  async createRoomWithTx<T>(
+    options: CreateRoomOptions,
+    afterRoomCreated: (
+      client: Client | PoolClient,
+      created: { room: Room; host: RoomParticipant }
+    ) => Promise<T>
+  ): Promise<T> {
     return this.withTransaction(async (client) => {
-      const roomId = crypto.randomUUID();
-      const hostParticipantId = options.hostParticipantId || crypto.randomUUID();
-      const ttlSeconds = options.inactivityTtlSeconds || DEFAULT_INACTIVITY_TTL_SECONDS;
-      const now = new Date();
-      const nowIso = now.toISOString();
-      const expiresAt = new Date(now.getTime() + ttlSeconds * 1000).toISOString();
-
-      let roomCode = "";
-      let attempts = 0;
-      while (attempts < 5) {
-        attempts++;
-        const candidateCode = generateRoomCode();
-        const existing = await client.query("SELECT 1 FROM rooms WHERE code = $1 LIMIT 1;", [candidateCode]);
-        if (existing.rows.length === 0) {
-          roomCode = candidateCode;
-          break;
-        }
-      }
-      if (!roomCode) {
-        throw new Error("Failed to generate unique room code after 5 attempts");
-      }
-
-      // Step 1: Insert Room with host_participant_id = NULL
-      await client.query(
-        `INSERT INTO rooms (
-          id, code, status, host_participant_id, state_version, participant_count,
-          matched_movie_id, current_round_id, deck_filter, inactivity_ttl_seconds,
-          last_activity_at, expires_at, created_at, updated_at
-        ) VALUES ($1, $2, 'LOBBY', NULL, 1, 1, NULL, NULL, $3, $4, $5, $6, $5, $5);`,
-        [
-          roomId,
-          roomCode,
-          options.deckFilter ? JSON.stringify(options.deckFilter) : null,
-          ttlSeconds,
-          nowIso,
-          expiresAt,
-        ]
-      );
-
-      // Step 2: Insert Host in room_participants
-      await client.query(
-        `INSERT INTO room_participants (
-          room_id, participant_id, display_name, role, is_connected, joined_at, last_seen_at
-        ) VALUES ($1, $2, $3, 'HOST', true, $4, $4);`,
-        [roomId, hostParticipantId, options.hostDisplayName, nowIso]
-      );
-
-      // Step 3: Link host_participant_id in rooms
-      await client.query(
-        "UPDATE rooms SET host_participant_id = $1 WHERE id = $2;",
-        [hostParticipantId, roomId]
-      );
-
-      // Step 4: Emit ROOM_CREATED outbox event
-      await client.query(
-        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-         VALUES ($1, 1, 'ROOM_CREATED', $2, false, 0, false, $3);`,
-        [
-          roomId,
-          JSON.stringify({
-            roomCode,
-            hostParticipantId,
-            hostDisplayName: options.hostDisplayName,
-          }),
-          nowIso,
-        ]
-      );
-
-      const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1;", [roomId]);
-      const hostRes = await client.query(
-        "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
-        [roomId, hostParticipantId]
-      );
-
-      return {
-        room: normalizeRoom(roomRes.rows[0]),
-        host: normalizeParticipant(hostRes.rows[0]),
-      };
+      const created = await this.createRoomWithClient(client, options);
+      return afterRoomCreated(client, created);
     });
   }
 
@@ -286,86 +475,58 @@ export class PostgresRoomRepository {
    */
   async joinRoom(roomId: string, participantId: string, displayName: string): Promise<RoomParticipant> {
     return this.withTransaction(async (client) => {
-      const now = new Date();
-      const nowIso = now.toISOString();
-
-      // Acquire exclusive lock on the room to serialize concurrent joins
-      const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1 FOR UPDATE;", [roomId]);
-      if (roomRes.rows.length === 0) {
-        throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
-      }
-      const room = roomRes.rows[0];
-
-      // 1. Idempotency check FIRST
-      const existingRes = await client.query(
-        "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
-        [roomId, participantId]
-      );
-      if (existingRes.rows.length > 0) {
-        const newExpiresAt = new Date(now.getTime() + room.inactivity_ttl_seconds * 1000).toISOString();
-        await client.query(
-          "UPDATE room_participants SET last_seen_at = $1, is_connected = true WHERE room_id = $2 AND participant_id = $3;",
-          [nowIso, roomId, participantId]
-        );
-        await client.query(
-          "UPDATE rooms SET last_activity_at = $1, expires_at = $2, updated_at = $1 WHERE id = $3;",
-          [nowIso, newExpiresAt, roomId]
-        );
-        return {
-          ...normalizeParticipant(existingRes.rows[0]),
-          last_seen_at: nowIso,
-          is_connected: true,
-        };
-      }
-
-      // 2. Room lifecycle check
-      if (room.status !== "LOBBY") {
-        throw new RoomCapacityError(`Cannot join room: status is '${room.status}', but must be 'LOBBY'.`);
-      }
-
-      // 3. Capacity check
-      if (room.participant_count >= MAX_PARTICIPANTS) {
-        throw new RoomCapacityError(`Room has reached maximum capacity of ${MAX_PARTICIPANTS} participants.`);
-      }
-
-      // 4. Insert participant
-      await client.query(
-        `INSERT INTO room_participants (
-          room_id, participant_id, display_name, role, is_connected, joined_at, last_seen_at
-        ) VALUES ($1, $2, $3, 'MEMBER', true, $4, $4);`,
-        [roomId, participantId, displayName, nowIso]
-      );
-
-      const nextVersion = room.state_version + 1;
-      const newParticipantCount = room.participant_count + 1;
-      const newExpiresAt = new Date(now.getTime() + room.inactivity_ttl_seconds * 1000).toISOString();
-
-      // 5. Update room state_version, participant_count, and extend expires_at
-      await client.query(
-        `UPDATE rooms
-         SET state_version = $1, participant_count = $2, last_activity_at = $3, expires_at = $4, updated_at = $3
-         WHERE id = $5;`,
-        [nextVersion, newParticipantCount, nowIso, newExpiresAt, roomId]
-      );
-
-      // 6. Insert PARTICIPANT_JOINED outbox event
-      await client.query(
-        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
-         VALUES ($1, $2, 'PARTICIPANT_JOINED', $3, false, 0, false, $4);`,
-        [
-          roomId,
-          nextVersion,
-          JSON.stringify({ participantId, displayName, participantCount: newParticipantCount }),
-          nowIso,
-        ]
-      );
-
-      const partRes = await client.query(
-        "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
-        [roomId, participantId]
-      );
-      return normalizeParticipant(partRes.rows[0]);
+      const joined = await this.joinRoomWithClient(client, roomId, participantId, displayName);
+      return joined.participant;
     });
+  }
+
+  /**
+   * Executes join/reconnect plus locked session generation verification/initialization
+   * and coherent snapshot read within one PostgreSQL transaction.
+   */
+  async joinRoomWithTx<T>(
+    roomId: string,
+    participantId: string,
+    displayName: string,
+    callbacks: {
+      beforeJoinLocked?: (client: Client | PoolClient, room: Room) => Promise<void>;
+      afterJoin: (
+        client: Client | PoolClient,
+        joined: { room: Room; participant: RoomParticipant; rejoined: boolean }
+      ) => Promise<T>;
+    }
+  ): Promise<T> {
+    return this.withTransaction(async (client) => {
+      const joined = await this.joinRoomWithClient(
+        client,
+        roomId,
+        participantId,
+        displayName,
+        callbacks.beforeJoinLocked
+      );
+      return callbacks.afterJoin(client, joined);
+    });
+  }
+
+  /**
+   * Reads room and ordered participant roster within a single REPEATABLE READ READ ONLY
+   * snapshot transaction so stateVersion and participant roster are always mutually consistent.
+   */
+  async getConsistentSnapshot(roomId: string): Promise<{ room: Room; participants: RoomParticipant[] } | null> {
+    return this.withTransaction(async (client) => {
+      const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1 LIMIT 1;", [roomId]);
+      if (roomRes.rows.length === 0) {
+        return null;
+      }
+      const partRes = await client.query(
+        "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+        [roomId]
+      );
+      return {
+        room: normalizeRoom(roomRes.rows[0]),
+        participants: partRes.rows.map((row) => normalizeParticipant(row)),
+      };
+    }, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;");
   }
 
   /**
@@ -681,6 +842,16 @@ export class PostgresRoomRepository {
       );
       if (res.rows.length === 0) return null;
       return normalizeParticipant(res.rows[0]);
+    });
+  }
+
+  async getParticipantsByRoom(roomId: string): Promise<RoomParticipant[]> {
+    return this.withClient(async (client) => {
+      const res = await client.query(
+        "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+        [roomId]
+      );
+      return res.rows.map((row) => normalizeParticipant(row));
     });
   }
 
