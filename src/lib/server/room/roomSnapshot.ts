@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import {
+  Candidate,
+  DECK_SIZE,
   MAX_PARTICIPANTS,
   MIN_PARTICIPANTS,
   ParticipantRole,
@@ -8,6 +10,14 @@ import {
   RoomStatus,
   RoundParticipant,
 } from "@/db/schema";
+import { ValidationError } from "@/lib/api/errorResponse";
+import {
+  normalizeRoomDeckFilter,
+  parseOptionalDeckFilterFromBody,
+  resolveEffectiveRoomDeckFilter,
+  type CanonicalRoomDeckFilter,
+  type SafeDeckCandidate,
+} from "@/lib/schemas/roomDeck";
 import {
   CapabilityAuthError,
   type CookieAttributes,
@@ -23,8 +33,15 @@ import {
 import { requireRoomActor, resolveGuestTokenFromRequest } from "@/lib/server/auth/roomAuth";
 import { buildRoomInvitePath, normalizeRoomCodeInput } from "./roomCode";
 import {
+  fetchAndBuildDeterministicDeck,
+  toSafeDeckCandidate,
+  type TmdbDiscoverMovieFetcher,
+} from "./roomDeck";
+import {
+  RoomCapacityError,
   RoomExpiredError,
   RoomNotFoundError,
+  computeCanonicalLobbyFilterJson,
   type LeaveLobbyResult,
   type StartLobbyRoundResult,
 } from "./roomRepository";
@@ -61,9 +78,31 @@ export interface SafeRoomSnapshot {
   canStart: boolean;
   currentRoundId: string | null;
   frozenQuorum: number | null;
+  deckFilter: CanonicalRoomDeckFilter;
+  deckSize: number;
+  expectedDeckSize: number;
+  isDeckShortage: boolean;
+  deck: SafeDeckCandidate[];
   expiresAt: string;
   createdAt: string;
   participants: SafeRoomParticipant[];
+}
+
+export interface RoomDeckReadResult {
+  room: {
+    roomId: string;
+    code: string;
+    status: RoomStatus;
+    stateVersion: number;
+    currentRoundId: string | null;
+    frozenQuorum: number | null;
+    deckFilter: CanonicalRoomDeckFilter;
+    deckSize: number;
+    expectedDeckSize: number;
+    isDeckShortage: boolean;
+  };
+  viewer: RoomSnapshotResult["viewer"];
+  deck: SafeDeckCandidate[];
 }
 
 export interface RoomSessionViewer {
@@ -180,7 +219,8 @@ export function buildSafeRoomSnapshot(
   participants: RoomParticipant[],
   viewerParticipantId: string,
   now: Date = new Date(),
-  roundParticipants: RoundParticipant[] = []
+  roundParticipants: RoundParticipant[] = [],
+  candidates: Candidate[] = []
 ): SafeRoomSnapshot {
   if (room.participant_count !== participants.length) {
     throw new CapabilityAuthError(
@@ -196,6 +236,10 @@ export function buildSafeRoomSnapshot(
   const participantCount = room.participant_count;
   const hasFrozenRoster = Boolean(room.current_round_id && roundParticipants.length > 0);
   const frozenIds = new Set(roundParticipants.map((rp) => rp.participant_id.toLowerCase()));
+  const deckFilter = resolveEffectiveRoomDeckFilter(room.deck_filter);
+  const deck: SafeDeckCandidate[] = room.current_round_id
+    ? [...candidates].sort((a, b) => a.position - b.position).map(toSafeDeckCandidate)
+    : [];
 
   return {
     roomId: room.id,
@@ -212,6 +256,11 @@ export function buildSafeRoomSnapshot(
       participantCount <= MAX_PARTICIPANTS,
     currentRoundId: room.current_round_id,
     frozenQuorum: hasFrozenRoster ? roundParticipants.length : null,
+    deckFilter,
+    deckSize: deck.length,
+    expectedDeckSize: DECK_SIZE,
+    isDeckShortage: Boolean(room.current_round_id && deck.length > 0 && deck.length < DECK_SIZE),
+    deck,
     expiresAt: room.expires_at,
     createdAt: room.created_at,
     participants: participants.map((participant) => {
@@ -262,12 +311,14 @@ function buildAtomicSnapshotResult(
 ): RoomSnapshotResult {
   const role = resolveAuthoritativeRole(result.room, result.participant);
   const roundParticipants = result.roundParticipants ?? [];
+  const candidates = result.candidates ?? [];
   const safeRoom = buildSafeRoomSnapshot(
     result.room,
     result.participants,
     result.participant.participant_id,
     new Date(),
-    roundParticipants
+    roundParticipants,
+    candidates
   );
   const isEligibleVoter = Boolean(
     safeRoom.frozenQuorum !== null &&
@@ -302,10 +353,12 @@ export async function createRoomWithSession(
   getCapabilitySecret();
 
   const hostDisplayName = normalizeDisplayName(body.displayName, "Host");
+  const deckFilter = parseOptionalDeckFilterFromBody(body);
   let mintedToken = "";
 
   const result = await store.createRoomWithSession({
     hostDisplayName,
+    ...(deckFilter ? { deckFilter } : {}),
     hooks: createPreCommitMintHooks(options?.hooks, (token) => {
       mintedToken = token;
     }),
@@ -416,7 +469,8 @@ export async function getAuthenticatedRoomSnapshot(
     consistent.participants,
     viewerParticipant.participant_id,
     new Date(),
-    consistent.roundParticipants
+    consistent.roundParticipants,
+    consistent.candidates
   );
   const isEligibleVoter = Boolean(
     safeRoom.frozenQuorum !== null &&
@@ -437,22 +491,173 @@ export async function getAuthenticatedRoomSnapshot(
 }
 
 /**
- * Host-only action to start the voting round from LOBBY (2..5 participants) and
- * freeze eligible voter IDs in round_participants. Ignores any client roster/quorum fields.
+ * Returns the persisted deterministic ordered movie deck and common filters
+ * for an authenticated room participant without calling upstream TMDB APIs.
+ */
+export async function getAuthenticatedRoomDeck(
+  request: Request,
+  roomId: string,
+  store: RoomAuthorityStore = getRoomAuthorityStore()
+): Promise<RoomDeckReadResult> {
+  const snapshot = await getAuthenticatedRoomSnapshot(request, roomId, store);
+  return {
+    room: {
+      roomId: snapshot.room.roomId,
+      code: snapshot.room.code,
+      status: snapshot.room.status,
+      stateVersion: snapshot.room.stateVersion,
+      currentRoundId: snapshot.room.currentRoundId,
+      frozenQuorum: snapshot.room.frozenQuorum,
+      deckFilter: snapshot.room.deckFilter,
+      deckSize: snapshot.room.deckSize,
+      expectedDeckSize: snapshot.room.expectedDeckSize,
+      isDeckShortage: snapshot.room.isDeckShortage,
+    },
+    viewer: snapshot.viewer,
+    deck: snapshot.room.deck,
+  };
+}
+
+function parseFilterUpdatePayload(body: Record<string, unknown>): CanonicalRoomDeckFilter {
+  const hasDeckFilter = Object.prototype.hasOwnProperty.call(body, "deckFilter");
+  const hasFilters = Object.prototype.hasOwnProperty.call(body, "filters");
+  if (hasDeckFilter || hasFilters) {
+    const allowedWrapperKeys = new Set(["deckFilter", "filters"]);
+    for (const key of Object.keys(body)) {
+      if (!allowedWrapperKeys.has(key)) {
+        throw new ValidationError(`Unexpected field '${key}' alongside deck filter payload.`);
+      }
+    }
+    return parseOptionalDeckFilterFromBody(body) ?? resolveEffectiveRoomDeckFilter(null);
+  }
+  return normalizeRoomDeckFilter(body);
+}
+
+/**
+ * Host-only action to validate and persist common movie deck filters while room is in LOBBY.
+ */
+export async function updateRoomFiltersWithSession(
+  request: Request,
+  roomId: string,
+  body: Record<string, unknown>,
+  store: RoomAuthorityStore = getRoomAuthorityStore(),
+  options?: { beforeCommit?: () => void | Promise<void> }
+): Promise<RoomSnapshotResult> {
+  getCapabilitySecret();
+  const actor = await requireRoomActor(request, roomId, store, { requireHost: true });
+  const token = resolveGuestTokenFromRequest(request, actor.room.id);
+  const deckFilter = parseFilterUpdatePayload(body);
+
+  const updated = await store.updateRoomDeckFilterWithSession({
+    roomId: actor.room.id,
+    actorParticipantId: actor.participant.participant_id,
+    deckFilter,
+    verifyLockedSession: ({ minGeneration }) => {
+      verifyGuestCapabilityToken(token, {
+        expectedRoomId: actor.room.id,
+        minGeneration,
+      });
+    },
+    beforeCommit: options?.beforeCommit ? () => options.beforeCommit!() : undefined,
+  });
+
+  const viewerParticipant = updated.participants.find(
+    (p) => p.participant_id.toLowerCase() === actor.participant.participant_id.toLowerCase()
+  );
+  if (!viewerParticipant) {
+    throw new CapabilityAuthError(
+      403,
+      "PARTICIPANT_NOT_IN_ROOM",
+      "Host capability no longer matches an active participant."
+    );
+  }
+
+  const role = resolveAuthoritativeRole(updated.room, viewerParticipant);
+  const safeRoom = buildSafeRoomSnapshot(
+    updated.room,
+    updated.participants,
+    viewerParticipant.participant_id,
+    new Date(),
+    [],
+    []
+  );
+
+  return {
+    room: safeRoom,
+    viewer: {
+      participantId: viewerParticipant.participant_id,
+      displayName: viewerParticipant.display_name,
+      role,
+      isEligibleVoter: false,
+    },
+  };
+}
+
+/**
+ * Host-only action to generate the deterministic movie deck from TMDB, transition LOBBY -> ACTIVE,
+ * freeze eligible voter IDs in round_participants, and persist candidates atomically.
+ * Ignores any client roster/quorum fields.
  */
 export async function startRoomRoundWithSession(
   request: Request,
   roomId: string,
   store: RoomAuthorityStore = getRoomAuthorityStore(),
-  options?: { beforeCommit?: (started: StartLobbyRoundResult) => void | Promise<void> }
+  options?: {
+    body?: Record<string, unknown>;
+    beforeCommit?: (started: StartLobbyRoundResult) => void | Promise<void>;
+    discoverFetcher?: TmdbDiscoverMovieFetcher;
+    maxPages?: number;
+  }
 ): Promise<RoomSnapshotResult> {
   getCapabilitySecret();
   const actor = await requireRoomActor(request, roomId, store, { requireHost: true });
   const token = resolveGuestTokenFromRequest(request, actor.room.id);
 
+  if (isRoomRecordExpired(actor.room)) {
+    throw new RoomExpiredError(`Room '${actor.room.code}' has expired.`);
+  }
+  if (actor.room.status !== "LOBBY") {
+    throw new RoomCapacityError(
+      `Cannot start round: room status is '${actor.room.status}', but must be 'LOBBY'.`,
+      "ROOM_ALREADY_ACTIVE"
+    );
+  }
+  if (actor.room.participant_count < MIN_PARTICIPANTS) {
+    throw new RoomCapacityError(
+      `Cannot start round: at least ${MIN_PARTICIPANTS} participants required (current: ${actor.room.participant_count}).`,
+      "INSUFFICIENT_PARTICIPANTS"
+    );
+  }
+  if (actor.room.participant_count > MAX_PARTICIPANTS) {
+    throw new RoomCapacityError(
+      `Cannot start round: maximum allowed participants is ${MAX_PARTICIPANTS} (current: ${actor.room.participant_count}).`,
+      "ROOM_FULL"
+    );
+  }
+
+  const inlineFilter = parseOptionalDeckFilterFromBody(options?.body);
+  const effectiveFilter = inlineFilter ?? resolveEffectiveRoomDeckFilter(actor.room.deck_filter);
+  const expectedLobbyFilterJson =
+    inlineFilter !== undefined ? undefined : computeCanonicalLobbyFilterJson(actor.room.deck_filter);
+
+  // Fetch and deterministically order candidate deck outside DB transaction locks (L-053)
+  const builtDeck = await fetchAndBuildDeterministicDeck({
+    roomId: actor.room.id,
+    roundNumber: 1,
+    filter: effectiveFilter,
+    maxPages: options?.maxPages,
+    discoverFetcher: options?.discoverFetcher,
+  });
+
   const started = await store.startLobbyRoundWithSession({
     roomId: actor.room.id,
     actorParticipantId: actor.participant.participant_id,
+    options: {
+      candidates: builtDeck.candidates,
+      deckFilter: effectiveFilter,
+      expectedLobbyFilterJson,
+      deckSeed: builtDeck.deckSeed,
+    },
     verifyLockedSession: ({ minGeneration }) => {
       verifyGuestCapabilityToken(token, {
         expectedRoomId: actor.room.id,
@@ -479,7 +684,8 @@ export async function startRoomRoundWithSession(
     started.participants,
     viewerParticipant.participant_id,
     new Date(),
-    started.frozenParticipants
+    started.frozenParticipants,
+    started.candidates
   );
 
   return {

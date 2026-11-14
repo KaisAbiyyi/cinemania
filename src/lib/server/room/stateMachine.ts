@@ -28,6 +28,19 @@ export class RoomCapacityError extends Error {
   }
 }
 
+export class DeckEmptyError extends Error {
+  readonly status = 422;
+  readonly code = "DECK_EMPTY";
+
+  constructor(
+    message = "No movies matched the selected room filters. Adjust filters and try starting again."
+  ) {
+    super(message);
+    this.name = "DeckEmptyError";
+    Object.setPrototypeOf(this, DeckEmptyError.prototype);
+  }
+}
+
 /**
  * Authoritative Transition Table:
  * Maps each current state to its strictly permitted target states.
@@ -68,6 +81,22 @@ export function validateStartRoundPrerequisites(participantCount: number, candid
   if (candidateCount !== DECK_SIZE) {
     throw new Error(
       `Cannot start round: movie deck must contain exactly ${DECK_SIZE} titles (provided: ${candidateCount}).`
+    );
+  }
+}
+
+/**
+ * Validates runtime deck bounds (1..DECK_SIZE unique candidates) when starting an ACTIVE round.
+ * Throws recoverable DeckEmptyError (422) when 0 matching titles exist.
+ */
+export function validateStartRoundDeckBounds(participantCount: number, candidateCount: number): void {
+  validateStartLobbyRoundPrerequisites(participantCount);
+  if (!Number.isInteger(candidateCount) || candidateCount < 1) {
+    throw new DeckEmptyError();
+  }
+  if (candidateCount > DECK_SIZE) {
+    throw new RoomCapacityError(
+      `Cannot start round: movie deck cannot exceed ${DECK_SIZE} titles (provided: ${candidateCount}).`
     );
   }
 }

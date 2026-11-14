@@ -15,10 +15,10 @@ export async function POST(
 ) {
   try {
     assertSameOriginCsrf(request);
-    await parseJsonBodySafe(request);
+    const body = await parseJsonBodySafe(request);
     const { roomId } = await context.params;
     const store = getRoomAuthorityStore();
-    const result = await startRoomRoundWithSession(request, roomId, store);
+    const result = await startRoomRoundWithSession(request, roomId, store, { body });
 
     return privateJsonResponse(
       {

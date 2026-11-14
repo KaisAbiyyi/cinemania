@@ -4,13 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { NextRequest } from "next/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as createRoomPost } from "@/app/api/rooms/route";
 import { POST as joinRoomPost } from "@/app/api/rooms/join/route";
 import { GET as getRoomSnapshotGet } from "@/app/api/rooms/[roomId]/route";
 import { POST as leaveRoomPost } from "@/app/api/rooms/[roomId]/leave/route";
 import { POST as startRoomPost } from "@/app/api/rooms/[roomId]/start/route";
 import { resetRoomAuthorityStoreForTests } from "@/lib/server/room/roomStore";
+import tmdbApi from "@/services/tmdbApi";
 
 const TEST_SECRET = "test-capability-signing-secret-cine-015-64-characters-long-abcdef02";
 
@@ -82,9 +83,26 @@ describe("CINE-015 Lobby Roster, Leave/Host Transfer, Start & Freeze API Integra
     delete process.env.SUPABASE_PG_HOST;
     delete process.env.CINEMATCH_ALLOW_LOCAL_SQLITE_IN_PROD;
     resetRoomAuthorityStoreForTests();
+    vi.spyOn(tmdbApi, "get").mockResolvedValue({
+      data: {
+        page: 1,
+        total_pages: 1,
+        total_results: 20,
+        results: Array.from({ length: 20 }, (_, i) => ({
+          id: 910001 + i,
+          title: `Lobby Freeze Movie ${i + 1}`,
+          poster_path: `/freeze-${i + 1}.jpg`,
+          release_date: "2024-03-01",
+          vote_average: 7.4,
+          overview: `Synopsis ${i + 1}`,
+          adult: false,
+        })),
+      },
+    });
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     resetRoomAuthorityStoreForTests();
     delete process.env.CINEMATCH_CAPABILITY_SECRET;
     delete process.env.CINEMATCH_SQLITE_PATH;
