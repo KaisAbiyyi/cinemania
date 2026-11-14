@@ -8,8 +8,8 @@ export const MAX_TOTAL_PARAMS = 25;
 export const MAX_REPEATED_PARAM_COUNT = 1;
 
 // Injection and protocol guard patterns
-const DISALLOWED_URL_PATTERN = /(?:https?:\/\/|ftp:\/\/|javascript:|data:|\/\/)/i;
-const CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/;
+export const DISALLOWED_URL_PATTERN = /(?:https?:\/\/|ftp:\/\/|javascript:|data:|\/\/)/i;
+export const CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/;
 
 /**
  * Validates low-level query parameter constraints:
@@ -114,7 +114,7 @@ export const ALL_ALLOWED_SORT_VALUES = Array.from(
 ) as [string, ...string[]];
 
 // Common helper schemas
-const booleanString = z.preprocess((val) => {
+export const booleanString = z.preprocess((val) => {
   if (val === "true" || val === true) return true;
   if (val === "false" || val === false) return false;
   return val;
@@ -122,7 +122,7 @@ const booleanString = z.preprocess((val) => {
 
 // Validates both YYYY-MM-DD and ISO timestamp (e.g. 2026-11-11T00:00:00.000Z),
 // normalizes safely to canonical YYYY-MM-DD for TMDB API, and validates calendar validity (e.g. rejects 2026-02-31)
-const calendarDateString = z.preprocess(
+export const calendarDateString = z.preprocess(
   (val) => {
     if (typeof val !== "string") return val;
     const trimmed = val.trim();
@@ -152,7 +152,7 @@ const calendarDateString = z.preprocess(
     )
 );
 
-const idListString = z
+export const idListString = z
   .string()
   .regex(/^(\d+[|,])*\d+$/, "Expected comma or pipe-separated integer IDs")
   .max(200);

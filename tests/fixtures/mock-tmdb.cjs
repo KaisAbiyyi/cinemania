@@ -249,7 +249,58 @@ function getFixture(urlObj) {
     return fixtures.tvList;
   }
 
-  if (pathname.includes('/discover/movie') || pathname.includes('/movie/popular') || pathname.includes('/movie/top_rated')) {
+  if (pathname.includes('/discover/movie')) {
+    const kw = search.get('with_keywords') || '';
+    if (kw === '999991') {
+      return fixtures.searchEmpty;
+    }
+    if (kw === '999992') {
+      return {
+        page: 1,
+        results: [
+          {
+            id: 999901,
+            title: "Shortage Single Posterless Movie",
+            overview: "Deterministic single-result fixture without poster image.",
+            poster_path: null,
+            release_date: "2024-05-12",
+            vote_average: 7.5,
+            adult: false,
+          },
+        ],
+        total_pages: 1,
+        total_results: 1,
+      };
+    }
+    if (kw === '999993') {
+      return {
+        errorStatus: 429,
+        errorBody: { status_code: 25, status_message: "Rate limit exceeded" },
+        headers: { "retry-after": "3" },
+      };
+    }
+    if (kw === '999994' || kw === '999995') {
+      const count = kw === '999995' ? 100 : 20;
+      const results = Array.from({ length: count }, (_, idx) => ({
+        id: 800000 + idx + 1,
+        title: `Deterministic Movie ${idx + 1}`,
+        overview: `Overview for Deterministic Movie ${idx + 1}.`,
+        poster_path: idx % 5 === 0 ? null : `/poster_${idx + 1}.jpg`,
+        release_date: `2020-01-${String((idx % 28) + 1).padStart(2, '0')}`,
+        vote_average: Number((6 + (idx % 40) / 10).toFixed(1)),
+        adult: false,
+      }));
+      return {
+        page: 1,
+        results,
+        total_pages: 1,
+        total_results: count,
+      };
+    }
+    return fixtures.movieList;
+  }
+
+  if (pathname.includes('/movie/popular') || pathname.includes('/movie/top_rated')) {
     return fixtures.movieList;
   }
 
@@ -331,7 +382,8 @@ https.request = function(...args) {
     clientRes.statusCode = statusCode;
     clientRes.headers = {
       'content-type': 'application/json; charset=utf-8',
-      'content-length': String(Buffer.byteLength(bodyStr))
+      'content-length': String(Buffer.byteLength(bodyStr)),
+      ...(fixtureResult.headers || {})
     };
 
     clientReq.on('finish', () => {

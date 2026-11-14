@@ -12,10 +12,13 @@ import {
   MIN_PARTICIPANTS,
   MAX_PARTICIPANTS,
   DEFAULT_INACTIVITY_TTL_SECONDS,
+  DECK_SIZE,
 } from "../../../db/schema";
+import type { CanonicalRoomDeckFilter } from "@/lib/schemas/roomDeck";
 import { CapabilityAuthError } from "../auth/guestCapability";
 import {
   assertValidTransition,
+  DeckEmptyError,
   isRoomRecordExpired,
   validateStartRoundPrerequisites,
 } from "./stateMachine";
@@ -28,7 +31,11 @@ import {
   CreateRoomOptions,
   CandidateInput,
   LeaveLobbyResult,
+  StartLobbyRoundOptions,
   StartLobbyRoundResult,
+  UpdateDeckFilterResult,
+  assertValidUniqueRoundCandidates,
+  computeCanonicalLobbyFilterJson,
   RoomNotFoundError,
   ParticipantNotFoundError,
   RoundNotFoundError,
@@ -110,7 +117,7 @@ export function normalizeRoundParticipant(row: Record<string, unknown>): RoundPa
   };
 }
 
-function normalizeCandidate(row: Record<string, unknown>): Candidate {
+export function normalizeCandidate(row: Record<string, unknown>): Candidate {
   return {
     id: String(row.id),
     round_id: String(row.round_id),
@@ -726,11 +733,128 @@ export class PostgresRoomRepository {
     });
   }
 
+  private async updateRoomDeckFilterWithClient(
+    client: Client | PoolClient,
+    roomId: string,
+    actorParticipantId: string,
+    deckFilter: CanonicalRoomDeckFilter,
+    beforeUpdateLocked?: (client: Client | PoolClient, room: Room) => Promise<void>
+  ): Promise<UpdateDeckFilterResult> {
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1 FOR UPDATE;", [roomId]);
+    if (roomRes.rows.length === 0) {
+      throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
+    }
+    const room = normalizeRoom(roomRes.rows[0]);
+
+    if (isRoomRecordExpired(room, now)) {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+
+    if (beforeUpdateLocked) {
+      await beforeUpdateLocked(client, room);
+    }
+
+    const actorRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2;",
+      [roomId, actorParticipantId]
+    );
+    if (actorRes.rows.length === 0) {
+      throw new CapabilityAuthError(
+        403,
+        "PARTICIPANT_NOT_IN_ROOM",
+        "Guest is not a member of this room."
+      );
+    }
+    const actor = normalizeParticipant(actorRes.rows[0]);
+    const authoritativeIsHost =
+      actor.role === "HOST" &&
+      room.host_participant_id?.toLowerCase() === actor.participant_id.toLowerCase();
+    if (!authoritativeIsHost) {
+      throw new CapabilityAuthError(
+        403,
+        "HOST_ONLY_ACTION",
+        "Only the room host can update room filters."
+      );
+    }
+
+    if (room.status !== "LOBBY") {
+      throw new RoomCapacityError(
+        `Cannot update filters: room status is '${room.status}', filters lock once round starts.`,
+        "FILTER_LOCKED"
+      );
+    }
+
+    const nextVersion = room.state_version + 1;
+    const newExpiresAt = new Date(
+      now.getTime() + room.inactivity_ttl_seconds * 1000
+    ).toISOString();
+
+    await client.query(
+      `UPDATE rooms
+       SET deck_filter = $1::jsonb, state_version = $2,
+           last_activity_at = $3, expires_at = $4, updated_at = $3
+       WHERE id = $5;`,
+      [JSON.stringify(deckFilter), nextVersion, nowIso, newExpiresAt, roomId]
+    );
+
+    await client.query(
+      `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+       VALUES ($1, $2, 'DECK_FILTER_UPDATED', $3, false, 0, false, $4);`,
+      [roomId, nextVersion, JSON.stringify({ deckFilter }), nowIso]
+    );
+
+    const updatedRoomRes = await client.query("SELECT * FROM rooms WHERE id = $1;", [roomId]);
+    const partsRes = await client.query(
+      "SELECT * FROM room_participants WHERE room_id = $1 ORDER BY joined_at ASC, participant_id ASC;",
+      [roomId]
+    );
+
+    return {
+      room: normalizeRoom(updatedRoomRes.rows[0]),
+      participants: partsRes.rows.map((row) => normalizeParticipant(row)),
+    };
+  }
+
+  async updateRoomDeckFilter(
+    roomId: string,
+    actorParticipantId: string,
+    deckFilter: CanonicalRoomDeckFilter
+  ): Promise<UpdateDeckFilterResult> {
+    return this.withTransaction((client) =>
+      this.updateRoomDeckFilterWithClient(client, roomId, actorParticipantId, deckFilter)
+    );
+  }
+
+  async updateRoomDeckFilterWithTx<T>(
+    roomId: string,
+    actorParticipantId: string,
+    deckFilter: CanonicalRoomDeckFilter,
+    callbacks: {
+      beforeUpdateLocked?: (client: Client | PoolClient, room: Room) => Promise<void>;
+      afterUpdate: (client: Client | PoolClient, updated: UpdateDeckFilterResult) => Promise<T>;
+    }
+  ): Promise<T> {
+    return this.withTransaction(async (client) => {
+      const updated = await this.updateRoomDeckFilterWithClient(
+        client,
+        roomId,
+        actorParticipantId,
+        deckFilter,
+        callbacks.beforeUpdateLocked
+      );
+      return callbacks.afterUpdate(client, updated);
+    });
+  }
+
   private async startLobbyRoundWithClient(
     client: Client | PoolClient,
     roomId: string,
     actorParticipantId: string,
-    beforeStartLocked?: (client: Client | PoolClient, room: Room) => Promise<void>
+    beforeStartLocked?: (client: Client | PoolClient, room: Room) => Promise<void>,
+    options?: StartLobbyRoundOptions
   ): Promise<StartLobbyRoundResult> {
     const now = new Date();
     const nowIso = now.toISOString();
@@ -805,6 +929,24 @@ export class PostgresRoomRepository {
       );
     }
 
+    if (options?.expectedLobbyFilterJson !== undefined) {
+      const currentLobbyFilterJson = computeCanonicalLobbyFilterJson(room.deck_filter);
+      if (currentLobbyFilterJson !== options.expectedLobbyFilterJson) {
+        throw new RoomCapacityError(
+          "Room filters changed before starting round. Retry starting with the updated filters.",
+          "DECK_FILTER_CONFLICT"
+        );
+      }
+    }
+
+    const candidatesInput = options?.candidates;
+    if (!Array.isArray(candidatesInput)) {
+      throw new DeckEmptyError(
+        "Cannot start active round without validated deck candidates."
+      );
+    }
+    assertValidUniqueRoundCandidates(participants.length, candidatesInput);
+
     const maxRoundRes = await client.query(
       "SELECT COALESCE(MAX(round_number), 0) AS max_round FROM rounds WHERE room_id = $1;",
       [roomId]
@@ -827,19 +969,51 @@ export class PostgresRoomRepository {
       );
     }
 
+    for (let i = 0; i < candidatesInput.length; i += 1) {
+      const c = candidatesInput[i];
+      await client.query(
+        `INSERT INTO candidates (
+          id, round_id, room_id, movie_id, position, title, poster_path, overview, release_date, vote_average
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);`,
+        [
+          crypto.randomUUID(),
+          roundId,
+          roomId,
+          c.movieId,
+          i,
+          c.title,
+          c.posterPath || null,
+          c.overview || null,
+          c.releaseDate || null,
+          c.voteAverage ?? null,
+        ]
+      );
+    }
+
     const freezeVersion = room.state_version + 1;
     const startVersion = room.state_version + 2;
     const newExpiresAt = new Date(
       now.getTime() + room.inactivity_ttl_seconds * 1000
     ).toISOString();
 
-    await client.query(
-      `UPDATE rooms
-       SET status = 'ACTIVE', current_round_id = $1, state_version = $2,
-           last_activity_at = $3, expires_at = $4, updated_at = $3
-       WHERE id = $5;`,
-      [roundId, startVersion, nowIso, newExpiresAt, roomId]
-    );
+    if (options?.deckFilter) {
+      await client.query(
+        `UPDATE rooms
+         SET status = 'ACTIVE', current_round_id = $1, state_version = $2,
+             last_activity_at = $3, expires_at = $4, updated_at = $3,
+             deck_filter = $6::jsonb
+         WHERE id = $5;`,
+        [roundId, startVersion, nowIso, newExpiresAt, roomId, JSON.stringify(options.deckFilter)]
+      );
+    } else {
+      await client.query(
+        `UPDATE rooms
+         SET status = 'ACTIVE', current_round_id = $1, state_version = $2,
+             last_activity_at = $3, expires_at = $4, updated_at = $3
+         WHERE id = $5;`,
+        [roundId, startVersion, nowIso, newExpiresAt, roomId]
+      );
+    }
 
     await client.query(
       `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
@@ -867,6 +1041,11 @@ export class PostgresRoomRepository {
           roundId,
           roundNumber,
           frozenQuorum: participants.length,
+          deckSize: candidatesInput.length,
+          expectedDeckSize: DECK_SIZE,
+          isShortage: candidatesInput.length < DECK_SIZE,
+          ...(options?.deckFilter ? { deckFilter: options.deckFilter } : {}),
+          ...(options?.deckSeed ? { deckSeed: options.deckSeed } : {}),
         }),
         nowIso,
       ]
@@ -882,18 +1061,27 @@ export class PostgresRoomRepository {
       "SELECT * FROM round_participants WHERE room_id = $1 AND round_id = $2 ORDER BY joined_at ASC, participant_id ASC;",
       [roomId, roundId]
     );
+    const candsRes = await client.query(
+      "SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2 ORDER BY position ASC;",
+      [roomId, roundId]
+    );
 
     return {
       room: normalizeRoom(updatedRoomRes.rows[0]),
       round: normalizeRound(roundRes.rows[0]),
       participants: updatedPartsRes.rows.map((row) => normalizeParticipant(row)),
       frozenParticipants: frozenRes.rows.map((row) => normalizeRoundParticipant(row)),
+      candidates: candsRes.rows.map((row) => normalizeCandidate(row)),
     };
   }
 
-  async startLobbyRound(roomId: string, actorParticipantId: string): Promise<StartLobbyRoundResult> {
+  async startLobbyRound(
+    roomId: string,
+    actorParticipantId: string,
+    options: StartLobbyRoundOptions
+  ): Promise<StartLobbyRoundResult> {
     return this.withTransaction((client) =>
-      this.startLobbyRoundWithClient(client, roomId, actorParticipantId)
+      this.startLobbyRoundWithClient(client, roomId, actorParticipantId, undefined, options)
     );
   }
 
@@ -901,6 +1089,7 @@ export class PostgresRoomRepository {
     roomId: string,
     actorParticipantId: string,
     callbacks: {
+      options: StartLobbyRoundOptions;
       beforeStartLocked?: (client: Client | PoolClient, room: Room) => Promise<void>;
       afterStart: (client: Client | PoolClient, started: StartLobbyRoundResult) => Promise<T>;
     }
@@ -910,20 +1099,22 @@ export class PostgresRoomRepository {
         client,
         roomId,
         actorParticipantId,
-        callbacks.beforeStartLocked
+        callbacks.beforeStartLocked,
+        callbacks.options
       );
       return callbacks.afterStart(client, started);
     });
   }
 
   /**
-   * Reads room, ordered participant roster, and frozen round voters within a single REPEATABLE READ READ ONLY
-   * snapshot transaction so stateVersion, participant roster, and frozen quorum are mutually consistent.
+   * Reads room, ordered participant roster, frozen round voters, and ordered deck candidates within a single
+   * REPEATABLE READ READ ONLY snapshot transaction so stateVersion, roster, frozen quorum, and deck agree.
    */
   async getConsistentSnapshot(roomId: string): Promise<{
     room: Room;
     participants: RoomParticipant[];
     roundParticipants: RoundParticipant[];
+    candidates: Candidate[];
   } | null> {
     return this.withTransaction(async (client) => {
       const roomRes = await client.query("SELECT * FROM rooms WHERE id = $1 LIMIT 1;", [roomId]);
@@ -941,10 +1132,17 @@ export class PostgresRoomRepository {
             [roomId, room.current_round_id]
           )
         : { rows: [] };
+      const candsRes = room.current_round_id
+        ? await client.query(
+            "SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2 ORDER BY position ASC;",
+            [roomId, room.current_round_id]
+          )
+        : { rows: [] };
       return {
         room,
         participants: partRes.rows.map((row) => normalizeParticipant(row)),
         roundParticipants: frozenRes.rows.map((row) => normalizeRoundParticipant(row)),
+        candidates: candsRes.rows.map((row) => normalizeCandidate(row)),
       };
     }, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;");
   }
@@ -1196,8 +1394,13 @@ export class PostgresRoomRepository {
           "SELECT COUNT(*)::int as count FROM votes WHERE round_id = $1;",
           [roundId]
         );
+        const candCountRes = await client.query(
+          "SELECT COUNT(*)::int as count FROM candidates WHERE room_id = $1 AND round_id = $2;",
+          [roomId, roundId]
+        );
         const totalVotes = Number(totalVotesRes.rows[0].count);
-        const maxVotes = room.participant_count * 20;
+        const deckCount = Number(candCountRes.rows[0]?.count ?? 0) || DECK_SIZE;
+        const maxVotes = room.participant_count * deckCount;
 
         if (totalVotes >= maxVotes) {
           assertValidTransition(room.status, "EXHAUSTED", "All candidates voted without match");

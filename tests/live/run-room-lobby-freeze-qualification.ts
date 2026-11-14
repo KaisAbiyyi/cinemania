@@ -16,6 +16,7 @@ import {
   startRoomRoundWithSession,
 } from "../../src/lib/server/room/roomSnapshot";
 import { PostgresRoomAuthorityStore } from "../../src/lib/server/room/roomStore";
+import tmdbApi from "../../src/services/tmdbApi";
 
 const envPath = path.join(process.cwd(), ".env.test.local");
 if (fs.existsSync(envPath)) {
@@ -109,8 +110,31 @@ async function runQualification() {
   const adminClient = new Client(POOL_CONFIG);
   const storePool = new Pool({ ...POOL_CONFIG, max: 6 });
   const prevSecret = process.env.CINEMATCH_CAPABILITY_SECRET;
+  const prevRat = process.env.TMDB_API_RAT;
+  const prevAdapter = tmdbApi.defaults.adapter;
   process.env.CINEMATCH_CAPABILITY_SECRET =
     "live-qualification-secret-cine-015-minimum-32-bytes-ok";
+  process.env.TMDB_API_RAT = prevRat || "offline-qual-cine-015-rat";
+  tmdbApi.defaults.adapter = async (config) => ({
+    data: {
+      page: 1,
+      total_pages: 1,
+      total_results: 20,
+      results: Array.from({ length: 20 }, (_, idx) => ({
+        id: 880001 + idx,
+        title: `Qualification Movie ${idx + 1}`,
+        poster_path: `/qual-${idx + 1}.jpg`,
+        release_date: "2024-02-01",
+        vote_average: 7.5,
+        overview: `Qualification overview ${idx + 1}`,
+        adult: false,
+      })),
+    },
+    status: 200,
+    statusText: "OK",
+    headers: {},
+    config,
+  });
 
   try {
     await adminClient.connect();
@@ -283,6 +307,12 @@ async function runQualification() {
       })
     );
   } finally {
+    tmdbApi.defaults.adapter = prevAdapter;
+    if (prevRat === undefined) {
+      delete process.env.TMDB_API_RAT;
+    } else {
+      process.env.TMDB_API_RAT = prevRat;
+    }
     if (prevSecret === undefined) {
       delete process.env.CINEMATCH_CAPABILITY_SECRET;
     } else {

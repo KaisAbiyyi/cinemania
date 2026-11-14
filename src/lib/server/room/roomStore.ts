@@ -4,19 +4,25 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Pool, type PoolConfig } from "pg";
-import type { Room, RoomParticipant, RoundParticipant } from "@/db/schema";
+import type { Candidate, Room, RoomParticipant, RoundParticipant } from "@/db/schema";
+import type { CanonicalRoomDeckFilter } from "@/lib/schemas/roomDeck";
 import { CapabilityAuthError } from "@/lib/server/auth/guestCapability";
 import {
   PostgresRoomRepository,
   assertValidPgSchema,
+  normalizeCandidate,
   normalizeParticipant,
+  normalizeRoom,
   normalizeRoundParticipant,
 } from "./postgresRoomRepository";
 import {
   SqliteRoomRepository,
+  normalizeSqliteRoom,
   type CreateRoomOptions,
   type LeaveLobbyResult,
+  type StartLobbyRoundOptions,
   type StartLobbyRoundResult,
+  type UpdateDeckFilterResult,
 } from "./roomRepository";
 
 export interface RoomMutationHooks {
@@ -47,6 +53,7 @@ export interface AtomicRoomSessionResult {
   room: Room;
   participants: RoomParticipant[];
   roundParticipants?: RoundParticipant[];
+  candidates?: Candidate[];
   participant: RoomParticipant;
   sessionGeneration: number;
   rejoined: boolean;
@@ -62,8 +69,17 @@ export interface LeaveLobbySessionOptions {
 export interface StartLobbyRoundSessionOptions {
   roomId: string;
   actorParticipantId: string;
+  options: StartLobbyRoundOptions;
   verifyLockedSession?: (context: { room: Room; minGeneration: number }) => void;
   beforeCommit?: (started: StartLobbyRoundResult) => void | Promise<void>;
+}
+
+export interface UpdateRoomDeckFilterSessionOptions {
+  roomId: string;
+  actorParticipantId: string;
+  deckFilter: CanonicalRoomDeckFilter;
+  verifyLockedSession?: (context: { room: Room; minGeneration: number }) => void;
+  beforeCommit?: (updated: UpdateDeckFilterResult) => void | Promise<void>;
 }
 
 function assertSyncHookResult(value: unknown, hookName: string): void {
@@ -82,6 +98,9 @@ export interface RoomAuthorityStore {
   createRoomWithSession(options: CreateRoomSessionOptions): Promise<AtomicRoomSessionResult>;
   joinRoomWithSession(options: JoinRoomSessionOptions): Promise<AtomicRoomSessionResult>;
   leaveLobbyWithSession(options: LeaveLobbySessionOptions): Promise<LeaveLobbyResult>;
+  updateRoomDeckFilterWithSession(
+    options: UpdateRoomDeckFilterSessionOptions
+  ): Promise<UpdateDeckFilterResult>;
   startLobbyRoundWithSession(options: StartLobbyRoundSessionOptions): Promise<StartLobbyRoundResult>;
   getConsistentRoomSnapshot(
     roomId: string
@@ -89,6 +108,7 @@ export interface RoomAuthorityStore {
     room: Room;
     participants: RoomParticipant[];
     roundParticipants: RoundParticipant[];
+    candidates: Candidate[];
   } | null>;
   getRoundParticipants(roomId: string, roundId: string): Promise<RoundParticipant[]>;
   getRoomById(roomId: string): Promise<Room | null>;
@@ -322,11 +342,15 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
     const roundParticipants = room.current_round_id
       ? this.repo.getRoundParticipants(room.id, room.current_round_id)
       : [];
+    const candidates = room.current_round_id
+      ? this.repo.getCandidatesByRound(room.current_round_id, room.id)
+      : [];
 
     const result: AtomicRoomSessionResult = {
       room,
       participants,
       roundParticipants,
+      candidates,
       participant,
       sessionGeneration,
       rejoined,
@@ -383,6 +407,7 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
     room: Room;
     participants: RoomParticipant[];
     roundParticipants: RoundParticipant[];
+    candidates: Candidate[];
   } | null> {
     return this.repo.getConsistentSnapshot(roomId);
   }
@@ -422,6 +447,35 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
     });
   }
 
+  async updateRoomDeckFilterWithSession(
+    options: UpdateRoomDeckFilterSessionOptions
+  ): Promise<UpdateDeckFilterResult> {
+    return this.repo.updateRoomDeckFilterInTransaction(
+      options.roomId,
+      options.actorParticipantId,
+      options.deckFilter,
+      {
+        beforeUpdateLocked: (room) => {
+          const row = this.db
+            .prepare(
+              "SELECT min_generation FROM guest_capability_sessions WHERE room_id = ? AND participant_id = ? LIMIT 1;"
+            )
+            .get(room.id, options.actorParticipantId) as unknown as
+            | { min_generation: number }
+            | undefined;
+          const minGeneration = row ? Number(row.min_generation) : 1;
+          options.verifyLockedSession?.({ room, minGeneration });
+        },
+        afterUpdate: (updated) => {
+          if (options.beforeCommit) {
+            assertSyncHookResult(options.beforeCommit(updated), "beforeCommit");
+          }
+          return updated;
+        },
+      }
+    );
+  }
+
   async startLobbyRoundWithSession(
     options: StartLobbyRoundSessionOptions
   ): Promise<StartLobbyRoundResult> {
@@ -429,6 +483,7 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
       options.roomId,
       options.actorParticipantId,
       {
+        options: options.options,
         beforeStartLocked: (room) => {
           const row = this.db
             .prepare(
@@ -460,8 +515,10 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
 
   async getRoomByCode(code: string): Promise<Room | null> {
     const normalized = code.trim().toUpperCase();
-    const row = this.db.prepare("SELECT * FROM rooms WHERE code = ? LIMIT 1;").get(normalized);
-    return (row as unknown as Room) || null;
+    const row = this.db.prepare("SELECT * FROM rooms WHERE code = ? LIMIT 1;").get(normalized) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? normalizeSqliteRoom(row) : null;
   }
 
   async getParticipant(roomId: string, participantId: string): Promise<RoomParticipant | null> {
@@ -619,11 +676,21 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     const roundParticipants = frozenRes.rows.map((row) =>
       normalizeRoundParticipant(row as Record<string, unknown>)
     );
+    const candRes = room.current_round_id
+      ? await client.query(
+          "SELECT * FROM candidates WHERE room_id = $1 AND round_id = $2 ORDER BY position ASC;",
+          [room.id, room.current_round_id]
+        )
+      : { rows: [] };
+    const candidates = candRes.rows.map((row) =>
+      normalizeCandidate(row as Record<string, unknown>)
+    );
 
     const result: AtomicRoomSessionResult = {
       room,
       participants,
       roundParticipants,
+      candidates,
       participant,
       sessionGeneration,
       rejoined,
@@ -691,6 +758,7 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     room: Room;
     participants: RoomParticipant[];
     roundParticipants: RoundParticipant[];
+    candidates: Candidate[];
   } | null> {
     return this.repo.getConsistentSnapshot(roomId);
   }
@@ -729,10 +797,40 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     });
   }
 
+  async updateRoomDeckFilterWithSession(
+    options: UpdateRoomDeckFilterSessionOptions
+  ): Promise<UpdateDeckFilterResult> {
+    return this.repo.updateRoomDeckFilterWithTx(
+      options.roomId,
+      options.actorParticipantId,
+      options.deckFilter,
+      {
+        beforeUpdateLocked: async (client, room) => {
+          const genRes = await client.query(
+            "SELECT min_generation FROM guest_capability_sessions WHERE room_id = $1 AND participant_id = $2 LIMIT 1;",
+            [room.id, options.actorParticipantId]
+          );
+          const minGeneration =
+            genRes.rows.length > 0
+              ? Number((genRes.rows[0] as { min_generation: number }).min_generation)
+              : 1;
+          options.verifyLockedSession?.({ room, minGeneration });
+        },
+        afterUpdate: async (_client, updated) => {
+          if (options.beforeCommit) {
+            await options.beforeCommit(updated);
+          }
+          return updated;
+        },
+      }
+    );
+  }
+
   async startLobbyRoundWithSession(
     options: StartLobbyRoundSessionOptions
   ): Promise<StartLobbyRoundResult> {
     return this.repo.startLobbyRoundWithTx(options.roomId, options.actorParticipantId, {
+      options: options.options,
       beforeStartLocked: async (client, room) => {
         const genRes = await client.query(
           "SELECT min_generation FROM guest_capability_sessions WHERE room_id = $1 AND participant_id = $2 LIMIT 1;",
@@ -766,17 +864,7 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     return this.withClient(async (client) => {
       const res = await client.query("SELECT * FROM rooms WHERE code = $1 LIMIT 1;", [normalized]);
       if (res.rows.length === 0) return null;
-      const row = res.rows[0] as Room;
-      return {
-        ...row,
-        state_version: Number(row.state_version),
-        participant_count: Number(row.participant_count),
-        inactivity_ttl_seconds: Number(row.inactivity_ttl_seconds),
-        last_activity_at: new Date(row.last_activity_at).toISOString(),
-        expires_at: new Date(row.expires_at).toISOString(),
-        created_at: new Date(row.created_at).toISOString(),
-        updated_at: new Date(row.updated_at).toISOString(),
-      };
+      return normalizeRoom(res.rows[0] as Record<string, unknown>);
     });
   }
 
