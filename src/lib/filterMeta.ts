@@ -1,8 +1,24 @@
-import { Filters } from "@/types/filters";
+import { Filters, TvDateMode } from "@/types/filters";
+
+export const DATE_FILTER_KEYS = [
+    "release_date_gte",
+    "release_date_lte",
+    "air_date_gte",
+    "air_date_lte",
+    "first_air_date_gte",
+    "first_air_date_lte",
+] as const;
+
+export const DATE_FILTER_KEY_SET: ReadonlySet<string> = new Set(DATE_FILTER_KEYS);
+
+export function normalizeTvDateMode(value: unknown): TvDateMode | undefined {
+    return value === "air_date" || value === "first_air_date" ? value : undefined;
+}
 
 // lib/filterMeta.ts
 export const filterFieldTypes: Record<keyof Filters, "string" | "number"> = {
     sort_by: "string",
+    dateMode: "string",
     release_date_gte: "string",
     release_date_lte: "string",
     first_air_date_gte: "string",

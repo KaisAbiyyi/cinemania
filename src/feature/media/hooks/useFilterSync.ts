@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Filters } from "@/types/filters";
+import { DATE_FILTER_KEY_SET, normalizeTvDateMode } from "@/lib/filterMeta";
 
 // Fungsi helper untuk mengonversi nilai string ke tipe default (number atau string)
 function parseValue<T>(defaultValue: T, value: string): T {
@@ -10,17 +11,43 @@ function parseValue<T>(defaultValue: T, value: string): T {
 
 export function buildFilterSearchQuery(filters: Partial<Filters>, defaults: Filters): string {
     const queryParams = new URLSearchParams();
+    const effectiveMode = normalizeTvDateMode(filters.dateMode);
+    const defaultMode = normalizeTvDateMode(defaults.dateMode) ?? "air_date";
+    const isFirstAirDateMode = effectiveMode === "first_air_date";
+    const isAirDateMode = effectiveMode === "air_date";
 
     (Object.keys(filters) as (keyof Filters)[]).forEach((key) => {
+        if (isFirstAirDateMode && (key === "air_date_gte" || key === "air_date_lte")) {
+            return;
+        }
+        if (isAirDateMode && (key === "first_air_date_gte" || key === "first_air_date_lte")) {
+            return;
+        }
+        if (key === "dateMode") {
+            if (effectiveMode && effectiveMode !== defaultMode) {
+                queryParams.set("dateMode", effectiveMode);
+            }
+            return;
+        }
+
         const filterValue = filters[key];
         const defaultValue = defaults[key];
+        const defaultString =
+            defaultValue !== undefined && defaultValue !== null ? String(defaultValue) : "";
+
+        // Pertahankan string kosong secara eksplisit di URL bila menghapus batas tanggal preset/default.
+        if (filterValue === "") {
+            if (DATE_FILTER_KEY_SET.has(key as string) && defaultString !== "") {
+                queryParams.set(key as string, "");
+            }
+            return;
+        }
 
         // Hanya set key jika filterValue ada dan berbeda dari default.
         if (
             filterValue !== undefined &&
             filterValue !== null &&
-            filterValue !== "" &&
-            String(filterValue) !== String(defaultValue ?? "")
+            String(filterValue) !== defaultString
         ) {
             queryParams.set(key as string, String(filterValue));
         }

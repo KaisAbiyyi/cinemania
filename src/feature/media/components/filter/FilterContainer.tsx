@@ -31,7 +31,20 @@ import VotesSlider from "./VotesSlider";
 import { buildFilterSearchQuery, useFilterSync } from "../../hooks/useFilterSync";
 
 // Import tipe dan default global
-import { Filters } from "@/types/filters";
+import { Filters, TvDateMode } from "@/types/filters";
+import { parseCalendarDateKey } from "@/lib/datePresets";
+import { DATE_FILTER_KEY_SET, normalizeTvDateMode } from "@/lib/filterMeta";
+
+function resolveTvDateModeFromFilters(filters: Partial<Filters>): TvDateMode {
+    const explicit = normalizeTvDateMode(filters.dateMode);
+    if (explicit) {
+        return explicit;
+    }
+    const hasFirstAirDate =
+        (filters.first_air_date_gte ?? "") !== "" ||
+        (filters.first_air_date_lte ?? "") !== "";
+    return hasFirstAirDate ? "first_air_date" : "air_date";
+}
 
 // Import Zustand store untuk orientation
 import { usePathname, useRouter } from "next/navigation";
@@ -72,14 +85,13 @@ const FilterContainerInner: FC<FilterContainerProps> = ({
     }, [globalFilters]);
 
     // State lokal untuk toggle filter tanggal (khusus TV)
-    const [activeDateFilter, setActiveDateFilter] = useState<"air_date" | "first_air_date">("air_date");
+    const [activeDateFilter, setActiveDateFilter] = useState<TvDateMode>(() =>
+        mediaType === "tv" ? resolveTvDateModeFromFilters(globalFilters) : "air_date"
+    );
 
     useEffect(() => {
         if (mediaType === "tv") {
-            const hasFirstAirDate =
-                (tempFilters.first_air_date_gte ?? "") !== "" ||
-                (tempFilters.first_air_date_lte ?? "") !== "";
-            const newActiveDateFilter = hasFirstAirDate ? "first_air_date" : "air_date";
+            const newActiveDateFilter = resolveTvDateModeFromFilters(tempFilters);
             if (activeDateFilter !== newActiveDateFilter) {
                 setActiveDateFilter(newActiveDateFilter);
             }
@@ -93,40 +105,50 @@ const FilterContainerInner: FC<FilterContainerProps> = ({
     );
 
     const handleApply = () => {
-        setFilters(tempFilters);
-        onApply?.(tempFilters);
-
-        // eslint-disable-next-line 
-        let finalFilters = { ...tempFilters };
+        const appliedFilters: Filters = { ...tempFilters };
 
         if (mediaType === "tv") {
             if (activeDateFilter === "first_air_date") {
-                delete finalFilters.air_date_gte;
-                delete finalFilters.air_date_lte;
+                appliedFilters.dateMode = "first_air_date";
+                appliedFilters.air_date_gte = undefined;
+                appliedFilters.air_date_lte = undefined;
             } else {
-                delete finalFilters.first_air_date_gte;
-                delete finalFilters.first_air_date_lte;
+                delete appliedFilters.dateMode;
+                appliedFilters.first_air_date_gte = baseDefaultFilters.first_air_date_gte;
+                appliedFilters.first_air_date_lte = baseDefaultFilters.first_air_date_lte;
             }
         }
 
+        setFilters(appliedFilters);
+        onApply?.(appliedFilters);
+
+        const activeDateKeys =
+            mediaType === "tv"
+                ? new Set<string>([`${activeDateFilter}_gte`, `${activeDateFilter}_lte`])
+                : new Set<string>(["release_date_gte", "release_date_lte"]);
+
         const cleanedFilters: Partial<Filters> = {};
-        const dateKeys = new Set([
-            "release_date_gte",
-            "release_date_lte",
-            "air_date_gte",
-            "air_date_lte",
-            "first_air_date_gte",
-            "first_air_date_lte",
-        ]);
-        Object.entries(finalFilters).forEach(([key, val]) => {
-            if (val === undefined || val === "") return;
+        Object.entries(appliedFilters).forEach(([key, val]) => {
+            if (val === undefined) return;
             const typedKey = key as keyof Filters;
-            if (dateKeys.has(typedKey as string) && typeof val === "string" && val.trim() !== "") {
-                const parsedDate = new Date(val);
-                if (!isNaN(parsedDate.getTime())) {
-                    cleanedFilters[typedKey] = parsedDate.toISOString().split("T")[0];
+            if (val === "") {
+                const defaultVal = baseDefaultFilters[typedKey];
+                const hasNonEmptyDefault =
+                    defaultVal !== undefined && defaultVal !== null && String(defaultVal) !== "";
+                if (activeDateKeys.has(key) && hasNonEmptyDefault) {
+                    cleanedFilters[typedKey] = "";
+                }
+                return;
+            }
+            if (DATE_FILTER_KEY_SET.has(key) && typeof val === "string" && val.trim() !== "") {
+                const calendarKey = parseCalendarDateKey(val);
+                if (calendarKey) {
+                    cleanedFilters[typedKey] = val.trim();
                 } else {
-                    cleanedFilters[typedKey] = val;
+                    const parsedDate = new Date(val);
+                    cleanedFilters[typedKey] = !isNaN(parsedDate.getTime())
+                        ? parsedDate.toISOString().split("T")[0]
+                        : val;
                 }
             } else {
                 cleanedFilters[typedKey] = val;
@@ -202,10 +224,11 @@ const FilterContainerInner: FC<FilterContainerProps> = ({
                                                 if (activeDateFilter !== "air_date") {
                                                     setTempFilters((prev) => ({
                                                         ...prev,
-                                                        air_date_gte: prev.first_air_date_gte || prev.air_date_gte,
-                                                        air_date_lte: prev.first_air_date_lte || prev.air_date_lte,
-                                                        first_air_date_gte: undefined,
-                                                        first_air_date_lte: undefined,
+                                                        dateMode: undefined,
+                                                        air_date_gte: prev.first_air_date_gte ?? prev.air_date_gte,
+                                                        air_date_lte: prev.first_air_date_lte ?? prev.air_date_lte,
+                                                        first_air_date_gte: baseDefaultFilters.first_air_date_gte,
+                                                        first_air_date_lte: baseDefaultFilters.first_air_date_lte,
                                                     }));
                                                     setActiveDateFilter("air_date");
                                                 }
@@ -220,8 +243,9 @@ const FilterContainerInner: FC<FilterContainerProps> = ({
                                                 if (activeDateFilter !== "first_air_date") {
                                                     setTempFilters((prev) => ({
                                                         ...prev,
-                                                        first_air_date_gte: prev.air_date_gte || prev.first_air_date_gte,
-                                                        first_air_date_lte: prev.air_date_lte || prev.first_air_date_lte, // sudah diperbaiki
+                                                        dateMode: "first_air_date",
+                                                        first_air_date_gte: prev.air_date_gte ?? prev.first_air_date_gte,
+                                                        first_air_date_lte: prev.air_date_lte ?? prev.first_air_date_lte,
                                                         air_date_gte: undefined,
                                                         air_date_lte: undefined,
                                                     }));
@@ -250,7 +274,15 @@ const FilterContainerInner: FC<FilterContainerProps> = ({
                                             if (mediaType === "tv") {
                                                 const gteKey = `${activeDateFilter}_gte` as keyof Filters;
                                                 const lteKey = `${activeDateFilter}_lte` as keyof Filters;
-                                                return { ...prev, [gteKey]: start, [lteKey]: end };
+                                                return {
+                                                    ...prev,
+                                                    dateMode:
+                                                        activeDateFilter === "first_air_date"
+                                                            ? "first_air_date"
+                                                            : undefined,
+                                                    [gteKey]: start,
+                                                    [lteKey]: end,
+                                                };
                                             } else {
                                                 return { ...prev, release_date_gte: start, release_date_lte: end };
                                             }

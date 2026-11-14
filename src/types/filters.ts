@@ -1,7 +1,10 @@
 // src/types/filters.ts
+export type TvDateMode = "air_date" | "first_air_date";
+
 export interface Filters {
     [key: string]: string | number | undefined;
     sort_by?: string;
+    dateMode?: TvDateMode;
     release_date_gte?: string;
     release_date_lte?: string;
     first_air_date_gte?: string;

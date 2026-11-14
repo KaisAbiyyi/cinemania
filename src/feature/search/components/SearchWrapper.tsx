@@ -9,9 +9,9 @@ import CastCard from "@/feature/media/components/cast/CastCard";
 import { dedupeInfinitePages } from "@/feature/media/utils/mediaPagination";
 import { slugify } from "@/lib/utils";
 import Link from "next/link";
-import { FC } from "react";
+import { FC, ReactNode } from "react";
 import { useSearch } from "../hooks/useSearch";
-import SearchWrapperSkeleton from "./skeletons/SearchWrapperSkeleton";
+import { SearchTabPanelSkeleton } from "./skeletons/SearchWrapperSkeleton";
 
 interface Props {
     query: string;
@@ -73,16 +73,14 @@ const SearchWrapper: FC<Props> = ({ query }) => {
         );
     };
 
-    if (movieQuery.isLoading || tvQuery.isLoading || peopleQuery.isLoading || keywordQuery.isLoading) {
-        return (
-            <div role="status" aria-label="Loading search results">
-                <SearchWrapperSkeleton />
-                <span className="sr-only">Loading search results...</span>
-            </div>
-        );
-    }
+    const allLoading =
+        movieQuery.isLoading &&
+        tvQuery.isLoading &&
+        peopleQuery.isLoading &&
+        keywordQuery.isLoading;
 
     const allErrored =
+        !allLoading &&
         Boolean(movieQuery.error && !movieQuery.isFetchNextPageError) &&
         Boolean(tvQuery.error && !tvQuery.isFetchNextPageError) &&
         Boolean(peopleQuery.error && !peopleQuery.isFetchNextPageError) &&
@@ -107,37 +105,73 @@ const SearchWrapper: FC<Props> = ({ query }) => {
     const people = dedupeInfinitePages(peopleQuery.data?.pages, (item: { id: number }) => item.id);
     const keywords = dedupeInfinitePages(keywordQuery.data?.pages, (item: { id: number }) => item.id);
 
+    const formatTabCount = (
+        queryResult: typeof movieQuery,
+        label: string
+    ) => `${label} (${queryResult.isLoading ? "Loading..." : queryResult.data?.pages[0]?.total_results || 0})`;
+
+    const renderTabPanel = (
+        category: "movie" | "tv" | "person" | "keyword",
+        queryResult: typeof movieQuery,
+        itemsCount: number,
+        loadingLabel: string,
+        errorMessage: string,
+        emptyTitle: string,
+        emptyMessage: string,
+        renderGrid: () => ReactNode
+    ) => {
+        if (queryResult.isLoading) {
+            return (
+                <div role="status" aria-label={loadingLabel}>
+                    <SearchTabPanelSkeleton category={category} />
+                    <span className="sr-only">{loadingLabel}...</span>
+                </div>
+            );
+        }
+        if (queryResult.error && !queryResult.isFetchNextPageError) {
+            return (
+                <ErrorState
+                    message={errorMessage}
+                    onRetry={() => void queryResult.refetch()}
+                />
+            );
+        }
+        if (itemsCount === 0) {
+            return <EmptyState title={emptyTitle} message={emptyMessage} />;
+        }
+        return (
+            <>
+                {renderGrid()}
+                {renderLoadMore(
+                    queryResult.fetchNextPage,
+                    queryResult.hasNextPage,
+                    queryResult.isFetchingNextPage,
+                    queryResult.isFetchNextPageError
+                )}
+            </>
+        );
+    };
+
     return (
         <Tabs defaultValue="movie" className="w-full">
             <TabsList>
-                <TabsTrigger value="movie">
-                    Movies ({movieQuery.data?.pages[0]?.total_results || 0})
-                </TabsTrigger>
-                <TabsTrigger value="tv">
-                    TV ({tvQuery.data?.pages[0]?.total_results || 0})
-                </TabsTrigger>
-                <TabsTrigger value="person">
-                    People ({peopleQuery.data?.pages[0]?.total_results || 0})
-                </TabsTrigger>
-                <TabsTrigger value="keyword">
-                    Keywords ({keywordQuery.data?.pages[0]?.total_results || 0})
-                </TabsTrigger>
+                <TabsTrigger value="movie">{formatTabCount(movieQuery, "Movies")}</TabsTrigger>
+                <TabsTrigger value="tv">{formatTabCount(tvQuery, "TV")}</TabsTrigger>
+                <TabsTrigger value="person">{formatTabCount(peopleQuery, "People")}</TabsTrigger>
+                <TabsTrigger value="keyword">{formatTabCount(keywordQuery, "Keywords")}</TabsTrigger>
             </TabsList>
 
             {/* Movies Tab */}
             <TabsContent value="movie" className="mt-4">
-                {movieQuery.error && !movieQuery.isFetchNextPageError ? (
-                    <ErrorState
-                        message="Failed to load movie search results."
-                        onRetry={() => void movieQuery.refetch()}
-                    />
-                ) : movies.length === 0 ? (
-                    <EmptyState
-                        title="No movies found"
-                        message={`No movies matched "${trimmedQuery}".`}
-                    />
-                ) : (
-                    <>
+                {renderTabPanel(
+                    "movie",
+                    movieQuery,
+                    movies.length,
+                    "Loading movie search results",
+                    "Failed to load movie search results.",
+                    "No movies found",
+                    `No movies matched "${trimmedQuery}".`,
+                    () => (
                         <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                             {/* eslint-disable-next-line */}
                             {movies.map((movie: any) => (
@@ -154,30 +188,21 @@ const SearchWrapper: FC<Props> = ({ query }) => {
                                 />
                             ))}
                         </div>
-                        {renderLoadMore(
-                            movieQuery.fetchNextPage,
-                            movieQuery.hasNextPage,
-                            movieQuery.isFetchingNextPage,
-                            movieQuery.isFetchNextPageError
-                        )}
-                    </>
+                    )
                 )}
             </TabsContent>
 
             {/* TV Tab */}
             <TabsContent value="tv" className="mt-4">
-                {tvQuery.error && !tvQuery.isFetchNextPageError ? (
-                    <ErrorState
-                        message="Failed to load TV search results."
-                        onRetry={() => void tvQuery.refetch()}
-                    />
-                ) : tvShows.length === 0 ? (
-                    <EmptyState
-                        title="No TV shows found"
-                        message={`No TV shows matched "${trimmedQuery}".`}
-                    />
-                ) : (
-                    <>
+                {renderTabPanel(
+                    "tv",
+                    tvQuery,
+                    tvShows.length,
+                    "Loading TV search results",
+                    "Failed to load TV search results.",
+                    "No TV shows found",
+                    `No TV shows matched "${trimmedQuery}".`,
+                    () => (
                         <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
                             {/* eslint-disable-next-line */}
                             {tvShows.map((tv: any) => (
@@ -194,30 +219,21 @@ const SearchWrapper: FC<Props> = ({ query }) => {
                                 />
                             ))}
                         </div>
-                        {renderLoadMore(
-                            tvQuery.fetchNextPage,
-                            tvQuery.hasNextPage,
-                            tvQuery.isFetchingNextPage,
-                            tvQuery.isFetchNextPageError
-                        )}
-                    </>
+                    )
                 )}
             </TabsContent>
 
             {/* People Tab */}
             <TabsContent value="person" className="mt-4">
-                {peopleQuery.error && !peopleQuery.isFetchNextPageError ? (
-                    <ErrorState
-                        message="Failed to load people search results."
-                        onRetry={() => void peopleQuery.refetch()}
-                    />
-                ) : people.length === 0 ? (
-                    <EmptyState
-                        title="No people found"
-                        message={`No people matched "${trimmedQuery}".`}
-                    />
-                ) : (
-                    <>
+                {renderTabPanel(
+                    "person",
+                    peopleQuery,
+                    people.length,
+                    "Loading people search results",
+                    "Failed to load people search results.",
+                    "No people found",
+                    `No people matched "${trimmedQuery}".`,
+                    () => (
                         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
                             {/* eslint-disable-next-line */}
                             {people.map((person: any) => (
@@ -228,30 +244,21 @@ const SearchWrapper: FC<Props> = ({ query }) => {
                                 />
                             ))}
                         </div>
-                        {renderLoadMore(
-                            peopleQuery.fetchNextPage,
-                            peopleQuery.hasNextPage,
-                            peopleQuery.isFetchingNextPage,
-                            peopleQuery.isFetchNextPageError
-                        )}
-                    </>
+                    )
                 )}
             </TabsContent>
 
             {/* Keywords Tab */}
             <TabsContent value="keyword" className="mt-4">
-                {keywordQuery.error && !keywordQuery.isFetchNextPageError ? (
-                    <ErrorState
-                        message="Failed to load keyword search results."
-                        onRetry={() => void keywordQuery.refetch()}
-                    />
-                ) : keywords.length === 0 ? (
-                    <EmptyState
-                        title="No keywords found"
-                        message={`No keywords matched "${trimmedQuery}".`}
-                    />
-                ) : (
-                    <>
+                {renderTabPanel(
+                    "keyword",
+                    keywordQuery,
+                    keywords.length,
+                    "Loading keyword search results",
+                    "Failed to load keyword search results.",
+                    "No keywords found",
+                    `No keywords matched "${trimmedQuery}".`,
+                    () => (
                         <div className="flex flex-wrap gap-2">
                             {/* eslint-disable-next-line */}
                             {keywords.map((keyword: any) => (
@@ -260,13 +267,7 @@ const SearchWrapper: FC<Props> = ({ query }) => {
                                 </Link>
                             ))}
                         </div>
-                        {renderLoadMore(
-                            keywordQuery.fetchNextPage,
-                            keywordQuery.hasNextPage,
-                            keywordQuery.isFetchingNextPage,
-                            keywordQuery.isFetchNextPageError
-                        )}
-                    </>
+                    )
                 )}
             </TabsContent>
         </Tabs>

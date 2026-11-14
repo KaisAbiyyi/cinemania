@@ -14,7 +14,8 @@ import React, {
     FC,
 } from "react";
 import { useSearchParams } from "next/navigation";
-import { Filters, globalDefaultFilters } from "@/types/filters";
+import { Filters, TvDateMode, globalDefaultFilters } from "@/types/filters";
+import { normalizeTvDateMode } from "@/lib/filterMeta";
 import {
     DiscoveryDatePreset,
     parseCalendarDateKey,
@@ -40,7 +41,15 @@ function normalizeParsedUrlFilters(raw: Partial<Filters>): Partial<Filters> {
     (Object.keys(raw) as (keyof Filters)[]).forEach((key) => {
         const value = raw[key];
         if (value === undefined) return;
+        if (key === "dateMode") {
+            const mode = normalizeTvDateMode(value);
+            if (mode) {
+                normalized.dateMode = mode;
+            }
+            return;
+        }
         if (NUMERIC_FILTER_KEYS.has(key)) {
+            if (typeof value === "string" && value.trim() === "") return;
             const numeric = typeof value === "number" ? value : Number(value);
             if (Number.isFinite(numeric)) {
                 (normalized as Record<string, unknown>)[key] = numeric;
@@ -51,6 +60,42 @@ function normalizeParsedUrlFilters(raw: Partial<Filters>): Partial<Filters> {
     });
 
     return normalized;
+}
+
+export function resolveEffectiveFilters(
+    baseDefaults: Filters,
+    overrides: Partial<Filters>
+): Filters {
+    const merged: Filters = { ...baseDefaults, ...overrides };
+    const explicitMode = normalizeTvDateMode(overrides.dateMode);
+    const hasOverrideFirstAirDate =
+        (typeof overrides.first_air_date_gte === "string" && overrides.first_air_date_gte !== "") ||
+        (typeof overrides.first_air_date_lte === "string" && overrides.first_air_date_lte !== "");
+
+    const effectiveTvDateMode: TvDateMode | undefined =
+        explicitMode ?? (hasOverrideFirstAirDate ? "first_air_date" : undefined);
+
+    if (effectiveTvDateMode === "first_air_date") {
+        merged.dateMode = "first_air_date";
+        delete merged.air_date_gte;
+        delete merged.air_date_lte;
+    } else {
+        if (baseDefaults.dateMode === undefined) {
+            delete merged.dateMode;
+        }
+        if (explicitMode === "air_date") {
+            merged.first_air_date_gte = baseDefaults.first_air_date_gte;
+            merged.first_air_date_lte = baseDefaults.first_air_date_lte;
+            if (merged.first_air_date_gte === undefined) {
+                delete merged.first_air_date_gte;
+            }
+            if (merged.first_air_date_lte === undefined) {
+                delete merged.first_air_date_lte;
+            }
+        }
+    }
+
+    return merged;
 }
 
 function FilterUrlSyncObserver({
@@ -191,7 +236,7 @@ export const FilterProvider: FC<FilterProviderProps> = ({ children, defaultFilte
     const activeOverrides = customOverrides ?? urlFilters;
 
     const filters = useMemo<Filters>(
-        () => ({ ...baseDefaultFilters, ...activeOverrides }),
+        () => resolveEffectiveFilters(baseDefaultFilters, activeOverrides),
         [baseDefaultFilters, activeOverrides]
     );
 
@@ -199,14 +244,18 @@ export const FilterProvider: FC<FilterProviderProps> = ({ children, defaultFilte
         (update: Partial<Filters> | ((prev: Filters) => Partial<Filters>)) => {
             setCustomOverrides((prev) => {
                 const baseOverrides = prev ?? urlFilters;
-                const currentFilters: Filters = { ...baseDefaultFilters, ...baseOverrides };
+                const currentFilters = resolveEffectiveFilters(baseDefaultFilters, baseOverrides);
                 const updateObj = typeof update === "function" ? update(currentFilters) : update;
 
                 const baseKeys = Object.keys(baseDefaultFilters) as (keyof Filters)[];
                 const isFullSnapshot = baseKeys.every((key) => key in updateObj);
 
                 if (!isFullSnapshot) {
-                    return { ...baseOverrides, ...updateObj };
+                    const nextOverrides: Partial<Filters> = { ...baseOverrides, ...updateObj };
+                    if ("dateMode" in updateObj && updateObj.dateMode === undefined) {
+                        delete nextOverrides.dateMode;
+                    }
+                    return nextOverrides;
                 }
 
                 const nextOverrides: Partial<Filters> = {};
@@ -269,15 +318,19 @@ export const buildMediaQueryParams = (
     mediaType: "movie" | "tv",
     filters: Filters
 ): MediaQueryParams => {
+    const tvDateMode = mediaType === "tv" ? normalizeTvDateMode(filters.dateMode) : undefined;
+    const useFirstAirDate = tvDateMode === "first_air_date";
+    const useAirDateOnly = tvDateMode === "air_date";
+
     return {
         mediaType,
         sort_by: filters.sort_by || "popularity.desc",
         "release_date.gte": filters.release_date_gte || "",
         "release_date.lte": filters.release_date_lte || "",
-        "first_air_date.gte": filters.first_air_date_gte || "",
-        "first_air_date.lte": filters.first_air_date_lte || "",
-        "air_date.gte": filters.air_date_gte || "",
-        "air_date.lte": filters.air_date_lte || "",
+        "first_air_date.gte": useAirDateOnly ? "" : filters.first_air_date_gte || "",
+        "first_air_date.lte": useAirDateOnly ? "" : filters.first_air_date_lte || "",
+        "air_date.gte": useFirstAirDate ? "" : filters.air_date_gte || "",
+        "air_date.lte": useFirstAirDate ? "" : filters.air_date_lte || "",
         with_genres: filters.with_genres || "",
         "vote_average.gte": filters.vote_average_gte || 0,
         "vote_average.lte": filters.vote_average_lte || 10,

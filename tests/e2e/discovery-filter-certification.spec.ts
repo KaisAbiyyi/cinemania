@@ -127,6 +127,20 @@ async function openFiltersIfCollapsed(page: Page) {
   await expect(applyButton).toBeVisible();
 }
 
+async function clearDateBound(page: Page, boundIndex: 0 | 1) {
+  const dateSection = page.locator("div.flex.flex-col.gap-2", {
+    has: page.getByText("Release Date Range", { exact: true }),
+  });
+  await dateSection.locator("button").nth(boundIndex).click();
+  const dialog = page.locator('[role="dialog"]').last();
+  await expect(dialog).toBeVisible();
+  await dialog
+    .locator('[data-selected="true"] button, button[aria-selected="true"]')
+    .first()
+    .click();
+  await page.keyboard.press("Escape");
+}
+
 test.describe("CINE-010: Discovery, filter, pagination & error certification", () => {
   test("does not fetch on draft edits until explicit Apply is clicked on /movie", async ({ page }) => {
     await installFilterControlMocks(page);
@@ -497,5 +511,296 @@ test.describe("CINE-010: Discovery, filter, pagination & error certification", (
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await expect(page.locator("article h2", { hasText: "Pulp Fiction" })).toBeVisible();
     await expect(page.locator("article")).toHaveCount(3);
+  });
+
+  test("TV presets persist First Air Date switch (and cleared bounds) across reload, detail Back, and Forward without dual date params", async ({ page }) => {
+    await installFilterControlMocks(page);
+
+    const mediaRequests: URLSearchParams[] = [];
+    await page.route("**/api/media?*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== "/api/media") {
+        await route.continue();
+        return;
+      }
+      mediaRequests.push(url.searchParams);
+      await route.fulfill({
+        json: {
+          page: 1,
+          total_pages: 1,
+          total_results: 1,
+          results: [
+            {
+              id: 1399,
+              name: "Game of Thrones",
+              overview: "Winter is coming.",
+              poster_path: "/x.jpg",
+              backdrop_path: "/y.jpg",
+              first_air_date: "2011-04-17",
+              vote_average: 8.4,
+              vote_count: 1000,
+              genre_ids: [18],
+            },
+          ],
+        },
+      });
+    });
+
+    await page.route("**/api/media/1399**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/credits")) {
+        return route.fulfill({ json: { id: 1399, cast: [], crew: [] } });
+      }
+      if (path.endsWith("/keywords")) {
+        return route.fulfill({ json: { id: 1399, results: [] } });
+      }
+      if (path.endsWith("/images")) {
+        return route.fulfill({ json: { id: 1399, backdrops: [], posters: [] } });
+      }
+      if (path.endsWith("/videos") || path.endsWith("/content_ratings")) {
+        return route.fulfill({ json: { id: 1399, results: [] } });
+      }
+      if (path.endsWith("/reviews") || path.endsWith("/recommendations") || path.endsWith("/similar")) {
+        return route.fulfill({ json: { id: 1399, page: 1, results: [], total_pages: 0, total_results: 0 } });
+      }
+      return route.fulfill({
+        json: {
+          id: 1399,
+          name: "Game of Thrones",
+          overview: "Winter is coming.",
+          poster_path: "/x.jpg",
+          backdrop_path: "/y.jpg",
+          first_air_date: "2011-04-17",
+          vote_average: 8.4,
+          vote_count: 1000,
+          genres: [{ id: 18, name: "Drama" }],
+          episode_run_time: [60],
+          number_of_seasons: 8,
+          number_of_episodes: 73,
+          status: "Ended",
+          tagline: "",
+        },
+      });
+    });
+
+    // 1. /tv/airing-today: switch Air Date -> First Air Date, Apply -> Reload -> Detail -> Back -> Forward
+    await page.goto("/tv/airing-today");
+    await expect(page.locator("article h2", { hasText: "Game of Thrones" })).toBeVisible();
+    const initialParams = mediaRequests[mediaRequests.length - 1];
+    expect(initialParams.get("air_date.gte")).toBeTruthy();
+    expect(initialParams.get("first_air_date.gte") ?? "").toBe("");
+
+    await openFiltersIfCollapsed(page);
+    await page.getByRole("button", { name: "First Air Date", exact: true }).click();
+    const applyBeforeRequests = mediaRequests.length;
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+
+    await expect(page).toHaveURL(/\/tv\/airing-today\?.*dateMode=first_air_date/);
+    await expect(page).not.toHaveURL(/(?:^|[?&])air_date_gte=/);
+    await expect(page).not.toHaveURL(/(?:^|[?&])air_date_lte=/);
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(applyBeforeRequests);
+    const appliedParams = mediaRequests[mediaRequests.length - 1];
+    expect(appliedParams.get("first_air_date.gte")).toBeTruthy();
+    expect(appliedParams.get("first_air_date.lte")).toBeTruthy();
+    expect(appliedParams.get("air_date.gte") ?? "").toBe("");
+    expect(appliedParams.get("air_date.lte") ?? "").toBe("");
+
+    // Reload preserves dateMode=first_air_date and suppresses air_date.*
+    const beforeReloadCount = mediaRequests.length;
+    await page.reload();
+    await expect(page.locator("article h2", { hasText: "Game of Thrones" })).toBeVisible();
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeReloadCount);
+    const reloadedParams = mediaRequests[mediaRequests.length - 1];
+    expect(reloadedParams.get("first_air_date.gte")).toBeTruthy();
+    expect(reloadedParams.get("air_date.gte") ?? "").toBe("");
+    expect(reloadedParams.get("air_date.lte") ?? "").toBe("");
+
+    // Detail navigation + browser Back keeps First Air Date mode intact
+    await page.locator("article a").first().click();
+    await expect(page).toHaveURL(/\/tv\/1399-/);
+    await expect(page.getByRole("heading", { name: "Game of Thrones" })).toBeVisible();
+
+    const beforeBackCount = mediaRequests.length;
+    await page.goBack();
+    await expect(page).toHaveURL(/\/tv\/airing-today\?.*dateMode=first_air_date/);
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeBackCount);
+    const backFromDetailParams = mediaRequests[mediaRequests.length - 1];
+    expect(backFromDetailParams.get("first_air_date.gte")).toBeTruthy();
+    expect(backFromDetailParams.get("air_date.gte") ?? "").toBe("");
+
+    // Browser Back to untouched /tv/airing-today, then Forward back to First Air Date
+    const beforeHistoryBack = mediaRequests.length;
+    await page.goBack();
+    await expect(page).toHaveURL(/\/tv\/airing-today$/);
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeHistoryBack);
+    expect(mediaRequests[mediaRequests.length - 1].get("air_date.gte")).toBeTruthy();
+    expect(mediaRequests[mediaRequests.length - 1].get("first_air_date.gte") ?? "").toBe("");
+
+    const beforeHistoryForward = mediaRequests.length;
+    await page.goForward();
+    await expect(page).toHaveURL(/dateMode=first_air_date/);
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeHistoryForward);
+    expect(mediaRequests[mediaRequests.length - 1].get("first_air_date.gte")).toBeTruthy();
+    expect(mediaRequests[mediaRequests.length - 1].get("air_date.gte") ?? "").toBe("");
+
+    // 2. /tv/on-tv: switch to First Air Date AND clear both bounds -> persists across reload
+    await page.goto("/tv/on-tv");
+    await expect(page.locator("article h2", { hasText: "Game of Thrones" })).toBeVisible();
+    await openFiltersIfCollapsed(page);
+    await page.getByRole("button", { name: "First Air Date", exact: true }).click();
+    await clearDateBound(page, 0);
+    await clearDateBound(page, 1);
+    await expect(page.getByText("Pick a start date")).toBeVisible();
+    await expect(page.getByText("Pick an end date")).toBeVisible();
+
+    const beforeOnTvApply = mediaRequests.length;
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await expect(page).toHaveURL(/\/tv\/on-tv\?.*dateMode=first_air_date/);
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeOnTvApply);
+    const onTvAppliedParams = mediaRequests[mediaRequests.length - 1];
+    expect(onTvAppliedParams.get("air_date.gte") ?? "").toBe("");
+    expect(onTvAppliedParams.get("air_date.lte") ?? "").toBe("");
+    expect(onTvAppliedParams.get("first_air_date.gte") ?? "").toBe("");
+    expect(onTvAppliedParams.get("first_air_date.lte") ?? "").toBe("");
+
+    const beforeOnTvReload = mediaRequests.length;
+    await page.reload();
+    await expect(page.locator("article h2", { hasText: "Game of Thrones" })).toBeVisible();
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeOnTvReload);
+    const onTvReloadedParams = mediaRequests[mediaRequests.length - 1];
+    expect(onTvReloadedParams.get("air_date.gte") ?? "").toBe("");
+    expect(onTvReloadedParams.get("first_air_date.gte") ?? "").toBe("");
+
+    await openFiltersIfCollapsed(page);
+    await expect(page.getByText("Pick a start date")).toBeVisible();
+    await expect(page.getByText("Pick an end date")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Reset", exact: true })).toBeVisible();
+  });
+
+  test("Movie rolling presets (/movie/now-playing & /movie/upcoming) persist explicitly cleared date bounds across reload and Reset/Back", async ({ page }) => {
+    await installFilterControlMocks(page);
+
+    const mediaRequests: URLSearchParams[] = [];
+    await page.route("**/api/media?*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname !== "/api/media") {
+        await route.continue();
+        return;
+      }
+      mediaRequests.push(url.searchParams);
+      await route.fulfill({ json: SINGLE_PAGE_MOVIES });
+    });
+
+    // /movie/now-playing: clear start date only
+    await page.goto("/movie/now-playing");
+    await expect(page.locator("article h2", { hasText: "Inception" })).toBeVisible();
+    const initialNowPlaying = mediaRequests[mediaRequests.length - 1];
+    expect(initialNowPlaying.get("release_date.gte")).toBeTruthy();
+    expect(initialNowPlaying.get("release_date.lte")).toBeTruthy();
+
+    await openFiltersIfCollapsed(page);
+    await clearDateBound(page, 0);
+    await expect(page.getByText("Pick a start date")).toBeVisible();
+
+    const beforeApplyCount = mediaRequests.length;
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await expect(page).toHaveURL(/release_date_gte=(?:&|$)/);
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeApplyCount);
+    const clearedStartParams = mediaRequests[mediaRequests.length - 1];
+    expect(clearedStartParams.get("release_date.gte") ?? "").toBe("");
+    expect(clearedStartParams.get("release_date.lte")).toBeTruthy();
+
+    // Reload retains cleared start bound
+    const beforeReloadCount = mediaRequests.length;
+    await page.reload();
+    await expect(page.locator("article h2", { hasText: "Inception" })).toBeVisible();
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeReloadCount);
+    expect(mediaRequests[mediaRequests.length - 1].get("release_date.gte") ?? "").toBe("");
+    expect(mediaRequests[mediaRequests.length - 1].get("release_date.lte")).toBeTruthy();
+
+    await openFiltersIfCollapsed(page);
+    await expect(page.getByText("Pick a start date")).toBeVisible();
+
+    // Reset restores both preset bounds, and Back returns to cleared state
+    const beforeResetCount = mediaRequests.length;
+    await page.getByRole("button", { name: "Reset", exact: true }).click();
+    await expect(page).toHaveURL(/\/movie\/now-playing$/);
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeResetCount);
+    expect(mediaRequests[mediaRequests.length - 1].get("release_date.gte")).toBeTruthy();
+
+    const beforeBackCount = mediaRequests.length;
+    await page.goBack();
+    await expect(page).toHaveURL(/release_date_gte=(?:&|$)/);
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeBackCount);
+    expect(mediaRequests[mediaRequests.length - 1].get("release_date.gte") ?? "").toBe("");
+
+    // /movie/upcoming: clear end date only -> persists across reload
+    await page.goto("/movie/upcoming");
+    await expect(page.locator("article h2", { hasText: "Inception" })).toBeVisible();
+    await openFiltersIfCollapsed(page);
+    await clearDateBound(page, 1);
+    await expect(page.getByText("Pick an end date")).toBeVisible();
+
+    const beforeUpcomingApply = mediaRequests.length;
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await expect(page).toHaveURL(/release_date_lte=(?:&|$)/);
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeUpcomingApply);
+    expect(mediaRequests[mediaRequests.length - 1].get("release_date.gte")).toBeTruthy();
+    expect(mediaRequests[mediaRequests.length - 1].get("release_date.lte") ?? "").toBe("");
+
+    const beforeUpcomingReload = mediaRequests.length;
+    await page.reload();
+    await expect(page.locator("article h2", { hasText: "Inception" })).toBeVisible();
+    await expect.poll(() => mediaRequests.length).toBeGreaterThan(beforeUpcomingReload);
+    expect(mediaRequests[mediaRequests.length - 1].get("release_date.gte")).toBeTruthy();
+    expect(mediaRequests[mediaRequests.length - 1].get("release_date.lte") ?? "").toBe("");
+  });
+
+  test("SearchWrapper renders ready category tabs immediately without blocking on slow categories", async ({ page }) => {
+    let releaseSlowCategories!: () => void;
+    const slowCategoriesGate = new Promise<void>((resolve) => {
+      releaseSlowCategories = resolve;
+    });
+
+    await page.route("**/api/search/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/search/movie") {
+        await route.fulfill({ json: ACTION_FILTERED_MOVIES });
+        return;
+      }
+      if (path === "/api/search/tv") {
+        await route.fulfill({ json: { page: 1, total_pages: 1, total_results: 0, results: [] } });
+        return;
+      }
+      await slowCategoriesGate;
+      if (path === "/api/search/person") {
+        await route.fulfill({
+          json: {
+            page: 1,
+            total_pages: 1,
+            total_results: 1,
+            results: [{ id: 550, name: "Leonardo DiCaprio", profile_path: null, known_for_department: "Acting" }],
+          },
+        });
+        return;
+      }
+      await route.fulfill({ json: { page: 1, total_pages: 1, total_results: 0, results: [] } });
+    });
+
+    await page.goto("/search?q=Inception");
+
+    // Ready movie tab renders while person & keyword are still loading
+    await expect(page.getByRole("tab", { name: "Movies (1)" })).toBeVisible();
+    await expect(page.locator("article h2", { hasText: "Inception" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "People (Loading...)" })).toBeVisible();
+
+    await page.getByRole("tab", { name: "People (Loading...)" }).click();
+    await expect(
+      page.getByRole("status", { name: "Loading people search results" })
+    ).toBeVisible();
+
+    releaseSlowCategories();
+    await expect(page.getByRole("tab", { name: "People (1)" })).toBeVisible();
+    await expect(page.getByText("Leonardo DiCaprio")).toBeVisible();
   });
 });

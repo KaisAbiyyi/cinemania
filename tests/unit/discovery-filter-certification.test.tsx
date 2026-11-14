@@ -10,7 +10,14 @@ import TrendingContainer from "@/feature/media/components/TrendingContainer";
 import MediaByGenre from "@/feature/media/components/genre/MediaByGenre";
 import MediaByKeyword from "@/feature/media/components/keyword/MediaByKeyword";
 import FilterContainer from "@/feature/media/components/filter/FilterContainer";
-import { FilterProvider, useFilterContext } from "@/feature/media/components/filter/FilterProvider";
+import {
+  FilterProvider,
+  buildMediaQueryParams,
+  useFilterContext,
+} from "@/feature/media/components/filter/FilterProvider";
+import { buildFilterSearchQuery } from "@/feature/media/hooks/useFilterSync";
+import { globalDefaultFilters } from "@/types/filters";
+import { parseQuery } from "@/lib/utils";
 import TrendingFilters from "@/feature/media/components/filter/TrendingFilters";
 import { useTrendingFilters } from "@/feature/media/hooks/useTrendingFilters";
 import { dedupeByKey, dedupeInfinitePages } from "@/feature/media/utils/mediaPagination";
@@ -490,5 +497,282 @@ describe("CINE-010 Discovery & Filter Regression Certification", () => {
         value: originalLocation,
       });
     }
+  });
+
+  it("persists TV First Air Date switch (including cleared bounds) across URL roundtrip, unmount/remount, Back/Forward, and MediaContainer queries", async () => {
+    const mediaRequests: Record<string, unknown>[] = [];
+    vi.spyOn(apiClient, "get").mockImplementation(async (url: string, config?: { params?: unknown }) => {
+      if (url === "/media") {
+        mediaRequests.push((config?.params as Record<string, unknown> | undefined) ?? {});
+        return { data: { page: 1, results: [{ id: 1399, name: "Game of Thrones", poster_path: "/x.jpg", vote_average: 8.4, first_air_date: "2011-04-17", genre_ids: [18] }], total_pages: 1, total_results: 1 } };
+      }
+      if (url === "/genres") return { data: [{ id: 18, name: "Drama" }] };
+      if (url === "/languages") return { data: [{ iso_639_1: "en", english_name: "English", name: "English" }] };
+      if (url === "/providers/region") return { data: { results: [] } };
+      if (url === "/providers/tv") return { data: { results: [] } };
+      if (url === "/geolocation") return { data: { country: "US" } };
+      return { data: { page: 1, results: [], total_pages: 1, total_results: 0 } };
+    });
+
+    mockedPathname = "/tv/airing-today";
+    mockedSearchParams = new URLSearchParams();
+    window.history.replaceState(null, "", "/tv/airing-today");
+
+    const airingDefaults = { sort_by: "popularity.desc" };
+    const Wrapper1 = createWrapper();
+    const { unmount } = render(
+      <Wrapper1>
+        <FilterProvider defaultFilters={airingDefaults} datePreset="tv-airing-today">
+          <FilterStateProbe />
+          <FilterContainer mediaType="tv" />
+          <MediaContainer mediaType="tv" />
+        </FilterProvider>
+      </Wrapper1>
+    );
+
+    await waitFor(() => {
+      expect(mediaRequests.length).toBeGreaterThanOrEqual(1);
+    });
+    expect(mediaRequests[mediaRequests.length - 1]["air_date.gte"]).toBeTruthy();
+    expect(mediaRequests[mediaRequests.length - 1]["first_air_date.gte"]).toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter$/i }));
+    fireEvent.click(screen.getByRole("button", { name: "First Air Date" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
+
+    await waitFor(() => {
+      expect(mockedSearchParams.get("dateMode")).toBe("first_air_date");
+    });
+    expect(mockedSearchParams.has("air_date_gte")).toBe(false);
+    expect(mockedSearchParams.has("air_date_lte")).toBe(false);
+
+    const appliedQueryString = window.location.search;
+    expect(appliedQueryString).toContain("dateMode=first_air_date");
+    expect(new URLSearchParams(appliedQueryString).has("air_date_gte")).toBe(false);
+    expect(new URLSearchParams(appliedQueryString).has("air_date_lte")).toBe(false);
+    await waitFor(() => {
+      const latest = mediaRequests[mediaRequests.length - 1];
+      expect(latest["first_air_date.gte"]).toBeTruthy();
+      expect(latest["air_date.gte"]).toBe("");
+      expect(latest["air_date.lte"]).toBe("");
+    });
+
+    // Simulate reload / Back from detail page by unmounting and remounting from persisted URL
+    unmount();
+    cleanup();
+    const beforeRemountRequests = mediaRequests.length;
+    window.history.replaceState(null, "", `/tv/airing-today${appliedQueryString}`);
+    mockedSearchParams = new URLSearchParams(appliedQueryString.replace(/^\?/, ""));
+
+    const Wrapper2 = createWrapper();
+    const { unmount: unmountReloaded } = render(
+      <Wrapper2>
+        <FilterProvider defaultFilters={airingDefaults} datePreset="tv-airing-today">
+          <FilterStateProbe />
+          <FilterContainer mediaType="tv" />
+          <MediaContainer mediaType="tv" />
+        </FilterProvider>
+      </Wrapper2>
+    );
+
+    await waitFor(() => {
+      expect(mediaRequests.length).toBeGreaterThan(beforeRemountRequests);
+    });
+    const reloadedProbe = JSON.parse(screen.getByTestId("filter-probe").textContent || "{}");
+    expect(reloadedProbe.filters.dateMode).toBe("first_air_date");
+    expect(reloadedProbe.filters.air_date_gte).toBeUndefined();
+    expect(reloadedProbe.filters.air_date_lte).toBeUndefined();
+    expect(reloadedProbe.filters.first_air_date_gte).toBeTruthy();
+
+    const reloadedParams = mediaRequests[mediaRequests.length - 1];
+    expect(reloadedParams["first_air_date.gte"]).toBeTruthy();
+    expect(reloadedParams["air_date.gte"]).toBe("");
+    expect(reloadedParams["air_date.lte"]).toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter$/i }));
+    expect(screen.getByRole("button", { name: /^Reset$/ })).toBeTruthy();
+
+    // Verify browser Back to default "" and Forward back to dateMode=first_air_date
+    await act(async () => {
+      window.history.replaceState(null, "", "/tv/airing-today");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => {
+      const backProbe = JSON.parse(screen.getByTestId("filter-probe").textContent || "{}");
+      expect(backProbe.filters.dateMode).toBeUndefined();
+      expect(backProbe.filters.air_date_gte).toBeTruthy();
+      expect(backProbe.filters.first_air_date_gte).toBeUndefined();
+    });
+
+    await act(async () => {
+      window.history.replaceState(null, "", `/tv/airing-today${appliedQueryString}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => {
+      const fwdProbe = JSON.parse(screen.getByTestId("filter-probe").textContent || "{}");
+      expect(fwdProbe.filters.dateMode).toBe("first_air_date");
+      expect(fwdProbe.filters.air_date_gte).toBeUndefined();
+      expect(fwdProbe.filters.first_air_date_gte).toBeTruthy();
+    });
+
+    unmountReloaded();
+    cleanup();
+
+    // /tv/on-tv with First Air Date AND both date bounds cleared
+    mockedPathname = "/tv/on-tv";
+    const onTvClearedUrl = "?dateMode=first_air_date";
+    mockedSearchParams = new URLSearchParams("dateMode=first_air_date");
+    window.history.replaceState(null, "", `/tv/on-tv${onTvClearedUrl}`);
+
+    const Wrapper3 = createWrapper();
+    render(
+      <Wrapper3>
+        <FilterProvider defaultFilters={globalDefaultFilters} datePreset="tv-on-tv">
+          <FilterStateProbe />
+          <FilterContainer mediaType="tv" />
+        </FilterProvider>
+      </Wrapper3>
+    );
+
+    await waitFor(() => {
+      const onTvProbe = JSON.parse(screen.getByTestId("filter-probe").textContent || "{}");
+      expect(onTvProbe.filters.dateMode).toBe("first_air_date");
+      expect(onTvProbe.filters.air_date_gte).toBeUndefined();
+      expect(onTvProbe.filters.air_date_lte).toBeUndefined();
+      expect(buildMediaQueryParams("tv", onTvProbe.filters)).toMatchObject({
+        "air_date.gte": "",
+        "air_date.lte": "",
+        "first_air_date.gte": "",
+        "first_air_date.lte": "",
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter$/i }));
+    expect(screen.getByRole("button", { name: /^Reset$/ })).toBeTruthy();
+    expect(screen.getByText("Pick a start date")).toBeTruthy();
+    expect(screen.getByText("Pick an end date")).toBeTruthy();
+
+    // Switching back to Air Date and clicking Apply clears dateMode and removes Reset when reverted
+    fireEvent.click(screen.getByRole("button", { name: "Air Date" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Apply$/ }));
+    expect(window.location.search).toBe("?air_date_gte=&air_date_lte=");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Reset$/ }));
+    await waitFor(() => {
+      const resetProbe = JSON.parse(screen.getByTestId("filter-probe").textContent || "{}");
+      expect(resetProbe.filters.dateMode).toBeUndefined();
+      expect(resetProbe.filters.air_date_gte).toBeTruthy();
+    });
+  });
+
+  it("persists explicitly cleared preset date bounds across URL serialization, reload, and sanitizes invalid dateMode", async () => {
+    vi.spyOn(apiClient, "get").mockResolvedValue({ data: [] });
+
+    expect(parseQuery("?dateMode=invalid&vote_count_gte=&release_date_gte=")).toEqual({
+      release_date_gte: "",
+    });
+
+    const movieDefaults = {
+      ...globalDefaultFilters,
+      release_date_gte: "2026-10-03",
+      release_date_lte: "2026-11-14",
+    };
+    const serializedClearedStart = buildFilterSearchQuery(
+      { ...movieDefaults, release_date_gte: "" },
+      movieDefaults
+    );
+    expect(serializedClearedStart).toBe("release_date_gte=");
+
+    const serializedClearedBoth = buildFilterSearchQuery(
+      { ...movieDefaults, release_date_gte: "", release_date_lte: "" },
+      movieDefaults
+    );
+    expect(serializedClearedBoth).toBe("release_date_gte=&release_date_lte=");
+
+    mockedPathname = "/movie/now-playing";
+    mockedSearchParams = new URLSearchParams("release_date_gte=&dateMode=bogus");
+    window.history.replaceState(null, "", "/movie/now-playing?release_date_gte=&dateMode=bogus");
+
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <FilterProvider defaultFilters={globalDefaultFilters} datePreset="movie-now-playing">
+          <FilterStateProbe />
+          <FilterContainer mediaType="movie" />
+        </FilterProvider>
+      </Wrapper>
+    );
+
+    await waitFor(() => {
+      const probe = JSON.parse(screen.getByTestId("filter-probe").textContent || "{}");
+      expect(probe.filters.release_date_gte).toBe("");
+      expect(probe.filters.release_date_lte).toBeTruthy();
+      expect(probe.filters.dateMode).toBeUndefined();
+      const params = buildMediaQueryParams("movie", probe.filters);
+      expect(params["release_date.gte"]).toBe("");
+      expect(params["release_date.lte"]).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Filter$/i }));
+    expect(screen.getByText("Pick a start date")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Reset$/ })).toBeTruthy();
+  });
+
+  it("renders loaded search category tabs immediately while slower category queries are still pending", async () => {
+    let resolvePerson!: (value: unknown) => void;
+    const pendingPerson = new Promise((resolve) => {
+      resolvePerson = resolve;
+    });
+
+    vi.spyOn(apiClient, "get").mockImplementation(async (url: string) => {
+      if (url === "/search/movie") {
+        return {
+          data: {
+            page: 1,
+            total_pages: 1,
+            total_results: 1,
+            results: [{ id: 27205, title: "Inception", poster_path: "/x.jpg", vote_average: 8.4, release_date: "2010-07-15", genre_ids: [28] }],
+          },
+        };
+      }
+      if (url === "/search/tv") {
+        throw new Error("TV timed out");
+      }
+      if (url === "/search/person") {
+        return pendingPerson;
+      }
+      return new Promise(() => {});
+    });
+
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <SearchWrapper query="Inception" />
+      </Wrapper>
+    );
+
+    // Movies tab renders immediately without waiting for person/keyword
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Movies (1)" })).toBeTruthy();
+      expect(screen.getByText("Inception")).toBeTruthy();
+    });
+    expect(screen.getByRole("tab", { name: "People (Loading...)" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Keywords (Loading...)" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "TV (0)" })).toBeTruthy();
+
+    await act(async () => {
+      resolvePerson({
+        data: {
+          page: 1,
+          total_pages: 1,
+          total_results: 1,
+          results: [{ id: 550, name: "Leonardo DiCaprio", profile_path: null, known_for_department: "Acting" }],
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "People (1)" })).toBeTruthy();
+    });
   });
 });
