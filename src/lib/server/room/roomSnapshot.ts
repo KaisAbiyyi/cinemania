@@ -247,8 +247,9 @@ function resolveJoinLookup(
 
 function buildViewerVoteSummary(
   viewerParticipantId: string,
-  roomStatus: RoomStatus,
-  candidates: Candidate[],
+  currentCandidateIndex: number | null,
+  currentCandidateId: string | null,
+  isEligibleVoter: boolean,
   votes: Vote[]
 ): { userVotes: Record<string, VoteType>; nextCandidateIndex: number | null } {
   const normalizedViewerId = viewerParticipantId.toLowerCase();
@@ -259,12 +260,9 @@ function buildViewerVoteSummary(
     }
   }
 
-  let nextCandidateIndex: number | null = null;
-  if (roomStatus === "ACTIVE" && candidates.length > 0) {
-    const ordered = [...candidates].sort((a, b) => a.position - b.position);
-    const pendingIdx = ordered.findIndex((candidate) => !(candidate.id in userVotes));
-    nextCandidateIndex = pendingIdx >= 0 ? pendingIdx : null;
-  }
+  const nextCandidateIndex = isEligibleVoter && currentCandidateId !== null && !(currentCandidateId in userVotes)
+    ? currentCandidateIndex
+    : null;
 
   return { userVotes, nextCandidateIndex };
 }
@@ -592,8 +590,9 @@ export async function getAuthenticatedRoomSnapshot(
   );
   const viewerVoteSummary = buildViewerVoteSummary(
     viewerParticipant.participant_id,
-    safeRoom.status,
-    consistent.candidates,
+    safeRoom.currentCandidateIndex,
+    safeRoom.currentCandidate?.candidateId ?? null,
+    isEligibleVoter,
     consistent.votes
   );
 
@@ -934,8 +933,9 @@ export async function submitRoomVoteWithSession(
   );
   const viewerVoteSummary = buildViewerVoteSummary(
     viewerParticipant.participant_id,
-    safeRoom.status,
-    recorded.candidates,
+    safeRoom.currentCandidateIndex,
+    safeRoom.currentCandidate?.candidateId ?? null,
+    isEligibleVoter,
     recorded.votes
   );
 

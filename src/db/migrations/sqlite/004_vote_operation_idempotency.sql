@@ -21,9 +21,20 @@ BEGIN
   SELECT RAISE(ABORT, 'VOTE_IMMUTABLE: votes are immutable once recorded');
 END;
 
-CREATE TRIGGER IF NOT EXISTS trg_votes_immutable_delete
+DROP TRIGGER IF EXISTS trg_votes_immutable_delete;
+CREATE TRIGGER trg_votes_immutable_delete
 BEFORE DELETE ON votes
 FOR EACH ROW
+WHEN EXISTS (SELECT 1 FROM rooms WHERE id = OLD.room_id)
 BEGIN
   SELECT RAISE(ABORT, 'VOTE_IMMUTABLE: votes are immutable once recorded');
+END;
+
+DROP TRIGGER IF EXISTS trg_rooms_retention_delete;
+CREATE TRIGGER trg_rooms_retention_delete
+BEFORE DELETE ON rooms
+FOR EACH ROW
+WHEN OLD.status <> 'EXPIRED' OR julianday(OLD.expires_at) IS NULL OR julianday(OLD.expires_at) > julianday('now')
+BEGIN
+  SELECT RAISE(ABORT, 'ROOM_RETENTION: room must be expired before deletion');
 END;

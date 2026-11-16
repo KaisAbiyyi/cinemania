@@ -279,6 +279,34 @@ describe("CINE-017 Pure Unanimous Matching Engine", () => {
 });
 
 describe("CINE-017 SQLite Repository Immutability, Frozen Roster, Idempotency & Exhaustion", () => {
+  it("retains votes until whole-room expiry cleanup and rejects partial deletion", () => {
+    const db = createMigratedSqliteDb();
+    try {
+      const repo = new SqliteRoomRepository(db);
+      const empty = repo.createRoom({ hostDisplayName: "No votes" });
+      expect(() => db.prepare("DELETE FROM rooms WHERE id = ?").run(empty.room.id)).toThrow(/ROOM_RETENTION/);
+      const { room, host } = repo.createRoom({ hostDisplayName: "Host" });
+      repo.joinRoom(room.id, crypto.randomUUID(), "Guest");
+      const { round, candidates } = repo.startRound(room.id, Array.from({ length: 20 }, (_, i) => ({ movieId: 91991 + i, title: `Retention ${i}` })));
+      const candidate = candidates[0]!;
+      const recorded = repo.recordVote(room.id, round.id, host.participant_id, candidate.id, candidate.movie_id, "LIKE");
+      expect(() => db.prepare("DELETE FROM votes WHERE id = ?").run(recorded.vote.id)).toThrow(/VOTE_IMMUTABLE/);
+      expect(() => db.prepare("DELETE FROM candidates WHERE id = ?").run(candidate.id)).toThrow(/VOTE_IMMUTABLE/);
+      expect(() => db.prepare("DELETE FROM room_participants WHERE room_id = ? AND participant_id = ?").run(room.id, host.participant_id)).toThrow(/VOTE_IMMUTABLE/);
+      expect(() => db.prepare("DELETE FROM rounds WHERE id = ?").run(round.id)).toThrow(/VOTE_IMMUTABLE/);
+      expect(() => db.prepare("DELETE FROM rooms WHERE id = ?").run(room.id)).toThrow();
+      db.prepare("UPDATE rooms SET status = 'EXPIRED', expires_at = '2999-01-01T00:00:00Z' WHERE id = ?").run(room.id);
+      expect(() => db.prepare("DELETE FROM rooms WHERE id = ?").run(room.id)).toThrow(/ROOM_RETENTION/);
+      db.prepare("UPDATE rooms SET expires_at = 'invalid' WHERE id = ?").run(room.id);
+      expect(() => db.prepare("DELETE FROM rooms WHERE id = ?").run(room.id)).toThrow(/ROOM_RETENTION/);
+      db.prepare("UPDATE rooms SET status = 'EXPIRED', expires_at = '2000-01-01T00:00:00Z' WHERE id = ?").run(room.id);
+      expect(() => db.prepare("DELETE FROM votes WHERE id = ?").run(recorded.vote.id)).toThrow(/VOTE_IMMUTABLE/);
+      expect(() => db.prepare("DELETE FROM rooms WHERE id = ?").run(room.id)).not.toThrow();
+      expect(db.prepare("SELECT count(*) AS n FROM votes WHERE room_id = ?").get(room.id)).toEqual({ n: 0 });
+    } finally {
+      db.close();
+    }
+  });
   it("uses frozen round_participants quorum even if room.participant_count mutates or late member row exists", () => {
     const db = createMigratedSqliteDb();
     try {

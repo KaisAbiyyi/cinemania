@@ -39,7 +39,37 @@ CREATE TRIGGER trg_votes_immutable_update
   EXECUTE FUNCTION prevent_vote_mutation();
 
 DROP TRIGGER IF EXISTS trg_votes_immutable_delete ON votes;
+CREATE OR REPLACE FUNCTION prevent_vote_delete_except_room_purge()
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog
+SET row_security = off
+AS $$
+DECLARE parent_exists boolean;
+BEGIN
+  EXECUTE format('SELECT EXISTS (SELECT 1 FROM %I.rooms WHERE id = $1)', TG_TABLE_SCHEMA)
+    INTO parent_exists USING OLD.room_id;
+  IF parent_exists THEN
+    RAISE EXCEPTION 'VOTE_IMMUTABLE: votes are immutable once recorded' USING ERRCODE = '23514';
+  END IF;
+  RETURN OLD;
+END;
+$$;
+
 CREATE TRIGGER trg_votes_immutable_delete
   BEFORE DELETE ON votes
   FOR EACH ROW
-  EXECUTE FUNCTION prevent_vote_mutation();
+  EXECUTE FUNCTION prevent_vote_delete_except_room_purge();
+
+CREATE OR REPLACE FUNCTION enforce_room_retention()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF OLD.status <> 'EXPIRED' OR OLD.expires_at IS NULL OR OLD.expires_at > CURRENT_TIMESTAMP THEN
+    RAISE EXCEPTION 'ROOM_RETENTION: room must be expired before deletion' USING ERRCODE = '23514';
+  END IF;
+  RETURN OLD;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_rooms_retention_delete ON rooms;
+CREATE TRIGGER trg_rooms_retention_delete BEFORE DELETE ON rooms
+  FOR EACH ROW EXECUTE FUNCTION enforce_room_retention();

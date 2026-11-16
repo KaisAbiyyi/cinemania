@@ -443,6 +443,29 @@ async function main() {
     }
     assertCondition(frozenMissingCaught, "Empty round_participants must fail closed with FrozenRosterMissingError (never fallback)");
 
+    for (const [statement, params, expected] of [
+      [`DELETE FROM "${TEST_SCHEMA}".votes WHERE id = $1`, [v3a.vote.id], "VOTE_IMMUTABLE"],
+      [`DELETE FROM "${TEST_SCHEMA}".room_participants WHERE room_id = $1 AND participant_id = $2`, [created3.room.id, created3.host.participant_id], "VOTE_IMMUTABLE"],
+      [`DELETE FROM "${TEST_SCHEMA}".candidates WHERE id = $1`, [started3.candidates[0]!.id], "VOTE_IMMUTABLE"],
+      [`DELETE FROM "${TEST_SCHEMA}".rounds WHERE id = $1`, [started3.round.id], "VOTE_IMMUTABLE"],
+      [`DELETE FROM "${TEST_SCHEMA}".rooms WHERE id = $1`, [created3.room.id], "ROOM_RETENTION"],
+    ] as Array<[string, string[], string]>) {
+      let denied = false;
+      try { await adminClient.query(statement, params); } catch (err) { denied = String(err).includes(expected); }
+      assertCondition(denied, `Retention guard must reject ${statement}`);
+    }
+    await adminClient.query(`UPDATE "${TEST_SCHEMA}".rooms SET status = 'EXPIRED', expires_at = now() + interval '1 day' WHERE id = $1`, [created3.room.id]);
+    let futureDenied = false;
+    try { await adminClient.query(`DELETE FROM "${TEST_SCHEMA}".rooms WHERE id = $1`, [created3.room.id]); } catch (err) { futureDenied = String(err).includes("ROOM_RETENTION"); }
+    assertCondition(futureDenied, "Future expiration must prevent room purge");
+    await adminClient.query(`UPDATE "${TEST_SCHEMA}".rooms SET expires_at = now() - interval '1 day' WHERE id = $1`, [created3.room.id]);
+    let directDenied = false;
+    try { await adminClient.query(`DELETE FROM "${TEST_SCHEMA}".votes WHERE id = $1`, [v3a.vote.id]); } catch (err) { directDenied = String(err).includes("VOTE_IMMUTABLE"); }
+    assertCondition(directDenied, "Expired room must not permit direct vote deletion");
+    await adminClient.query(`DELETE FROM "${TEST_SCHEMA}".rooms WHERE id = $1`, [created3.room.id]);
+    const retained = await adminClient.query(`SELECT count(*)::int AS n FROM "${TEST_SCHEMA}".votes WHERE room_id = $1`, [created3.room.id]);
+    assertCondition(retained.rows[0].n === 0, "Expired whole-room purge must cascade votes");
+
     await adminClient.query(
       adaptSql(fs.readFileSync(path.join(migDir, "004_down_vote_operation_idempotency.sql"), "utf8"), TEST_SCHEMA)
     );

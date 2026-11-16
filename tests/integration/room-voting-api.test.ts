@@ -168,6 +168,22 @@ describe("CINE-017 Voting API Integration", () => {
         expect(body.isMatched).toBe(false);
         expect(body.room.status).toBe("ACTIVE");
         expect(body.room.currentCandidateIndex).toBe(0);
+        expect(body.viewer.nextCandidateIndex).toBeNull();
+        const waitingResponse = await getRoomSnapshotGet(
+          createSameOriginRequest("GET", `http://localhost:3000/api/rooms/${roomId}`, { cookieHeader: cookies[i] }),
+          { params: Promise.resolve({ roomId }) }
+        );
+        const waiting = await waitingResponse.json();
+        expect(waitingResponse.status).toBe(200);
+        expect(waiting.room.currentCandidateIndex).toBe(0);
+        expect(waiting.viewer.nextCandidateIndex).toBeNull();
+        const unvotedResponse = await getRoomSnapshotGet(
+          createSameOriginRequest("GET", `http://localhost:3000/api/rooms/${roomId}`, { cookieHeader: cookies[voterCount - 1] }),
+          { params: Promise.resolve({ roomId }) }
+        );
+        const unvoted = await unvotedResponse.json();
+        expect(unvotedResponse.status).toBe(200);
+        expect(unvoted.viewer.nextCandidateIndex).toBe(0);
       }
 
       const lastSkipRes = await submitVotePost(
