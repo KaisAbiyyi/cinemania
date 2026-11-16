@@ -14,6 +14,9 @@ import type {
 } from "@/db/schema";
 import type { CanonicalRoomDeckFilter } from "@/lib/schemas/roomDeck";
 import { CapabilityAuthError } from "@/lib/server/auth/guestCapability";
+import { dispatchPendingEvents } from "@/lib/server/realtime/dispatch";
+import { postgresOutboxStore } from "@/lib/server/realtime/postgresOutbox";
+import { createSupabasePublisher } from "@/lib/server/realtime/supabasePublisher";
 import {
   PostgresRoomRepository,
   assertValidPgSchema,
@@ -121,6 +124,8 @@ function assertSyncHookResult(value: unknown, hookName: string): void {
 }
 
 export interface RoomAuthorityStore {
+  dispatchRoomNotifications?(roomId: string): Promise<void>;
+  listRoomEventVersions(roomId: string, since: number): Promise<number[]>;
   createRoom(options: CreateRoomOptions): Promise<{ room: Room; host: RoomParticipant }>;
   joinRoom(roomId: string, participantId: string, displayName: string): Promise<RoomParticipant>;
   createRoomWithSession(options: CreateRoomSessionOptions): Promise<AtomicRoomSessionResult>;
@@ -342,6 +347,11 @@ export function resolvePostgresPoolConfig(): ResolvedPostgresConfig | null {
 export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
   private readonly db: DatabaseSync;
   private readonly repo: SqliteRoomRepository;
+
+  async listRoomEventVersions(roomId: string, since: number): Promise<number[]> {
+    const rows = this.db.prepare("SELECT version FROM room_events WHERE room_id = ? AND version > ? ORDER BY version ASC LIMIT 100").all(roomId, since) as Array<{ version: number }>;
+    return rows.map((row) => row.version);
+  }
 
   constructor(db: DatabaseSync) {
     this.db = db;
@@ -705,6 +715,21 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
   private readonly pool: Pool;
   private readonly repo: PostgresRoomRepository;
   private readonly schema?: string;
+
+  async listRoomEventVersions(roomId: string, since: number): Promise<number[]> {
+    return this.withClient(async (client) => {
+      const result = await client.query<{ version: number }>("SELECT version FROM room_events WHERE room_id = $1 AND version > $2 ORDER BY version ASC LIMIT 100", [roomId, since]);
+      return result.rows.map((row) => row.version);
+    });
+  }
+
+  async dispatchRoomNotifications(roomId: string): Promise<void> {
+    const url = process.env.SUPABASE_URL;
+    const secret = process.env.SUPABASE_SECRET_KEY;
+    if (!url || !secret) throw new Error("Realtime publisher configuration missing");
+    const sent = await dispatchPendingEvents(roomId, postgresOutboxStore(this.pool, this.schema), createSupabasePublisher(url, secret));
+    if (!sent) throw new Error("Realtime publication failed");
+  }
 
   constructor(pool: Pool, options?: { schema?: string }) {
     try {

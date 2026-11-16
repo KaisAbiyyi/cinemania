@@ -3,6 +3,7 @@ import { assertSameOriginCsrf } from "@/lib/server/auth/csrfGuard";
 import { handleGuestApiError, privateJsonResponse } from "@/lib/server/auth/guestResponse";
 import { getRoomAuthorityStore } from "@/lib/server/room/roomStore";
 import { parseJsonBodySafe, updateRoomFiltersWithSession } from "@/lib/server/room/roomSnapshot";
+import { notifyAfterCommit } from "@/lib/server/realtime/notifyAfterCommit";
 
 async function handleUpdateFilters(
   request: NextRequest,
@@ -14,6 +15,7 @@ async function handleUpdateFilters(
     const { roomId } = await context.params;
     const store = getRoomAuthorityStore();
     const result = await updateRoomFiltersWithSession(request, roomId, body, store);
+    await notifyAfterCommit(store, result.room.roomId);
 
     return privateJsonResponse(
       {
