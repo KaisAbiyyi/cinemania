@@ -90,6 +90,7 @@ export interface Vote {
   candidate_id: string;
   movie_id: number;
   vote: VoteType;
+  operation_id?: string | null;
   created_at: string;
 }
 
