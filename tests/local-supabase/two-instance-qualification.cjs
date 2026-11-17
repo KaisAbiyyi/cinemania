@@ -473,6 +473,11 @@ async function main() {
     const unknownRooms = await db.query("SELECT count(*)::int AS n FROM public.rooms WHERE id NOT IN ($1,$2)",
       ["00000000-0000-4000-8000-000000005201", "00000000-0000-4000-8000-000000005202"]);
     assert.equal(unknownRooms.rows[0].n, 0, "Synthetic-only qualification refused: unknown existing rooms");
+    // The deployment contract requires autonomous workers during normal traffic,
+    // too: a transient HTTP fast-path publish failure must be retried without GET.
+    worker1 = spawnWorker({ cwd: inst1Dir, env: baseAppEnv });
+    worker2 = spawnWorker({ cwd: inst2Dir, env: baseAppEnv });
+    await Promise.all([waitForWorker(worker1), waitForWorker(worker2)]);
 
     // 4. Test A: Host creates room on Instance 1, Guest joins on Instance 2
     const createRes = await fetch(`${origin1}/api/rooms`, {
@@ -683,6 +688,8 @@ async function main() {
 
     // 7. Actual authority COMMIT -> committer SIGKILL -> independent worker recovery.
     // No app HTTP requests, browser polling, or request-assisted trigger in this window.
+    await Promise.all([stopChild(worker1), stopChild(worker2)]);
+    worker1 = null; worker2 = null;
     await stopChild(proc1);
     const inst2Health = await fetch(`${origin2}/api/rooms/${room2.roomId}`, { headers: { cookie: guest2Cookie } });
     assert.equal(inst2Health.status, 200, "Instance 2 must stay available while Instance 1 is down");

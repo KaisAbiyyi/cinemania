@@ -184,6 +184,17 @@ private-WS/JWT/RLS/forgery/anonymous suite passed on the working candidate. This
 not yet final exact-HEAD qualification. Hosted two-instance/recovery/latency evidence
 must be published separately; no local result is substituted.
 
+Hosted harness corrections preserve failed attempts: the original raw latency
+observer lacked the application's periodic JWT renewal and timed out on the last
+sample; it now refreshes only during the latency section, outside measured mutations
+and after the no-HTTP recovery window. A later run timed out on a normal-traffic
+hint after the HTTP publisher failed; the harness had delayed worker startup until
+the crash section. Both workers now supervise normal traffic, and are explicitly
+stopped before the stranded COMMIT fault. This exercises the actual deployment
+contract without extending token lifetime or publication/observation timeouts.
+An intervening join HTTP500 is retained with cause NOT VERIFIED; a sanitized failure
+body is captured on any recurrence. No product repair is claimed for that failure.
+
 Keep staging intact through acceptance. Future release cleansing is a separate
 owner-gated inventory, backup, provenance-scoped deletion, verification and rollback
 operation. No production deployment, merge, self-approval or CINE-019/021 work.
