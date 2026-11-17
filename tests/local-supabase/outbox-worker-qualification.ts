@@ -11,10 +11,11 @@ import { startOutboxWorker } from "../../src/lib/server/realtime/worker";
 const requireLocal = createRequire(import.meta.url);
 const { assertLocalStack } = requireLocal("../../scripts/local-supabase/runtime.cjs");
 const { parseEnvFile, STACK_ENV_PATH } = requireLocal("../../scripts/local-supabase/generate-env.cjs");
-assertLocalStack();
-const env = parseEnvFile(STACK_ENV_PATH);
-const pool = new Pool({ host: "127.0.0.1", port: 55432, user: "supabase_admin", password: env.POSTGRES_PASSWORD,
-  database: "postgres", max: 5, connectionTimeoutMillis: 5000, statement_timeout: 5000 });
+const { loadHostedStaging } = requireLocal("../hosted-supabase/environment.cjs");
+const hosted = process.argv.includes("--hosted-staging") ? loadHostedStaging() : null;
+if (!hosted) assertLocalStack();
+const env = hosted ? {} : parseEnvFile(STACK_ENV_PATH);
+const pool = new Pool({ ...(hosted ? hosted.pgConfig : { host: "127.0.0.1", port: 55432, user: "supabase_admin", password: env.POSTGRES_PASSWORD, database: "postgres" }), max: 5, connectionTimeoutMillis: 10000, statement_timeout: 10000 });
 const schema = `cinematch_qual_${Math.floor(Date.now() / 1000)}_${crypto.randomBytes(4).toString("hex")}`;
 assert.match(schema, /^cinematch_qual_[0-9]+_[a-f0-9]{8}$/);
 const table = `"${schema}".room_events`;
@@ -22,7 +23,7 @@ const workers: Array<{ stop(): Promise<void> }> = [];
 let created = false;
 
 async function waitFor(probe: () => Promise<boolean>, message: string) {
-  const deadline = Date.now() + 8000;
+  const deadline = Date.now() + (hosted ? 60000 : 8000);
   while (Date.now() < deadline) {
     if (await probe()) return;
     await new Promise(resolve => setTimeout(resolve, 25));
@@ -87,7 +88,7 @@ async function main() {
     assert.deepEqual(seen[room], [1, 2, 3, 4, 5, 6, 7]);
     console.log(JSON.stringify({ ok: true, uncommittedEventsInvisible: true, concurrentWorkersOrdered: true,
       autonomousTransientRetry: true, durablePoisonQuarantine: true, healthyRoomNotStarved: true,
-      publishBeforeAckDuplicateSafe: true, autonomousRestart: true, publisher: "simulated faults; real PostgreSQL" }));
+      publishBeforeAckDuplicateSafe: true, autonomousRestart: true, environment: hosted ? `hosted:${hosted.project}` : "local Docker", publisher: "simulated faults; real PostgreSQL" }));
   } finally {
     await Promise.all(workers.map(w => w.stop()));
     if (created) await pool.query(`DROP SCHEMA "${schema}" CASCADE`);

@@ -19,6 +19,7 @@ const { createClient } = require(path.resolve(__dirname, "../../scripts/local-su
 const { assertLocalStack } = require("../../scripts/local-supabase/runtime.cjs");
 const { validateCommit, assertNoCloudTargetEnv } = require("../../scripts/local-supabase/safety.cjs");
 const { parseEnvFile, STACK_ENV_PATH } = require("../../scripts/local-supabase/generate-env.cjs");
+const { loadHostedStaging, assertEmptyHostedApplication } = require("../hosted-supabase/environment.cjs");
 
 const DEFAULT_APP_COMMIT = execFileSync("git", ["-C", REPO_ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const PORT_1 = 3101;
@@ -38,7 +39,7 @@ function extractCookieHeader(response) {
   return raw.map((entry) => entry.split(";")[0]).join("; ");
 }
 
-function writeHermeticTmdbPreload(filePath) {
+function writeHermeticTmdbPreload(filePath, hostedHostname = "") {
   const movies = Array.from({ length: 20 }, (_, i) => ({
     id: 910001 + i,
     title: `GH52 Local Film ${i + 1}`,
@@ -57,6 +58,7 @@ const https = require("node:https");
 const http = require("node:http");
 const { PassThrough } = require("node:stream");
 const PAYLOAD = ${JSON.stringify(payload)};
+const HOSTED_STAGING = ${JSON.stringify(hostedHostname)};
 function mockDiscover(cb) {
   const res = new PassThrough();
   res.statusCode = 200;
@@ -99,7 +101,7 @@ https.request = function(urlOrOpts, optsOrCb, maybeCb) {
   const opts = typeof urlOrOpts === "string" || urlOrOpts instanceof URL ? urlOrOpts : urlOrOpts;
   const cb = typeof optsOrCb === "function" ? optsOrCb : maybeCb;
   if (isTmdbTarget(opts)) return mockDiscover(cb);
-  if (!isLoopbackOrSocket(opts)) throw new Error("FAIL_CLOSED outbound https blocked: " + getTargetHost(opts));
+  if (!isLoopbackOrSocket(opts) && (!HOSTED_STAGING || getTargetHost(opts) !== HOSTED_STAGING)) throw new Error("FAIL_CLOSED outbound https blocked: " + getTargetHost(opts));
   return origHttpsReq.apply(this, arguments);
 };
 https.get = function(urlOrOpts, optsOrCb, maybeCb) {
@@ -217,7 +219,10 @@ async function crashAfterAuthorityCommit({ cwd, env, roomId, actorParticipantId,
 
 async function attachBrowserProbe(browser, { origin, cookie, roomId, supabaseUrl, anonKey, bundlePath }) {
   const context = await browser.newContext();
-  await context.route("**/*", route => new URL(route.request().url()).hostname === "127.0.0.1" ? route.continue() : route.abort());
+  await context.route("**/*", route => {
+    const url = new URL(route.request().url());
+    return url.hostname === "127.0.0.1" || (url.protocol === "https:" && url.origin === supabaseUrl) ? route.continue() : route.abort();
+  });
   await context.addCookies(cookie.split("; ").map(item => {
     const split = item.indexOf("=");
     return { name: item.slice(0, split), value: item.slice(split + 1), url: origin };
@@ -356,15 +361,15 @@ function percentile(sorted, p) {
 }
 
 async function main() {
-  assertNoCloudTargetEnv();
-  assertLocalStack();
+  const hosted = process.argv.includes("--hosted-staging") ? loadHostedStaging() : null;
+  if (!hosted) { assertNoCloudTargetEnv(); assertLocalStack(); }
   const appCommit = getFlagValue(process.argv.slice(2), "--app-commit") || DEFAULT_APP_COMMIT;
   validateCommit(appCommit);
   execFileSync("git", ["-C", REPO_ROOT, "cat-file", "-e", `${appCommit}^{commit}`]);
 
-  const stackEnv = parseEnvFile(STACK_ENV_PATH);
-  const databaseUrl = `postgresql://supabase_admin:${stackEnv.POSTGRES_PASSWORD}@127.0.0.1:55432/postgres`;
-  const supabaseUrl = "http://127.0.0.1:54321";
+  const stackEnv = hosted ? hosted.stackEnv : parseEnvFile(STACK_ENV_PATH);
+  const databaseUrl = hosted ? "" : `postgresql://supabase_admin:${stackEnv.POSTGRES_PASSWORD}@127.0.0.1:55432/postgres`;
+  const supabaseUrl = hosted ? hosted.url : "http://127.0.0.1:54321";
   const capabilitySecret = crypto.randomBytes(32).toString("hex");
 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cinematch-gh52-2inst-"));
@@ -379,7 +384,7 @@ async function main() {
   let worker1 = null, worker2 = null, browser = null;
   const wsClients = [];
   const createdRoomIds = [];
-  const db = new Client({
+  const db = new Client(hosted ? hosted.pgConfig : {
     host: "127.0.0.1",
     port: 55432,
     user: "supabase_admin",
@@ -429,7 +434,7 @@ async function main() {
     assert.equal(negRes, "NEG_PROD_LOOPBACK_REJECTED");
 
     // 3. Prepare two completely independent runtime directories (real src + real node_modules, zero junctions/env files)
-    writeHermeticTmdbPreload(preloadPath);
+    writeHermeticTmdbPreload(preloadPath, hosted ? new URL(hosted.url).hostname : "");
     fs.renameSync(buildDir, inst1Dir);
     fs.cpSync(inst1Dir, inst2Dir, { recursive: true });
 
@@ -448,6 +453,8 @@ async function main() {
       NEXT_PUBLIC_TMDB_POSTER_URL: "https://image.tmdb.org/t/p",
       NEXT_PUBLIC_IMAGE_BASE_URL: "https://image.tmdb.org/t/p",
       NODE_OPTIONS: `--require ${preloadPath}`,
+      ALLOW_DESTRUCTIVE_PG_TESTS: "false",
+      ...(hosted ? hosted.appEnv : {}),
     };
 
     const origin1 = `http://127.0.0.1:${PORT_1}`;
@@ -459,6 +466,7 @@ async function main() {
     await db.connect();
     // New autonomous workers scan all public pending rows; refuse a developer
     // database containing rooms beyond the two explicit GH-52 synthetic seeds.
+    if (hosted) await assertEmptyHostedApplication(db);
     const unknownRooms = await db.query("SELECT count(*)::int AS n FROM public.rooms WHERE id NOT IN ($1,$2)",
       ["00000000-0000-4000-8000-000000005201", "00000000-0000-4000-8000-000000005202"]);
     assert.equal(unknownRooms.rows[0].n, 0, "Synthetic-only qualification refused: unknown existing rooms");
@@ -717,6 +725,7 @@ async function main() {
         {
           ok: true,
           appCommit,
+          environment: hosted ? `hosted:${hosted.project}` : "local Docker",
           negativeProdControl: "PASS",
           twoInstances: { port1: PORT_1, port2: PORT_2 },
           unanimousMatchConverged: true,

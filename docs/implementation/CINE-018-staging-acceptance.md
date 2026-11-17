@@ -42,7 +42,7 @@ differences. Original owners/grants remain in the backup and catalog inventory.
 This proves application/history content recovery, **not** a full managed-platform,
 role/ACL, Auth, Storage or Realtime configuration restore. Full archive readability
 does not prove full-platform restore. A verified project configuration snapshot is
-still required before hosted mutations.
+was captured before hosted mutations (see configuration disposition below).
 
 ### Narrow reconciliation and rollback plan
 
@@ -51,9 +51,9 @@ secret values, snapshot it privately, finish inventory/backup coverage, and rech
 that the identified application namespace remains empty and unchanged. If unknown
 data or ownership appears, stop affected mutations and publish the discrepancy.
 
-The planned reconciliation preserves the historical001 row as evidence of drift;
-apply canonical001–005, in order under explicit public search_path, within a controlled
-transaction after emptiness checks. Record the repair and canonical source hashes in
+The reconciliation preserves the historical001 row as evidence of drift;
+apply canonical001–005, in order under explicit public search_path, through managed
+transactional migrations after emptiness checks. Record the repair and canonical source hashes in
 new migration history rather than silently asserting the old row reflects current
 objects. Do not drop public, reset the linked project, overwrite managed objects,
 rotate secrets, or change unrelated grants. Compare installed definitions, indexes,
@@ -123,13 +123,59 @@ the real CLI against an exclusively created empty local schema for idle sweeps.
 Its unused synthetic hosted publisher configuration does not exercise hosted transport.
 The existing local/hosted acceptance harness supplies the separate recovery evidence.
 
-## Current gate
+## Hosted configuration and canonical setup
 
-Hosted configuration snapshot, canonical setup and hosted WS/recovery/latency
-qualification remain BLOCKED/NOT RUN pending authenticated configuration/secret
-access. The available connector exposes SQL and publishable keys, but not the
-Realtime configuration or server/JWT secrets. The dashboard browser currently asks
-for sign-in. Do not use database privileges to extract managed service secrets.
+Owner completed dashboard sign-in after the initial access checkpoint. Existing API
+and legacy JWT credentials were stored only in an owner/SYSTEM-readable local file;
+no key was created or rotated. Current managed JWT key is ECC P-256; the previous
+HS256 key remains enabled for verification. Hosted acceptance must actually prove
+the application's signed HS256 guest tokens are accepted; this configuration is not
+assumed from the key listing.
+
+Before changes: Realtime enabled, Allow public access ON, authorization/changes pools
+2/2, maxclients200, events100/s, presence20/s, payload256KB. Data API enabled, two
+schemas exposed, automatic table exposure ON, extra search_path public/extensions,
+maxrows1000. Private UI/config snapshots are in the protected backup directory.
+Only Realtime Allow public access was changed OFF, with saved OFF state observed.
+No other API/Auth limit or configuration was changed.
+
+Managed history now preserves original `20261112011644`, plus restore001 at
+`20261117131107`,002 at `20261117131126`,003 at `20261117131152`,004 at
+`20261117131215`,005 at `20261117131224`. This identifies actual reconciliation
+rather than rewriting the original drift record. No down migration or reset ran.
+
+The first hosted security advisor/query found Supabase's explicit default anon
+EXECUTE grant survived 001's PUBLIC-only revoke on the membership helper. CINE-018
+migration005 now explicitly revokes it and client RPC access to trigger callbacks,
+and pins the immutable-update callback's search_path. The same narrow repair was
+recorded in a separate hosted migration after initial setup. Authenticated helper
+EXECUTE is intentional: its SECURITY DEFINER lookup derives sub from signed JWT,
+returns only membership boolean, and does not enumerate the roster. Denied tables
+with RLS and no client policies are intentional server-only state.
+
+`tests/hosted-supabase/environment.cjs` accepts only project
+`dmrbticnsczhyaiftrar`, its exact HTTPS origin and direct/session PG port5432 with
+strict TLS. A fresh invocation must supply `CINE018_STAGING_PROJECT` matching the
+owner-designated project. Credential files cannot supply consent, NODE_OPTIONS,
+destructive flags or arbitrary runtime options. Eight synthetic safety cases cover
+those boundaries. Legacy CINE-012 consent remains false throughout.
+
+Existing WS/RLS, two-instance and outbox harnesses have an explicit `--hosted-staging`
+mode using that fence; default mode retains GH-52 local-only checks. Hosted room
+tests refuse pre-existing rooms. Competing policies use random names and cleanup
+ownership is acquired only after CREATE succeeds; fixtures are tracked by returned
+UUID and expired before deletion. The outbox fault suite exclusively creates its
+own random temporary schema and never loads application migrations there.
+`schema-consistency.cjs` compares installed columns, constraints, indexes, functions,
+policies, RLS, triggers and effective role grants to exact-HEAD migrations applied
+in a disposable LOCAL database. Source/history/owner differences remain disclosed.
+
+Final exact-HEAD receipt is the authority for PASS/FAIL/NOT RUN, including any
+first-attempt failure. Initial hosted WS attempt returned CHANNEL_ERROR while service
+logs showed partition initialization; causality was not proved. A later actual
+private-WS/JWT/RLS/forgery/anonymous suite passed on the working candidate. This is
+not yet final exact-HEAD qualification. Hosted two-instance/recovery/latency evidence
+must be published separately; no local result is substituted.
 
 Keep staging intact through acceptance. Future release cleansing is a separate
 owner-gated inventory, backup, provenance-scoped deletion, verification and rollback
