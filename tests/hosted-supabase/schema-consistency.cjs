@@ -36,17 +36,22 @@ async function main() {
       ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
       CREATE FUNCTION realtime.topic() RETURNS text LANGUAGE sql STABLE AS $$ SELECT current_setting('realtime.topic',true) $$;`);
     sql("BEGIN;\n" + migrations.map(m => m.sql).join("\n") + "\nCOMMIT;");
-    return normalize(JSON.parse(sql(catalog)));
+    // Deparse expressions under the same search_path on both servers, so
+    // auth.jwt() cannot render as jwt() on just one side.
+    const output = sql("BEGIN; SET LOCAL search_path=pg_catalog; " + catalog + " COMMIT;");
+    return normalize(JSON.parse(output.slice(output.indexOf("{"), output.lastIndexOf("}") + 1)));
   });
   const db = new Client(target.pgConfig);
   await db.connect();
   try {
+    await db.query("BEGIN READ ONLY");
+    await db.query("SET LOCAL search_path=pg_catalog");
     const actual = normalize((await db.query(catalog)).rows[0].catalog);
     for (const key of Object.keys(canonical)) assert.deepEqual(actual[key], canonical[key], `Hosted canonical drift: ${key}`);
     const history = (await db.query("SELECT version,name FROM supabase_migrations.schema_migrations ORDER BY version")).rows;
     const digest = crypto.createHash("sha256").update(JSON.stringify(actual)).digest("hex");
     if (process.env.CINE018_EVIDENCE_DIR) fs.writeFileSync(require("node:path").join(process.env.CINE018_EVIDENCE_DIR, "hosted-catalog-sanitized.json"), JSON.stringify({ head, project: target.project, catalogSha256: digest, history, canonicalMigrations: migrations.map(m => ({ file: m.file, sha256: m.hash })), catalog: actual }, null, 2));
     console.log(JSON.stringify({ ok: true, head, project: target.project, catalogSha256: digest, checks: Object.keys(canonical), localDisposableDatabaseRemoved: true, history }));
-  } finally { await db.end(); }
+  } finally { await db.query("ROLLBACK"); await db.end(); }
 }
 main().catch(error => { console.error("Schema consistency failed:", error.message); process.exitCode = 1; });

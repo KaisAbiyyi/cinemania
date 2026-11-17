@@ -152,6 +152,13 @@ recorded in a separate hosted migration after initial setup. Authenticated helpe
 EXECUTE is intentional: its SECURITY DEFINER lookup derives sub from signed JWT,
 returns only membership boolean, and does not enumerate the roster. Denied tables
 with RLS and no client policies are intentional server-only state.
+The catalog comparison additionally detected inherited service_role UPDATE on the
+outbox sequence, whereas canonical001 intends USAGE/SELECT. A second narrow repair
+revokes UPDATE explicitly in005 and in a recorded hosted repair migration. Neither
+repair modifies unrelated default ACLs or managed roles. These are the two bounded
+ACL remediation changes; further product failures require escalation under the
+owner's two-iteration limit. Harness-only diagnostics/deparser corrections are
+recorded separately from product failures.
 
 `tests/hosted-supabase/environment.cjs` accepts only project
 `dmrbticnsczhyaiftrar`, its exact HTTPS origin and direct/session PG port5432 with

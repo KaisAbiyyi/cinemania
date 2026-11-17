@@ -701,6 +701,10 @@ async function main() {
     await waitForServer(origin1, 90000);
 
     // 8. Test E: Measured request-to-WebSocket latency over 30 real mutations (Instance 1 -> Postgres -> Realtime -> Guest WS)
+    // Refresh outside the no-HTTP recovery window; hosted runs can exceed the
+    // original signed token's 60-second lifetime before the latency section.
+    const latencyGuest = await connectRoomWs({ supabaseUrl, anonKey: stackEnv.ANON_KEY, origin: origin2, roomId: room2.roomId, cookie: guest2Cookie });
+    wsClients.push(latencyGuest.client);
     const latenciesMs = [];
     let currentVersion = 7;
     for (let i = 0; i < 30; i++) {
@@ -713,7 +717,7 @@ async function main() {
           headers: { origin: origin1, cookie: host2Cookie, "content-type": "application/json" },
           body: JSON.stringify({ sort_by }),
         }),
-        guest2WsB.waitForVersion(currentVersion, 5000),
+        latencyGuest.waitForVersion(currentVersion, 5000),
       ]);
       assert.equal(res.status, 200);
       latenciesMs.push(wsEvent.receivedAtMs - t0);

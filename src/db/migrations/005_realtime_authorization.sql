@@ -9,6 +9,9 @@ REVOKE ALL ON FUNCTION public.is_current_user_room_participant(UUID) FROM anon;
 REVOKE ALL ON FUNCTION public.prevent_vote_mutation(), public.prevent_vote_delete_except_room_purge(), public.enforce_room_retention()
   FROM PUBLIC, anon, authenticated;
 ALTER FUNCTION public.prevent_vote_mutation() SET search_path = pg_catalog;
+-- Match 001's intended USAGE/SELECT-only server sequence grant even when the
+-- hosted default ACL previously granted UPDATE (setval) to service_role.
+REVOKE UPDATE ON SEQUENCE public.room_events_id_seq FROM service_role;
 
 CREATE POLICY cinematch_room_select_allow ON realtime.messages
   AS PERMISSIVE FOR SELECT TO authenticated
