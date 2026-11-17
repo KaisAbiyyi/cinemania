@@ -1,0 +1,9 @@
+{
+  "name": "cinematch-local-supabase-tools",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "@supabase/supabase-js": "2.119.0",
+    "pg": "8.23.1"
+  }
+}
