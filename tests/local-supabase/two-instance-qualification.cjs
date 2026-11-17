@@ -492,7 +492,15 @@ async function main() {
       headers: { origin: origin2, "content-type": "application/json" },
       body: JSON.stringify({ code: roomCode, displayName: "Guest Inst2" }),
     });
-    assert.equal(joinRes.status, 200, `Join room expected 200, got ${joinRes.status}`);
+    let joinDiagnostic = "";
+    if (joinRes.status !== 200) {
+      joinDiagnostic = (await joinRes.clone().text()).slice(0, 3000);
+      for (const value of [stackEnv.SERVICE_ROLE_KEY, stackEnv.JWT_SECRET, hosted?.pgConfig.password].filter(Boolean)) {
+        joinDiagnostic = joinDiagnostic.split(value).join("[server credential redacted]");
+      }
+      joinDiagnostic = joinDiagnostic.replace(/eyJ[A-Za-z0-9_.-]+/g, "[JWT redacted]");
+    }
+    assert.equal(joinRes.status, 200, `Join room expected 200, got ${joinRes.status}; ${joinDiagnostic}`);
     const guestCookie = extractCookieHeader(joinRes);
 
     const hostWs = await connectRoomWs({ supabaseUrl, anonKey: stackEnv.ANON_KEY, origin: origin1, roomId, cookie: hostCookie });
