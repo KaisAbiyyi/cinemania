@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { validateBindings, validateHostListeners, validateCommit, migrationPaths } = require("../../scripts/local-supabase/safety.cjs");

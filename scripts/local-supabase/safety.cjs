@@ -30,6 +30,40 @@ function migrationPaths() {
   ];
 }
 
+function downMigrationPaths() {
+  return [
+    "src/db/migrations/005_down_realtime_authorization.sql",
+    "src/db/migrations/004_down_vote_operation_idempotency.sql",
+    "src/db/migrations/003_down_round_roster_freeze.sql",
+    "src/db/migrations/002_down_guest_capability_sessions.sql",
+    "src/db/migrations/001_down_room_schema.sql",
+  ];
+}
+
+function isLoopbackUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1" || parsed.hostname === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
+function assertNoCloudTargetEnv(env = process.env) {
+  if (env.SUPABASE_ACCESS_TOKEN) {
+    throw new Error("Refusing local-supabase operation while SUPABASE_ACCESS_TOKEN is set");
+  }
+  if (env.SUPABASE_PROJECT_REF || env.SUPABASE_DB_PASSWORD) {
+    throw new Error("Refusing local-supabase operation with hosted SUPABASE_PROJECT_REF/SUPABASE_DB_PASSWORD");
+  }
+  for (const key of ["DATABASE_URL", "SUPABASE_URL"]) {
+    const value = env[key]?.trim();
+    if (value && !isLoopbackUrl(value)) {
+      throw new Error(`Refusing non-loopback ${key} in local-supabase tooling`);
+    }
+  }
+}
+
 function validateHostListeners(listeners, expectedPorts) {
   for (const port of expectedPorts) {
     const matching = listeners.filter((item) => item.port === port);
@@ -44,6 +78,14 @@ function validateCommit(commit) {
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error("Full lowercase commit SHA required");
 }
 
-module.exports = { validateBindings, validateHostListeners, validateCommit, migrationPaths };
+module.exports = {
+  validateBindings,
+  validateHostListeners,
+  validateCommit,
+  migrationPaths,
+  downMigrationPaths,
+  isLoopbackUrl,
+  assertNoCloudTargetEnv,
+};
 
 

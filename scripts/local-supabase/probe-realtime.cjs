@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 "use strict";
 // Real local WebSocket probe; never reads hosted settings or credentials.
 const assert = require("node:assert/strict");
