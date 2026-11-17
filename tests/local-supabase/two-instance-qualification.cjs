@@ -300,6 +300,7 @@ async function qualifyGroup(size, { origin1, origin2, supabaseUrl, anonKey, crea
 }
 
 async function connectRoomWs({ supabaseUrl, anonKey, origin, roomId, cookie }) {
+  async function requestToken() {
   const tokenRes = await fetch(`${origin}/api/rooms/${roomId}/realtime-token`, {
     method: "POST",
     headers: { origin, cookie, "content-type": "application/json" },
@@ -308,11 +309,13 @@ async function connectRoomWs({ supabaseUrl, anonKey, origin, roomId, cookie }) {
   assert.equal(tokenRes.status, 200, `realtime-token expected 200, got ${tokenRes.status}`);
   const { token } = await tokenRes.json();
   assert.equal(typeof token, "string");
+  return token;
+  }
 
   const client = createClient(supabaseUrl, anonKey, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
-  await client.realtime.setAuth(token);
+  await client.realtime.setAuth(await requestToken());
   const hints = [];
   const listeners = new Set();
   const channel = client.channel(`room:${roomId}`, { config: { private: true } });
@@ -352,7 +355,7 @@ async function connectRoomWs({ supabaseUrl, anonKey, origin, roomId, cookie }) {
     });
   }
 
-  return { client, channel, hints, waitForVersion };
+  return { client, channel, hints, waitForVersion, refreshAuth: async () => client.realtime.setAuth(await requestToken()) };
 }
 
 function percentile(sorted, p) {
@@ -706,8 +709,16 @@ async function main() {
     const latencyGuest = await connectRoomWs({ supabaseUrl, anonKey: stackEnv.ANON_KEY, origin: origin2, roomId: room2.roomId, cookie: guest2Cookie });
     wsClients.push(latencyGuest.client);
     const latenciesMs = [];
+    let latencyAuthRenewals = 0, lastRenewedAt = performance.now();
     let currentVersion = 7;
     for (let i = 0; i < 30; i++) {
+      // Match the application's short-lived JWT renewal; never lengthen TTL or
+      // start a refresh timer in the preceding autonomous/no-HTTP fault window.
+      if (performance.now() - lastRenewedAt >= 25000) {
+        await latencyGuest.refreshAuth();
+        lastRenewedAt = performance.now();
+        latencyAuthRenewals++;
+      }
       currentVersion += 1;
       const sort_by = i % 2 === 0 ? "vote_average.desc" : "popularity.desc";
       const t0 = performance.now();
@@ -745,6 +756,7 @@ async function main() {
           dispatcherRestartRecovered: true,
           concurrentDispatcherProcesses: 2,
           latencySamplesMs: latenciesMs.map(value => Number(value.toFixed(3))),
+          latencyAuthRenewals,
           latencyMs: {
             samples: sorted.length,
             min: Number(sorted[0].toFixed(2)),
