@@ -99,12 +99,41 @@ PR #51 (`d82fa162`) updated `src/lib/server/realtime/supabasePublisher.ts` to al
 # 1. Unit & safety guard checks (does not require running Docker)
 npm --prefix scripts/local-supabase run test:guards
 
-# 2. Canonical 001-005 up -> 005_down..001_down rollback -> 001-005 re-apply
-node tests/local-supabase/migration-roundtrip.cjs --commit d82fa1629b7afa89c61badfe1ed9c4163eea22ab --reseed
+# 2. Canonical 001-005 up -> down -> up in a NEW disposable database
+node tests/local-supabase/migration-roundtrip.cjs --commit d82fa1629b7afa89c61badfe1ed9c4163eea22ab
+node tests/local-supabase/migration-isolation-qualification.cjs
 
 # 3. Real private Realtime WebSocket, JWT/RLS, cross-room & competing-policy forgery denial
 npm --prefix scripts/local-supabase run test:rls-ws
 
-# 4. Two independent Next.js instances (PR #51 d82fa162), reconnect, crash/restart, & p50/p95/p99 latency
+# 4. Two Next.js instances, reconnect, request-assisted crash/restart recovery, latency
 npm --prefix scripts/local-supabase run test:two-instances
 ```
+
+### Migration roundtrip safety
+
+The rollback destroys CineMatch tables and rows **inside a fresh disposable database only**.
+Each run exclusively creates `cinematch_roundtrip_<random UUID hex>` from `template0` in
+the verified local Compose PostgreSQL container. It never runs migrations against the
+development `postgres` database, clones developer data, or accepts a database/volume target.
+Only minimal synthetic `auth.jwt()` / `realtime.messages` prerequisites are created;
+this migration test does not prove real Realtime authorization (run suite 3 for that).
+
+Existing developer rooms, participants, votes, events and credentials are preserved.
+The roundtrip compares a hash of the development public schema, rows and sequence state
+before and after; it reports only hashes, never the underlying developer content.
+The old `--reseed` option and all options except `--commit` fail before Docker is called.
+No destructive confirmation is needed because there is no shared-database execution path.
+Create collisions fail without running work or dropping the existing database. Cleanup
+drops only the database successfully created by this invocation, including after migration
+failure; it never forces active connections closed. A killed process or failed cleanup can
+leave an isolated test database behind: inspect it before manually removing that exact
+database. Never reset the development volume to clean up a failed roundtrip.
+
+### Recovery evidence boundary
+
+The two-instance test simulates a committed stranded outbox row, restarts the process,
+then sends an authorized `GET /api/rooms/<id>/events?since=5` that triggers pending dispatch.
+Its result is **request-assisted crash/restart recovery**, not autonomous no-traffic
+dispatcher recovery. The latter is NOT RUN here and remains CINE-018's separate unresolved
+dispatcher gate; its mandatory hosted qualification is unchanged.

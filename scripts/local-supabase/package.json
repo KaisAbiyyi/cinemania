@@ -11,7 +11,7 @@
     "health": "node health.cjs",
     "migrate": "node apply-migrations.cjs",
     "seed": "node seed.cjs",
-    "test:guards": "node --test ../../tests/local-supabase/safety.test.cjs ../../tests/local-supabase/infra-guards.test.cjs",
+    "test:guards": "node --test ../../tests/local-supabase/safety.test.cjs ../../tests/local-supabase/infra-guards.test.cjs ../../tests/local-supabase/migration-safety.test.cjs",
     "test:rls-ws": "node ../../tests/local-supabase/realtime-rls-qualification.cjs",
     "test:two-instances": "node ../../tests/local-supabase/two-instance-qualification.cjs"
   },

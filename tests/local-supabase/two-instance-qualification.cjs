@@ -484,7 +484,8 @@ async function main() {
     ).trim();
     assert.equal(reconOut, "RECONCILER_OK");
 
-    // 7. Test D: Process crash (SIGKILL Instance 1) + restart Instance 1 + pending outbox recovery
+    // 7. Crash/restart + request-assisted recovery of a synthetic stranded outbox row.
+    // The authorized GET below triggers dispatch; this does not test an autonomous worker.
     await stopChild(proc1);
     const inst2Health = await fetch(`${origin2}/api/rooms/${room2.roomId}`, { headers: { cookie: guest2Cookie } });
     assert.equal(inst2Health.status, 200, "Instance 2 must stay available while Instance 1 is down");
@@ -538,7 +539,9 @@ async function main() {
           votePrivacyVerified: true,
           reconnectGapReplayVerified: true,
           outOfOrderDuplicateIgnored: true,
-          processCrashRestartOutboxRecovered: true,
+          processCrashRestartRequestAssistedOutboxRecovered: true,
+          recoveryTrigger: "authorized GET /api/rooms/<id>/events?since=5",
+          autonomousNoTrafficRecovery: "NOT RUN — CINE-018 dispatcher remains a separate gate",
           latencyMs: {
             samples: sorted.length,
             min: Number(sorted[0].toFixed(2)),
