@@ -744,6 +744,7 @@ async function main() {
           autonomousNoTrafficRecovery: true,
           dispatcherRestartRecovered: true,
           concurrentDispatcherProcesses: 2,
+          latencySamplesMs: latenciesMs.map(value => Number(value.toFixed(3))),
           latencyMs: {
             samples: sorted.length,
             min: Number(sorted[0].toFixed(2)),
@@ -775,6 +776,7 @@ async function main() {
       await db.query("DELETE FROM public.rooms WHERE id = ANY($1::uuid[])", [createdRoomIds]);
       const leftover = await db.query("SELECT count(*)::int AS cnt FROM public.rooms WHERE id = ANY($1::uuid[])", [createdRoomIds]);
       assert.equal(leftover.rows[0].cnt, 0, "Teardown must remove temporary qualification rooms");
+      console.log(JSON.stringify({ fixtureCleanup: "PASS", ownedRoomIds: createdRoomIds, remainingOwnedRooms: leftover.rows[0].cnt }));
     }
     await db.end().catch(() => {});
     fs.rmSync(tempRoot, { recursive: true, force: true });
