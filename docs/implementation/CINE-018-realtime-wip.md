@@ -60,14 +60,13 @@ replaces GH-52's earlier request-assisted GET experiment; it must not be describ
 autonomous PASS until its exact-HEAD evidence is published. Existing security, reconnect,
 gap replay, privacy, production-loopback denial and latency controls remain required.
 
-Read-only hosted inventory on 2026-11-17 found the shared CineMatch project with no
-development branches. No shared project-wide Realtime/RLS/schema/secrets mutation is
-authorized. Hosted qualification is **BLOCKED / NOT RUN**, independently of local results.
-Minimum unblock: provision/identify a dedicated disposable test project or development
-branch, explicitly authorize its identity and destructive synthetic qualification scope,
-provide its test-only PostgreSQL/server/JWT/publishable credentials, and have an authorized
-operator establish private-only Realtime plus canonical migrations/policies. Re-run the
-entire hosted security/transport matrix there; do not relabel local PASS as hosted PASS.
+The owner designated existing CineMatch project `dmrbticnsczhyaiftrar` as official
+staging on 2026-11-17. A second project or paid branch is unnecessary. Controlled
+schema/configuration alignment and synthetic qualification are authorized after
+migration-drift reconciliation, baseline and verified backup/rollback preparation.
+See [the epoch4 staging record](CINE-018-staging-acceptance.md) for the current inventory,
+backup boundaries, access blocker and planned reconciliation. Hosted qualification
+remains **BLOCKED / NOT RUN** until actually executed; local PASS is separate evidence.
 Independent final review and owner acceptance remain required. CINE-019/021 are untouched.
 
 ### Legacy hosted-test safety incident
@@ -84,4 +83,4 @@ must come from the current invocation's `ALLOW_DESTRUCTIVE_PG_TESTS=true`, never
 synthetic negative tests cover refusal and configuration injection. Offline qualification
 explicitly sets `ALLOW_DESTRUCTIVE_PG_TESTS=false`. The owner secret file is not changed.
 The historical hosted failures remain FAIL evidence, not authorized hosted acceptance;
-the isolated hosted gate above remains BLOCKED/NOT RUN.
+the hosted staging gate above remains BLOCKED/NOT RUN until executed.
