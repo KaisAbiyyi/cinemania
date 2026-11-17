@@ -1,0 +1,466 @@
+{
+  "source": "281a3984dc5bf64b320b5f69bb381c51bdbf75eb",
+  "project": "dmrbticnsczhyaiftrar",
+  "utc": "2026-11-17T16:35:42.942Z",
+  "node": "v24.22.3",
+  "platform": "linux",
+  "release": "6.6.87.1-microsoft-standard-WSL2",
+  "arch": "x64",
+  "connectionTimeoutMillis": 10000,
+  "readOnly": true,
+  "dnsMs": 28,
+  "addresses": [
+    {
+      "address": "15.165.245.138",
+      "family": 4
+    },
+    {
+      "address": "15.164.120.176",
+      "family": 4
+    },
+    {
+      "address": "13.124.111.232",
+      "family": 4
+    },
+    {
+      "address": "64:ff9b::fa5:f58a",
+      "family": 6
+    },
+    {
+      "address": "64:ff9b::fa4:78b0",
+      "family": 6
+    },
+    {
+      "address": "64:ff9b::d7c:6fe8",
+      "family": 6
+    }
+  ],
+  "results": [
+    {
+      "attempt": 1,
+      "verdict": "PASS",
+      "elapsedMs": 805,
+      "remote": "15.165.245.138",
+      "tls": {
+        "encrypted": true,
+        "authorized": true,
+        "protocol": "TLSv1.3"
+      },
+      "database": "postgres",
+      "actor": "postgres",
+      "phases": [
+        {
+          "phase": "dns-lookup",
+          "ms": 5.83
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 5.86
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 5.86
+        },
+        {
+          "phase": "tcp-connect",
+          "ms": 130.17
+        },
+        {
+          "phase": "ssl-wrapper-created",
+          "ms": 258.15
+        },
+        {
+          "phase": "tls-secure",
+          "ms": 378.64
+        },
+        {
+          "phase": "authenticationSASL",
+          "ms": 484.09
+        },
+        {
+          "phase": "authenticationSASLContinue",
+          "ms": 583.98
+        },
+        {
+          "phase": "authenticationSASLFinal",
+          "ms": 704.09
+        },
+        {
+          "phase": "authenticationOk",
+          "ms": 704.47
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 704.66
+        },
+        {
+          "phase": "client-ready",
+          "ms": 704.8
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 805.29
+        },
+        {
+          "phase": "readonly-query-complete",
+          "ms": 805.39
+        }
+      ]
+    },
+    {
+      "attempt": 2,
+      "verdict": "PASS",
+      "elapsedMs": 903,
+      "remote": "15.165.245.138",
+      "tls": {
+        "encrypted": true,
+        "authorized": true,
+        "protocol": "TLSv1.3"
+      },
+      "database": "postgres",
+      "actor": "postgres",
+      "phases": [
+        {
+          "phase": "dns-lookup",
+          "ms": 4.04
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 4.05
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 4.05
+        },
+        {
+          "phase": "tcp-connect",
+          "ms": 132.24
+        },
+        {
+          "phase": "ssl-wrapper-created",
+          "ms": 241.36
+        },
+        {
+          "phase": "tls-secure",
+          "ms": 424.93
+        },
+        {
+          "phase": "authenticationSASL",
+          "ms": 541.66
+        },
+        {
+          "phase": "authenticationSASLContinue",
+          "ms": 661.58
+        },
+        {
+          "phase": "authenticationSASLFinal",
+          "ms": 780.99
+        },
+        {
+          "phase": "authenticationOk",
+          "ms": 781.08
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 782.17
+        },
+        {
+          "phase": "client-ready",
+          "ms": 782.21
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 903.19
+        },
+        {
+          "phase": "readonly-query-complete",
+          "ms": 903.24
+        }
+      ]
+    },
+    {
+      "attempt": 3,
+      "verdict": "PASS",
+      "elapsedMs": 786,
+      "remote": "15.165.245.138",
+      "tls": {
+        "encrypted": true,
+        "authorized": true,
+        "protocol": "TLSv1.3"
+      },
+      "database": "postgres",
+      "actor": "postgres",
+      "phases": [
+        {
+          "phase": "dns-lookup",
+          "ms": 3.78
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 3.79
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 3.79
+        },
+        {
+          "phase": "tcp-connect",
+          "ms": 110.8
+        },
+        {
+          "phase": "ssl-wrapper-created",
+          "ms": 207.96
+        },
+        {
+          "phase": "tls-secure",
+          "ms": 313.48
+        },
+        {
+          "phase": "authenticationSASL",
+          "ms": 419.87
+        },
+        {
+          "phase": "authenticationSASLContinue",
+          "ms": 546.64
+        },
+        {
+          "phase": "authenticationSASLFinal",
+          "ms": 670.97
+        },
+        {
+          "phase": "authenticationOk",
+          "ms": 671.05
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 672.85
+        },
+        {
+          "phase": "client-ready",
+          "ms": 672.89
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 785.86
+        },
+        {
+          "phase": "readonly-query-complete",
+          "ms": 785.9
+        }
+      ]
+    },
+    {
+      "attempt": 4,
+      "verdict": "PASS",
+      "elapsedMs": 756,
+      "remote": "15.165.245.138",
+      "tls": {
+        "encrypted": true,
+        "authorized": true,
+        "protocol": "TLSv1.3"
+      },
+      "database": "postgres",
+      "actor": "postgres",
+      "phases": [
+        {
+          "phase": "dns-lookup",
+          "ms": 3.93
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 3.93
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 3.93
+        },
+        {
+          "phase": "tcp-connect",
+          "ms": 105.17
+        },
+        {
+          "phase": "ssl-wrapper-created",
+          "ms": 209.78
+        },
+        {
+          "phase": "tls-secure",
+          "ms": 315.32
+        },
+        {
+          "phase": "authenticationSASL",
+          "ms": 428.92
+        },
+        {
+          "phase": "authenticationSASLContinue",
+          "ms": 549.88
+        },
+        {
+          "phase": "authenticationSASLFinal",
+          "ms": 648.61
+        },
+        {
+          "phase": "authenticationOk",
+          "ms": 651.01
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 651.84
+        },
+        {
+          "phase": "client-ready",
+          "ms": 651.88
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 756.07
+        },
+        {
+          "phase": "readonly-query-complete",
+          "ms": 756.11
+        }
+      ]
+    },
+    {
+      "attempt": 5,
+      "verdict": "PASS",
+      "elapsedMs": 738,
+      "remote": "15.165.245.138",
+      "tls": {
+        "encrypted": true,
+        "authorized": true,
+        "protocol": "TLSv1.3"
+      },
+      "database": "postgres",
+      "actor": "postgres",
+      "phases": [
+        {
+          "phase": "dns-lookup",
+          "ms": 3.97
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 4.01
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 4.02
+        },
+        {
+          "phase": "tcp-connect",
+          "ms": 117.22
+        },
+        {
+          "phase": "ssl-wrapper-created",
+          "ms": 231.89
+        },
+        {
+          "phase": "tls-secure",
+          "ms": 339.9
+        },
+        {
+          "phase": "authenticationSASL",
+          "ms": 435.73
+        },
+        {
+          "phase": "authenticationSASLContinue",
+          "ms": 535.72
+        },
+        {
+          "phase": "authenticationSASLFinal",
+          "ms": 635.63
+        },
+        {
+          "phase": "authenticationOk",
+          "ms": 635.72
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 638.43
+        },
+        {
+          "phase": "client-ready",
+          "ms": 638.48
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 738.35
+        },
+        {
+          "phase": "readonly-query-complete",
+          "ms": 738.41
+        }
+      ]
+    },
+    {
+      "attempt": 6,
+      "verdict": "PASS",
+      "elapsedMs": 808,
+      "remote": "15.165.245.138",
+      "tls": {
+        "encrypted": true,
+        "authorized": true,
+        "protocol": "TLSv1.3"
+      },
+      "database": "postgres",
+      "actor": "postgres",
+      "phases": [
+        {
+          "phase": "dns-lookup",
+          "ms": 4.11
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 4.12
+        },
+        {
+          "phase": "dns-lookup",
+          "ms": 4.12
+        },
+        {
+          "phase": "tcp-connect",
+          "ms": 106.63
+        },
+        {
+          "phase": "ssl-wrapper-created",
+          "ms": 220.83
+        },
+        {
+          "phase": "tls-secure",
+          "ms": 337.89
+        },
+        {
+          "phase": "authenticationSASL",
+          "ms": 441.82
+        },
+        {
+          "phase": "authenticationSASLContinue",
+          "ms": 559.87
+        },
+        {
+          "phase": "authenticationSASLFinal",
+          "ms": 685.39
+        },
+        {
+          "phase": "authenticationOk",
+          "ms": 685.49
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 685.53
+        },
+        {
+          "phase": "client-ready",
+          "ms": 685.56
+        },
+        {
+          "phase": "readyForQuery",
+          "ms": 808.2
+        },
+        {
+          "phase": "readonly-query-complete",
+          "ms": 808.25
+        }
+      ]
+    }
+  ]
+}

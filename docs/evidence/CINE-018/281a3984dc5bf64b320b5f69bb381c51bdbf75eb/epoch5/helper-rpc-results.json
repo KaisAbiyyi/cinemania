@@ -1,0 +1,53 @@
+{
+  "head": "281a3984dc5bf64b320b5f69bb381c51bdbf75eb",
+  "project": "dmrbticnsczhyaiftrar",
+  "utc": "2026-11-17T16:51:58.560Z",
+  "checks": [
+    {
+      "name": "own membership boolean only",
+      "http": 200,
+      "boolean": true,
+      "verdict": "PASS"
+    },
+    {
+      "name": "cross-room boolean false",
+      "http": 200,
+      "boolean": false,
+      "verdict": "PASS"
+    },
+    {
+      "name": "other member cannot query Alice membership as self",
+      "http": 200,
+      "boolean": false,
+      "verdict": "PASS"
+    },
+    {
+      "name": "outsider ignores forged user_metadata identity",
+      "http": 200,
+      "boolean": false,
+      "verdict": "PASS"
+    },
+    {
+      "name": "anonymous EXECUTE denied",
+      "http": 401,
+      "verdict": "PASS"
+    },
+    {
+      "name": "forged signature denied",
+      "http": 401,
+      "verdict": "PASS"
+    },
+    {
+      "name": "expired JWT denied",
+      "http": 401,
+      "verdict": "PASS"
+    },
+    {
+      "name": "caller cannot supply target_user_id",
+      "http": 404,
+      "verdict": "PASS"
+    }
+  ],
+  "ownedFixtureCleanup": "PASS",
+  "credentialValuesLogged": false
+}

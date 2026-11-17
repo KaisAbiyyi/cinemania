@@ -1,0 +1,29 @@
+{
+  "task": "CINE-018",
+  "session": "cine018-reviewfix-20261117 epoch5",
+  "sourceHead": "281a3984dc5bf64b320b5f69bb381c51bdbf75eb",
+  "sourceTree": "9bccda6d749d79bb99ba27030c519d42b49a503a",
+  "remoteMain": "80c1464aca698712c7f283ff2e97d70fca25acbf",
+  "sourceWorktree": "clean, unchanged",
+  "cwd": "D:/projects/cinemania",
+  "runtime": "Windows Node24.21.0 npm11.19.0 Next16.4.5 hostedPostgreSQL17.11.0.018",
+  "invocationGuards": {"CINE018_STAGING_PROJECT":"dmrbticnsczhyaiftrar","ALLOW_DESTRUCTIVE_PG_TESTS":"false"},
+  "changes": "evidence only on separate branch; no product/schema/configuration/credential changes",
+  "remediationIterations": "zero source remediation iterations in epoch5; no earlier defects erased",
+  "checks": [
+    {"name":"Windows readonly phase transport","command":"node D:/projects/cinemania-cine018-reviewfix-evidence/transport-diag.cjs","exit":0,"status":"PASS","evidence":"windows-transport.json","count":"6/6"},
+    {"name":"controlled Linux readonly phase transport confirmation","command":"docker run --rm --mount type=bind,source=D:/projects/cinemania,target=/source,readonly --mount type=bind,source=D:/projects/cinemania-cine018-reviewfix-evidence,target=/evidence -e CINE018_SOURCE_ROOT=/source -e CINE018_SOURCE_SHA=281a3984dc5bf64b320b5f69bb381c51bdbf75eb -e CINE018_STAGING_PROJECT=dmrbticnsczhyaiftrar -e ALLOW_DESTRUCTIVE_PG_TESTS=false -e CINE018_DIAG_OUTPUT=/evidence/linux-transport-confirm.json node@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 node /evidence/transport-diag.cjs","exit":0,"status":"PASS","evidence":"linux-transport-confirm.log + linux-transport-confirm.json","count":"6/6 confirmation; earlier linux-transport.json also6/6","scope":"read-only PG query; not Linux full app qualification"},
+    {"name":"first unchanged hosted full attempt","command":"node tests/local-supabase/two-instance-qualification.cjs --app-commit 281a3984dc5bf64b320b5f69bb381c51bdbf75eb --hosted-staging","exit":1,"status":"FAIL","evidence":"hosted-two-instance.attempt-1794933401055.log","reason":"WS version7 timed out; saw3..6; cleanup PASS; root cause not verified"},
+    {"name":"observation-preload diagnostic full run","command":"node --require D:/projects/cinemania-cine018-reviewfix-evidence/observer-preload.cjs tests/local-supabase/two-instance-qualification.cjs --app-commit 281a3984dc5bf64b320b5f69bb381c51bdbf75eb --hosted-staging","exit":0,"status":"PASS","evidence":"observer-diagnostic.log","scope":"diagnostic only; no observer callback metadata emitted; not proof of expiry hypothesis"},
+    {"name":"final uninstrumented hosted acceptance","command":"node tests/local-supabase/two-instance-qualification.cjs --app-commit 281a3984dc5bf64b320b5f69bb381c51bdbf75eb --hosted-staging","exit":0,"status":"PASS","evidence":"hosted-two-instance.attempt-1794934328339.log"},
+    {"name":"actual hostile JWT RPC","command":"node D:/projects/cinemania-cine018-reviewfix-evidence/helper-rpc-qualification.cjs","exit":0,"status":"PASS","evidence":"helper-rpc-results.json","count":8},
+    {"name":"final hosted private WS/JWT/RLS","command":"node tests/local-supabase/realtime-rls-qualification.cjs --hosted-staging","exit":0,"status":"PASS","evidence":"hosted-rls-ws.attempt-1794934880428.log","count":10},
+    {"name":"final canonical schema/grants parity","command":"node tests/hosted-supabase/schema-consistency.cjs","exit":0,"status":"PASS","evidence":"hosted-schema-consistency.attempt-1794934929947.log"},
+    {"name":"final inventory","command":"Supabase execute_sql read-only inventory counts","status":"PASS","exit":"API success","evidence":"final-inventory.json"}
+  ],
+  "latency": {"samples":30,"method":"nearest-rank, sequential real PATCH instance1 to guest private WS, monotonic clock, cold sample retained, renewal outside t0", "p50ms":1818.36,"p95ms":1994.40,"p99ms":3161.02,"minms":1738.67,"maxms":3161.02},
+  "unchangedHeadRegression": {"receipt":"https://github.com/KaisAbiyyi/cinemania/issues/20#issuecomment-6950947497","cleanInstall":"PASS","lintTypecheck":"PASS","unitIntegration":"403 PASS; 7 optional destructive CINE012 NOT RUN by design","guards":"15 PASS","build":"PASS","bundleScan":"2 PASS; actual-value scan0 matches","e2eChromium":"27 PASS","localDocker":"PASS","productionOnlyWorkerInstallBoot":"PASS","hostedPgRetryPoisonFairness":"PASS real PostgreSQL, simulated publisher faults","ci":"5/5 synthetic merge9899fc488983b57cf2d6b562004b7484f92e65ca tree equals sourceTree; not a direct feature checkout"},
+  "finalInventory": "rooms/participants/votes/events/sessions/authUsers/storageBuckets/storageObjects/realtimeMessages/ownedSchemas/unexpectedRealtimePolicies all0",
+  "limitations": ["earlier intermittent startup/join/hint failures preserved with root cause NOT VERIFIED", "advisor3INFO server-only no-policy plus1WARN intentional authenticated membership helper remain", "owner says private trace was not shared; no independent access audit or rotation", "backup restore proof is application/history only, not managed platform recovery", "browser contexts execute real client module, not completed F3 UI acceptance", "no production deployment or worker supervision installed"],
+  "handoff": {"independentFinalReview":"NOT RUN / required next","ownerAcceptance":"NOT RUN / required","taskDone":false,"merge":"NOT RUN prohibited","productionDeployment":"NOT RUN prohibited"}
+}

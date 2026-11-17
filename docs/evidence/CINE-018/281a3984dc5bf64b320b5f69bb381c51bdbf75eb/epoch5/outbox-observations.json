@@ -1,0 +1,341 @@
+{
+  "readOnly": true,
+  "applicationHttpRequests": 0,
+  "samples": [
+    {
+      "clientUtc": "2026-11-17T16:45:34.107Z",
+      "rows": []
+    },
+    {
+      "clientUtc": "2026-11-17T16:45:39.227Z",
+      "rows": []
+    },
+    {
+      "clientUtc": "2026-11-17T16:45:44.336Z",
+      "rows": []
+    },
+    {
+      "clientUtc": "2026-11-17T16:45:49.468Z",
+      "rows": []
+    },
+    {
+      "clientUtc": "2026-11-17T16:45:54.586Z",
+      "rows": []
+    },
+    {
+      "clientUtc": "2026-11-17T16:45:59.711Z",
+      "rows": []
+    },
+    {
+      "clientUtc": "2026-11-17T16:46:04.824Z",
+      "rows": []
+    },
+    {
+      "clientUtc": "2026-11-17T16:46:09.945Z",
+      "rows": [
+        {
+          "observed_at": "2026-11-17T16:46:10.675Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 1,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:07.936Z",
+          "retry_count": 0,
+          "poison": false
+        }
+      ]
+    },
+    {
+      "clientUtc": "2026-11-17T16:46:15.071Z",
+      "rows": [
+        {
+          "observed_at": "2026-11-17T16:46:15.795Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 1,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:07.936Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:15.795Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 2,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:11.841Z",
+          "retry_count": 0,
+          "poison": false
+        }
+      ]
+    },
+    {
+      "clientUtc": "2026-11-17T16:46:20.184Z",
+      "rows": [
+        {
+          "observed_at": "2026-11-17T16:46:20.916Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 1,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:07.936Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:20.916Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 2,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:11.841Z",
+          "retry_count": 0,
+          "poison": false
+        }
+      ]
+    },
+    {
+      "clientUtc": "2026-11-17T16:46:25.300Z",
+      "rows": [
+        {
+          "observed_at": "2026-11-17T16:46:26.026Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 1,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:07.936Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:26.026Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 2,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:11.841Z",
+          "retry_count": 0,
+          "poison": false
+        }
+      ]
+    },
+    {
+      "clientUtc": "2026-11-17T16:46:30.406Z",
+      "rows": [
+        {
+          "observed_at": "2026-11-17T16:46:31.136Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 1,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:07.936Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:31.136Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 2,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:11.841Z",
+          "retry_count": 0,
+          "poison": false
+        }
+      ]
+    },
+    {
+      "clientUtc": "2026-11-17T16:46:35.514Z",
+      "rows": [
+        {
+          "observed_at": "2026-11-17T16:46:36.246Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 1,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:07.936Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:36.246Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 2,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:11.841Z",
+          "retry_count": 0,
+          "poison": false
+        }
+      ]
+    },
+    {
+      "clientUtc": "2026-11-17T16:46:40.624Z",
+      "rows": [
+        {
+          "observed_at": "2026-11-17T16:46:41.356Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 1,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:07.936Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:41.356Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 2,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:11.841Z",
+          "retry_count": 0,
+          "poison": false
+        }
+      ]
+    },
+    {
+      "clientUtc": "2026-11-17T16:46:45.724Z",
+      "rows": [
+        {
+          "observed_at": "2026-11-17T16:46:46.455Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 1,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:07.936Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:46.455Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 2,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:11.841Z",
+          "retry_count": 0,
+          "poison": false
+        }
+      ]
+    },
+    {
+      "clientUtc": "2026-11-17T16:46:50.850Z",
+      "rows": [
+        {
+          "observed_at": "2026-11-17T16:46:51.575Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 1,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:07.936Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:51.575Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 2,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:11.841Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:51.575Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 3,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:49.435Z",
+          "retry_count": 0,
+          "poison": false
+        }
+      ]
+    },
+    {
+      "clientUtc": "2026-11-17T16:46:55.970Z",
+      "rows": [
+        {
+          "observed_at": "2026-11-17T16:46:56.701Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 1,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:07.936Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:56.701Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 2,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:11.841Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:56.701Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 3,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:49.435Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:56.701Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 4,
+          "dispatched": false,
+          "dispatched_at": null,
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:46:56.701Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 5,
+          "dispatched": false,
+          "dispatched_at": null,
+          "retry_count": 0,
+          "poison": false
+        }
+      ]
+    },
+    {
+      "clientUtc": "2026-11-17T16:47:01.083Z",
+      "rows": [
+        {
+          "observed_at": "2026-11-17T16:47:01.801Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 1,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:07.936Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:47:01.801Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 2,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:11.841Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:47:01.801Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 3,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:49.435Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:47:01.801Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 4,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:56.097Z",
+          "retry_count": 0,
+          "poison": false
+        },
+        {
+          "observed_at": "2026-11-17T16:47:01.801Z",
+          "room_id": "d5a93494-d2d7-46bc-a3c5-19159fd528e0",
+          "version": 5,
+          "dispatched": true,
+          "dispatched_at": "2026-11-17T16:46:56.097Z",
+          "retry_count": 0,
+          "poison": false
+        }
+      ]
+    }
+  ]
+}

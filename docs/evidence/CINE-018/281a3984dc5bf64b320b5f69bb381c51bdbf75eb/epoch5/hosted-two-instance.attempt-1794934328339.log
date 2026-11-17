@@ -1,0 +1,78 @@
+SHA: 281a3984dc5bf64b320b5f69bb381c51bdbf75eb
+CWD: D:/projects/cinemania
+UTC: 2026-11-17T16:52:08.339Z
+WORKTREE: clean
+COMMAND: C:\Program Files\nodejs\node.exe tests/local-supabase/two-instance-qualification.cjs --app-commit 281a3984dc5bf64b320b5f69bb381c51bdbf75eb --hosted-staging
+ENV: ALLOW_DESTRUCTIVE_PG_TESTS=false; CINE018_STAGING_PROJECT=dmrbticnsczhyaiftrar
+{
+  "ok": true,
+  "appCommit": "281a3984dc5bf64b320b5f69bb381c51bdbf75eb",
+  "environment": "hosted:dmrbticnsczhyaiftrar",
+  "negativeProdControl": "PASS",
+  "twoInstances": {
+    "port1": 3101,
+    "port2": 3102
+  },
+  "unanimousMatchConverged": true,
+  "votePrivacyVerified": true,
+  "reconnectGapReplayVerified": true,
+  "outOfOrderDuplicateIgnored": true,
+  "realBrowserTabsConverged": true,
+  "realDuplicateStaleHintsDidNotRepeatMatch": true,
+  "multiClientGroupSizes": [
+    2,
+    3,
+    4,
+    5
+  ],
+  "processCrashAfterAuthorityCommitRecovered": true,
+  "recoveryTrigger": "independent worker timer; no app HTTP after commit until WS receipt",
+  "autonomousNoTrafficRecovery": true,
+  "dispatcherRestartRecovered": true,
+  "concurrentDispatcherProcesses": 2,
+  "latencySamplesMs": [
+    3161.02,
+    1842.348,
+    1877.516,
+    1818.357,
+    1904.01,
+    1769.745,
+    1781.902,
+    1779.73,
+    1840.61,
+    1843.199,
+    1796.355,
+    1817.698,
+    1821.564,
+    1806.74,
+    1883.819,
+    1796.829,
+    1768.439,
+    1762.884,
+    1768.928,
+    1760.754,
+    1774.557,
+    1738.667,
+    1771.938,
+    1973.217,
+    1908.012,
+    1935.111,
+    1994.405,
+    1990.408,
+    1913.395,
+    1976.933
+  ],
+  "latencyAuthRenewals": 2,
+  "latencyMs": {
+    "samples": 30,
+    "min": 1738.67,
+    "p50": 1818.36,
+    "p95": 1994.4,
+    "p99": 3161.02,
+    "max": 3161.02
+  }
+}
+{"fixtureCleanup":"PASS","ownedRoomIds":["e4181e0d-4283-42bd-a217-fd0a052e5270","13fa462d-932a-4e7e-a6ba-26fc103d839e","b5daec4b-11de-406b-abd8-921846c71375","631c395b-51b7-44eb-855e-739e2b4b0ea4","77467419-9206-4cff-835e-e7dd405cc927"],"remainingOwnedRooms":0}
+
+EXIT: 0
+END UTC: 2026-11-17T17:00:35.405Z
