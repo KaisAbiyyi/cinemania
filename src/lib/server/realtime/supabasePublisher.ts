@@ -3,7 +3,12 @@ import { PermanentPublicationError, type RoomHint } from "./dispatch";
 /** Server-only factory: callers must keep the key outside client bundles. */
 export function createSupabasePublisher(projectUrl: string, secret: string, send: typeof fetch = fetch) {
   const base = new URL(projectUrl);
-  if (base.protocol !== "https:" || !/^[a-z0-9-]+\.supabase\.co$/.test(base.hostname) || base.username || base.password || base.port || base.pathname !== "/" || base.search || base.hash || !secret) {
+  const hosted = base.protocol === "https:" && /^[a-z0-9-]+\.supabase\.co$/.test(base.hostname) && !base.port;
+  const local = process.env.CINEMATCH_ALLOW_LOCAL_REALTIME === "true" &&
+    (process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test") &&
+    /^http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?\/?$/i.test(projectUrl) &&
+    base.protocol === "http:" && (base.hostname === "localhost" || base.hostname === "127.0.0.1");
+  if ((!hosted && !local) || base.username || base.password || base.pathname !== "/" || base.search || base.hash || !secret) {
     throw new Error("Invalid Supabase broadcast configuration");
   }
   return async (hint: RoomHint): Promise<void> => {
