@@ -91,6 +91,7 @@ describe("Client Bundle Secret Leak Prevention (Build-Tied Hard Gate)", () => {
       process.env.TMDB_API_RAT,
       process.env.CINEMATCH_CAPABILITY_SECRET,
       process.env.SUPABASE_SERVICE_ROLE_KEY,
+      process.env.SUPABASE_SECRET_KEY,
       process.env.SUPABASE_JWT_SECRET,
       process.env.DATABASE_URL,
       "TMDB_SECRET_SENTINEL_BUILD_MARKER_999",

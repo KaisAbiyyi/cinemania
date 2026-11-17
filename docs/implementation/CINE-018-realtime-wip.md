@@ -69,3 +69,19 @@ provide its test-only PostgreSQL/server/JWT/publishable credentials, and have an
 operator establish private-only Realtime plus canonical migrations/policies. Re-run the
 entire hosted security/transport matrix there; do not relabel local PASS as hosted PASS.
 Independent final review and owner acceptance remain required. CINE-019/021 are untouched.
+
+### Legacy hosted-test safety incident
+
+The first candidate's default `npm test` inadvertently enabled the legacy CINE-012 hosted
+suite because its loader imported historical destructive consent from `.env.test.local`.
+That was an execution error, not authorization: see the preserved incident and failure
+record on issue #20. The suite created/dropped its temporary owned schema; a subsequent
+read-only query confirmed that schema absent. Teardown's public table-count comparison
+was not a comprehensive global-effects audit. No further hosted mutation was performed.
+
+The automatic suite now reads only PG credential keys from that file. Destructive consent
+must come from the current invocation's `ALLOW_DESTRUCTIVE_PG_TESTS=true`, never file content;
+synthetic negative tests cover refusal and configuration injection. Offline qualification
+explicitly sets `ALLOW_DESTRUCTIVE_PG_TESTS=false`. The owner secret file is not changed.
+The historical hosted failures remain FAIL evidence, not authorized hosted acceptance;
+the isolated hosted gate above remains BLOCKED/NOT RUN.

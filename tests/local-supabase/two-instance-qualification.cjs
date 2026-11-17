@@ -175,6 +175,16 @@ async function waitForWorker(proc) {
   throw new Error("Worker readiness timed out");
 }
 
+async function waitForAcknowledgement(db, roomId, version) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const check = await db.query("SELECT dispatched FROM public.room_events WHERE room_id=$1 AND version=$2", [roomId, version]);
+    if (check.rows[0]?.dispatched) return;
+    await new Promise(r => setTimeout(r, 20));
+  }
+  throw new Error("Worker database acknowledgement timed out");
+}
+
 async function crashAfterAuthorityCommit({ cwd, env, roomId, actorParticipantId, sortBy }) {
   // This child runs the actual authority transaction, reports COMMIT, then is
   // killed before it can invoke any publication path. No synthetic event INSERT.
@@ -217,8 +227,13 @@ async function attachBrowserProbe(browser, { origin, cookie, roomId, supabaseUrl
   await page.addScriptTag({ path: bundlePath });
   await page.evaluate(async config => {
     globalThis.cineSnapshots = [];
+    globalThis.cineSnapshotLoads = 0;
     globalThis.stopCineProbe = await globalThis.CineRealtime.startRoomRealtime({
-      ...config, onSnapshot: snapshot => {
+      ...config, fetcher: async (input, init) => {
+        const result = await fetch(input, init);
+        if (String(input).endsWith(config.roomId)) globalThis.cineSnapshotLoads++;
+        return result;
+      }, onSnapshot: snapshot => {
         globalThis.cineSnapshots.push(snapshot);
         document.body.textContent = snapshot.room.status;
       },
@@ -442,6 +457,11 @@ async function main() {
     await Promise.all([waitForServer(origin1, 90000), waitForServer(origin2, 90000)]);
 
     await db.connect();
+    // New autonomous workers scan all public pending rows; refuse a developer
+    // database containing rooms beyond the two explicit GH-52 synthetic seeds.
+    const unknownRooms = await db.query("SELECT count(*)::int AS n FROM public.rooms WHERE id NOT IN ($1,$2)",
+      ["00000000-0000-4000-8000-000000005201", "00000000-0000-4000-8000-000000005202"]);
+    assert.equal(unknownRooms.rows[0].n, 0, "Synthetic-only qualification refused: unknown existing rooms");
 
     // 4. Test A: Host creates room on Instance 1, Guest joins on Instance 2
     const createRes = await fetch(`${origin1}/api/rooms`, {
@@ -548,10 +568,24 @@ async function main() {
     const hostFinalSnap = await (await fetch(`${origin1}/api/rooms/${roomId}`, { headers: { cookie: hostCookie } })).json();
     assert.equal(hostFinalSnap.room.status, "MATCHED");
     assert.equal(hostFinalSnap.room.matchedMovieId, cand0.movieId);
+    // Deliver real duplicate, stale and future invalidation hints over Supabase.
+    // Unchanged DB snapshots must not emit a second MATCHED callback/animation.
+    const probeLoads = await Promise.all([browserHost, browserGuest].map(p => p.page.evaluate(() => globalThis.cineSnapshotLoads)));
+    for (const version of [hostFinalSnap.room.stateVersion, hostFinalSnap.room.stateVersion - 1, hostFinalSnap.room.stateVersion + 2]) {
+      const sent = await fetch(`${supabaseUrl}/realtime/v1/api/broadcast/${encodeURIComponent(`room:${roomId}`)}/events/room_changed?private=true`, {
+        method: "POST", headers: { apikey: stackEnv.SERVICE_ROLE_KEY, "content-type": "application/json" },
+        body: JSON.stringify({ roomId, version }),
+      });
+      assert.equal(sent.ok, true);
+    }
+    await guestWs.waitForVersion(hostFinalSnap.room.stateVersion + 2);
+    await Promise.all([browserHost, browserGuest].map((probe, i) => probe.page.waitForFunction(
+      previous => globalThis.cineSnapshotLoads > previous, probeLoads[i])));
     await Promise.all([browserHost, browserGuest].map(async probe => {
       await probe.page.waitForFunction(() => document.body.textContent === "MATCHED");
       const latest = await probe.page.evaluate(() => globalThis.cineSnapshots.at(-1));
       assert.equal(latest.room.matchedMovieId, cand0.movieId);
+      assert.equal(await probe.page.evaluate(() => globalThis.cineSnapshots.filter(s => s.room.status === "MATCHED").length), 1);
       await probe.stop();
     }));
     // Browser polling is stopped BEFORE the no-request crash recovery window.
@@ -641,6 +675,7 @@ async function main() {
     worker2 = spawnWorker({ cwd: inst2Dir, env: baseAppEnv });
     await Promise.all([waitForWorker(worker1), waitForWorker(worker2)]);
     await guest2WsB.waitForVersion(6);
+    await waitForAcknowledgement(db, room2.roomId, 6);
     const outboxCheck = await db.query("SELECT dispatched FROM public.room_events WHERE room_id = $1 AND version = 6", [room2.roomId]);
     assert.equal(outboxCheck.rows[0].dispatched, true, "Recovered outbox row must be marked dispatched=true");
     assert.equal(guest2WsB.hints.filter(h => h.payload.version === 6).length, 1, "Concurrent workers must serialize the ordinary send/ack path");
@@ -652,6 +687,7 @@ async function main() {
     worker2 = spawnWorker({ cwd: inst2Dir, env: baseAppEnv });
     await waitForWorker(worker2);
     await guest2WsB.waitForVersion(7);
+    await waitForAcknowledgement(db, room2.roomId, 7);
     // HTTP resumes only AFTER autonomous recovery has been observed over WS.
     proc1 = spawnNextInstance({ cwd: inst1Dir, port: PORT_1, env: { ...baseAppEnv, PORT: String(PORT_1) } });
     await waitForServer(origin1, 90000);
@@ -688,6 +724,7 @@ async function main() {
           reconnectGapReplayVerified: true,
           outOfOrderDuplicateIgnored: true,
           realBrowserTabsConverged: true,
+          realDuplicateStaleHintsDidNotRepeatMatch: true,
           multiClientGroupSizes: [2, 3, 4, 5],
           processCrashAfterAuthorityCommitRecovered: true,
           recoveryTrigger: "independent worker timer; no app HTTP after commit until WS receipt",
