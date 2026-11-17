@@ -1,0 +1,10 @@
+SHA: 234ae88bea1a43e8c4aa18acb0cdc4deb85fce0b
+CWD: D:/projects/cinemania
+UTC: 2026-11-17T13:19:33.341Z
+WORKTREE: DIRTY / candidate source
+COMMAND: C:\Program Files\nodejs\node.exe tests/hosted-supabase/schema-consistency.cjs
+ENV: ALLOW_DESTRUCTIVE_PG_TESTS=false; CINE018_STAGING_PROJECT=dmrbticnsczhyaiftrar
+Schema consistency failed: Unexpected end of JSON input
+
+EXIT: 1
+END UTC: 2026-11-17T13:19:35.791Z

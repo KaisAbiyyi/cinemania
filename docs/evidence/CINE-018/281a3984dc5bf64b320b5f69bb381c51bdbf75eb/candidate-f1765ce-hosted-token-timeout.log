@@ -1,0 +1,95 @@
+SHA: f1765cef1cd423991b6ed1d0e03acfba1b57f219
+CWD: D:/projects/cinemania
+UTC: 2026-11-17T13:21:37.263Z
+WORKTREE: clean
+COMMAND: C:\Program Files\nodejs\node.exe tests/local-supabase/two-instance-qualification.cjs --app-commit f1765cef1cd423991b6ed1d0e03acfba1b57f219 --hosted-staging
+ENV: ALLOW_DESTRUCTIVE_PG_TESTS=false; CINE018_STAGING_PROJECT=dmrbticnsczhyaiftrar
+--- INSTANCE 1 LOGS ---
+▲ Next.js 16.4.5 (Turbopack)
+- Local:         http://127.0.0.1:3101
+- Network:       http://127.0.0.1:3101
+✓ Ready in 462ms
+⚠ Warning: Next.js ignored package-lock.json in C:\Users\kaisa because it would include your home directory (C:\Users\kaisa).
+ To use this directory, set `turbopack.root` in your Next.js config.
+
+✓ Running next.config.ts took 68ms
+
+ GET /api/rooms/00000000-0000-4000-8000-000000000000 401 in 1025ms (next.js: 960ms, application-code: 65ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 4.2s (next.js: 878ms, application-code: 3.3s)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1890ms (next.js: 20ms, application-code: 1870ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1795ms (next.js: 14ms, application-code: 1781ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1818ms (next.js: 22ms, application-code: 1795ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1835ms (next.js: 14ms, application-code: 1821ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1745ms (next.js: 8ms, application-code: 1737ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1862ms (next.js: 13ms, application-code: 1849ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1848ms (next.js: 10ms, application-code: 1838ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1983ms (next.js: 13ms, application-code: 1970ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1883ms (next.js: 10ms, application-code: 1873ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 2.4s (next.js: 8ms, application-code: 2.4s)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 2.5s (next.js: 8ms, application-code: 2.5s)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1849ms (next.js: 9ms, application-code: 1840ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1909ms (next.js: 13ms, application-code: 1897ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1794ms (next.js: 15ms, application-code: 1779ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1719ms (next.js: 8ms, application-code: 1711ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1781ms (next.js: 8ms, application-code: 1773ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1858ms (next.js: 13ms, application-code: 1845ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1824ms (next.js: 9ms, application-code: 1814ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1772ms (next.js: 11ms, application-code: 1761ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1757ms (next.js: 7ms, application-code: 1749ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1714ms (next.js: 13ms, application-code: 1701ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1749ms (next.js: 9ms, application-code: 1740ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1753ms (next.js: 10ms, application-code: 1743ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 2.9s (next.js: 11ms, application-code: 2.9s)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 2.2s (next.js: 8ms, application-code: 2.2s)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 1930ms (next.js: 14ms, application-code: 1916ms)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 2.1s (next.js: 10ms, application-code: 2.1s)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 2.2s (next.js: 7ms, application-code: 2.1s)
+ PATCH /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/filters 200 in 2.1s (next.js: 9ms, application-code: 2.1s)
+
+--- INSTANCE 2 LOGS ---
+ation-code: 1571ms)
+ GET /api/rooms/d4b9dcaf-a4ca-43eb-954b-9c1f9fcae090 200 in 2.5s (next.js: 1.0ms, application-code: 2.5s)
+ GET /api/rooms/d4b9dcaf-a4ca-43eb-954b-9c1f9fcae090 200 in 1610ms (next.js: 9ms, application-code: 1602ms)
+ GET /api/rooms/d4b9dcaf-a4ca-43eb-954b-9c1f9fcae090 200 in 1380ms (next.js: 12ms, application-code: 1368ms)
+ GET /api/rooms/d4b9dcaf-a4ca-43eb-954b-9c1f9fcae090 200 in 1684ms (next.js: 0.9ms, application-code: 1684ms)
+ POST /api/rooms/d4b9dcaf-a4ca-43eb-954b-9c1f9fcae090/votes 200 in 4.2s (next.js: 857ms, application-code: 3.3s)
+ GET /api/rooms/d4b9dcaf-a4ca-43eb-954b-9c1f9fcae090 200 in 1544ms (next.js: 11ms, application-code: 1533ms)
+ GET /api/rooms/d4b9dcaf-a4ca-43eb-954b-9c1f9fcae090 200 in 1554ms (next.js: 12ms, application-code: 1542ms)
+ POST /api/rooms/join 200 in 2.1s (next.js: 1.1ms, application-code: 2.1s)
+ POST /api/rooms/87b71737-7cd6-4bef-942b-7e06c1be72b3/realtime-token 200 in 298ms (next.js: 13ms, application-code: 286ms)
+ POST /api/rooms/87b71737-7cd6-4bef-942b-7e06c1be72b3/votes 200 in 3.7s (next.js: 14ms, application-code: 3.7s)
+ GET /api/rooms/87b71737-7cd6-4bef-942b-7e06c1be72b3 200 in 1568ms (next.js: 17ms, application-code: 1551ms)
+ POST /api/rooms/join 200 in 1867ms (next.js: 1.8ms, application-code: 1865ms)
+ POST /api/rooms/join 200 in 2.0s (next.js: 3ms, application-code: 2.0s)
+ POST /api/rooms/c5eb9edc-e4b3-4aaf-ad05-664730e6c808/realtime-token 200 in 301ms (next.js: 13ms, application-code: 289ms)
+ POST /api/rooms/c5eb9edc-e4b3-4aaf-ad05-664730e6c808/realtime-token 200 in 337ms (next.js: 14ms, application-code: 323ms)
+ GET /api/rooms/c5eb9edc-e4b3-4aaf-ad05-664730e6c808 200 in 1348ms (next.js: 13ms, application-code: 1334ms)
+ GET /api/rooms/c5eb9edc-e4b3-4aaf-ad05-664730e6c808 200 in 1406ms (next.js: 24ms, application-code: 1383ms)
+ POST /api/rooms/c5eb9edc-e4b3-4aaf-ad05-664730e6c808/votes 200 in 3.2s (next.js: 7ms, application-code: 3.1s)
+ GET /api/rooms/c5eb9edc-e4b3-4aaf-ad05-664730e6c808 200 in 1441ms (next.js: 10ms, application-code: 1431ms)
+ GET /api/rooms/c5eb9edc-e4b3-4aaf-ad05-664730e6c808 200 in 1421ms (next.js: 10ms, application-code: 1411ms)
+ POST /api/rooms/c5eb9edc-e4b3-4aaf-ad05-664730e6c808/votes 200 in 3.2s (next.js: 16ms, application-code: 3.2s)
+ GET /api/rooms/c5eb9edc-e4b3-4aaf-ad05-664730e6c808 200 in 1335ms (next.js: 7ms, application-code: 1328ms)
+ GET /api/rooms/c5eb9edc-e4b3-4aaf-ad05-664730e6c808 200 in 1754ms (next.js: 10ms, application-code: 1745ms)
+ POST /api/rooms/join 200 in 1905ms (next.js: 3ms, application-code: 1903ms)
+ POST /api/rooms/join 200 in 1863ms (next.js: 1.6ms, application-code: 1862ms)
+ POST /api/rooms/1a772d0a-a760-4bee-8e6b-24b723abe905/realtime-token 200 in 280ms (next.js: 14ms, application-code: 267ms)
+ POST /api/rooms/1a772d0a-a760-4bee-8e6b-24b723abe905/realtime-token 200 in 294ms (next.js: 14ms, application-code: 281ms)
+ POST /api/rooms/1a772d0a-a760-4bee-8e6b-24b723abe905/votes 200 in 3.8s (next.js: 12ms, application-code: 3.8s)
+ POST /api/rooms/1a772d0a-a760-4bee-8e6b-24b723abe905/votes 200 in 3.2s (next.js: 15ms, application-code: 3.2s)
+ GET /api/rooms/1a772d0a-a760-4bee-8e6b-24b723abe905 200 in 1463ms (next.js: 23ms, application-code: 1440ms)
+ GET /api/rooms/1a772d0a-a760-4bee-8e6b-24b723abe905 200 in 1447ms (next.js: 11ms, application-code: 1436ms)
+ POST /api/rooms/join 200 in 1931ms (next.js: 1.1ms, application-code: 1930ms)
+ POST /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/realtime-token 200 in 297ms (next.js: 15ms, application-code: 281ms)
+ POST /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/realtime-token 200 in 290ms (next.js: 12ms, application-code: 278ms)
+ GET /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/events?since=2 200 in 2.2s (next.js: 953ms, application-code: 1205ms)
+ GET /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861 200 in 1127ms (next.js: 9ms, application-code: 1117ms)
+ POST /api/rooms/f24a4528-6a04-43ae-a73e-ceb16dfa8861/realtime-token 200 in 837ms (next.js: 18ms, application-code: 819ms)
+
+Two-instance qualification failed: Error: Timed out waiting for WS version 37; saw [8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36]
+    at Timeout._onTimeout (D:\projects\cinemania\tests\local-supabase\two-instance-qualification.cjs:342:16)
+    at listOnTimeout (node:internal/timers:685:17)
+    at process.processTimers (node:internal/timers:618:7)
+
+EXIT: 1
+END UTC: 2026-11-17T13:29:44.105Z

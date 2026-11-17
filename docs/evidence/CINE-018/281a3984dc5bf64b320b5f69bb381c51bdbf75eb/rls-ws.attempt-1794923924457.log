@@ -1,0 +1,10 @@
+SHA: 281a3984dc5bf64b320b5f69bb381c51bdbf75eb
+CWD: D:/projects/cinemania
+UTC: 2026-11-17T13:58:44.457Z
+WORKTREE: DIRTY / candidate source
+COMMAND: C:\Program Files\nodejs\node.exe tests/local-supabase/realtime-rls-qualification.cjs
+ENV: ALLOW_DESTRUCTIVE_PG_TESTS=false; offline/local scope
+{"ok":true,"environment":"local Docker","checks":["private_only_tenant","gateway_403_tenants_and_openapi","private_ws_subscribe","anonymous_private_subscription_denied","public_channel_denied","cross_room_denied","room_code_topic_denied","expired_bad_sig_missing_claim_outsider_denied","competing_permissive_select_and_insert_fenced","server_rest_broadcast_to_private_ws","pg_rls_self_only_and_anon_denied"]}
+
+EXIT: 0
+END UTC: 2026-11-17T13:59:34.354Z

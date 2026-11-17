@@ -1,0 +1,10 @@
+SHA: 281a3984dc5bf64b320b5f69bb381c51bdbf75eb
+CWD: D:/projects/cinemania
+UTC: 2026-11-17T13:53:06.402Z
+WORKTREE: clean
+COMMAND: C:\Program Files\nodejs\node.exe tests/local-supabase/migration-roundtrip.cjs --commit 281a3984dc5bf64b320b5f69bb381c51bdbf75eb
+ENV: ALLOW_DESTRUCTIVE_PG_TESTS=false; offline/local scope
+{"ok":true,"commit":"281a3984dc5bf64b320b5f69bb381c51bdbf75eb","database":"cinematch_roundtrip_bc47482cc99440c4a3e0660c32953f17","disposableDatabaseDropped":true,"developerPublicFingerprintUnchanged":true,"publicSha256Before":"4101d54880b852aa11255682a9fd0f5e9dddf732ee7b8f880a25cdac3cfa81bd","publicSha256After":"4101d54880b852aa11255682a9fd0f5e9dddf732ee7b8f880a25cdac3cfa81bd","downMigrations":[{"file":"src/db/migrations/005_down_realtime_authorization.sql","sha256":"868d2ec55b27ea77cceded42e017d6d2475efea1ddb6b0a16eb1c85d668fcc90"},{"file":"src/db/migrations/004_down_vote_operation_idempotency.sql","sha256":"24c9e71743e1beaac876558d284b2da4fd38c4ea5c494b203995ec882bbce698"},{"file":"src/db/migrations/003_down_round_roster_freeze.sql","sha256":"04231d0584fb7a5b072b07bb61f72bd5628a3d9ea16d70f30acc18a39f8cd1a1"},{"file":"src/db/migrations/002_down_guest_capability_sessions.sql","sha256":"4391a0c6e82e96cdae5fefcd702e805c4da52b9cf24aa33366b9e5325e5288f0"},{"file":"src/db/migrations/001_down_room_schema.sql","sha256":"e5c02d1b4c33ea7245ae3f9c7f8cb04f9b502859e016e06abbfe4ee98fe3ecef"}],"upMigrations":[{"file":"src/db/migrations/001_create_room_schema.sql","sha256":"eec90543e14a10bbc2459a795ec94446f56497fa85f9e2df4e34cfc041bbfb42"},{"file":"src/db/migrations/002_guest_capability_sessions.sql","sha256":"0a3a9d2a43ba38367537cc5bea56be824fe92d8388ccf7b883d5a2eb24d9a423"},{"file":"src/db/migrations/003_round_roster_freeze.sql","sha256":"1e1b657986e4d5be8d14dd1b39ed24e3ec6c37e931814f8ddc20728a46c57656"},{"file":"src/db/migrations/004_vote_operation_idempotency.sql","sha256":"92098b91830997a6c785ef523e1eb3fd2743871d53604d65c01f7b53aafe3c82"},{"file":"src/db/migrations/005_realtime_authorization.sql","sha256":"ce317636da035174038f312f47fb29831695fde7a49725314af7be0604dc9f23"}]}
+
+EXIT: 0
+END UTC: 2026-11-17T13:53:15.204Z

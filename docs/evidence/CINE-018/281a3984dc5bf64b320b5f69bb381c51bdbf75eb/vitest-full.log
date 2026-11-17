@@ -1,0 +1,26 @@
+SHA: 281a3984dc5bf64b320b5f69bb381c51bdbf75eb
+CWD: D:/projects/cinemania
+UTC: 2026-11-17T13:56:08.743Z
+WORKTREE: clean
+COMMAND: C:\Program Files\nodejs\node.exe C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js test
+ENV: ALLOW_DESTRUCTIVE_PG_TESTS=false; offline/local scope
+
+> cinemania@0.1.0 test
+> vitest run
+
+
+ RUN  v5.1.0 D:/projects/cinemania
+
+
+ Test Files  38 passed | 1 skipped (39)
+      Tests  403 passed | 7 skipped (410)
+   Start at  20:56:14
+   Duration  33.50s (environment 70%, import 19%, tests 4%, transform 4%, setup 3%, worker 1%)
+
+Environment  happy-dom was created 39 times · 267.64s total, 70% of tracked time
+             create it once per worker with pool: 'vmThreads' (keeps per-file isolation) or isolate: false (shares it across files)
+             learn more: https://vitest.dev/guide/improving-performance#test-environments
+
+
+EXIT: 0
+END UTC: 2026-11-17T13:56:48.251Z

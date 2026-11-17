@@ -1,0 +1,126 @@
+{
+  "project": "dmrbticnsczhyaiftrar",
+  "utc": "2026-11-17T12:44:53.459Z",
+  "inheritedSource": "6741fa84e38d25516d3d4d375bd4bd8625bb271d",
+  "publicRelations": 0,
+  "publicFunctions": 0,
+  "publicTypes": 0,
+  "policies": 0,
+  "counts": [
+    {
+      "users": "0",
+      "buckets": "0",
+      "objects": "0",
+      "messages": "0"
+    }
+  ],
+  "migrationHistory": [
+    {
+      "version": "20261112011644",
+      "name": "001_create_room_schema",
+      "normalizedSqlSha256": "eec90543e14a10bbc2459a795ec94446f56497fa85f9e2df4e34cfc041bbfb42"
+    }
+  ],
+  "schemas": [
+    {
+      "nspname": "auth",
+      "owner": "supabase_admin",
+      "nspacl": "{supabase_admin=UC/supabase_admin,anon=U/supabase_admin,authenticated=U/supabase_admin,service_role=U/supabase_admin,supabase_auth_admin=UC/supabase_admin,dashboard_user=UC/supabase_admin,postgres=U/supabase_admin}"
+    },
+    {
+      "nspname": "extensions",
+      "owner": "postgres",
+      "nspacl": "{postgres=UC/postgres,anon=U/postgres,authenticated=U/postgres,service_role=U/postgres,dashboard_user=UC/postgres}"
+    },
+    {
+      "nspname": "graphql",
+      "owner": "supabase_admin",
+      "nspacl": "{supabase_admin=UC/supabase_admin,postgres=U*/supabase_admin,anon=U/supabase_admin,authenticated=U/supabase_admin,service_role=U/supabase_admin}"
+    },
+    {
+      "nspname": "graphql_public",
+      "owner": "supabase_admin",
+      "nspacl": "{supabase_admin=UC/supabase_admin,postgres=U*/supabase_admin,anon=U/supabase_admin,authenticated=U/supabase_admin,service_role=U/supabase_admin}"
+    },
+    {
+      "nspname": "information_schema",
+      "owner": "supabase_admin",
+      "nspacl": "{supabase_admin=UC/supabase_admin,=U/supabase_admin}"
+    },
+    {
+      "nspname": "public",
+      "owner": "pg_database_owner",
+      "nspacl": "{pg_database_owner=UC/pg_database_owner,=U/pg_database_owner,postgres=U/pg_database_owner,anon=U/pg_database_owner,authenticated=U/pg_database_owner,service_role=U/pg_database_owner,cinematch_runner=UC/pg_database_owner}"
+    },
+    {
+      "nspname": "realtime",
+      "owner": "supabase_admin",
+      "nspacl": "{supabase_admin=UC/supabase_admin,postgres=U*/supabase_admin,anon=U/supabase_admin,service_role=U/supabase_admin,supabase_realtime_admin=UC/supabase_admin,authenticated=U/supabase_admin}"
+    },
+    {
+      "nspname": "storage",
+      "owner": "supabase_admin",
+      "nspacl": "{supabase_admin=UC/supabase_admin,postgres=U*/supabase_admin,anon=U/supabase_admin,authenticated=U/supabase_admin,service_role=U/supabase_admin,supabase_storage_admin=U*C*/supabase_admin,dashboard_user=UC/supabase_admin}"
+    },
+    {
+      "nspname": "supabase_migrations",
+      "owner": "postgres",
+      "nspacl": null
+    },
+    {
+      "nspname": "vault",
+      "owner": "supabase_admin",
+      "nspacl": "{supabase_admin=UC/supabase_admin,postgres=U*/supabase_admin,service_role=U/supabase_admin}"
+    }
+  ],
+  "config": {
+    "realtimeBefore": {
+      "enabled": true,
+      "allowPublic": true,
+      "authorizationPool": 2,
+      "changesPool": 2,
+      "maxClients": 200,
+      "eventsPerSecond": 100,
+      "presencePerSecond": 20,
+      "payloadKB": 256
+    },
+    "realtimeAfter": {
+      "enabled": true,
+      "allowPublic": false,
+      "otherLimitsUnchanged": true
+    },
+    "dataApi": {
+      "enabled": true,
+      "exposedSchemaCount": 2,
+      "autoExposeNewTables": true,
+      "extraSearchPath": [
+        "public",
+        "extensions"
+      ],
+      "maxRows": 1000
+    },
+    "jwt": {
+      "current": "ECC P-256",
+      "previous": "HS256 still enabled for verification",
+      "rotated": false
+    }
+  },
+  "backupVerification": {
+    "fullArchive": {
+      "sha256": "9d1a089e9e89311694d84996b9823489629ae726ec879a6792c7ef80e0e88296",
+      "bytes": 390477,
+      "archiveTocEntries": 594
+    },
+    "schema": {
+      "sha256": "fb7fcb426ac1e78488c0421edf14b95bde840b839cb9e82a8ad77b7af7d99f07",
+      "bytes": 320236
+    },
+    "application": {
+      "sha256": "e34354754f1a8665a6c8c94fcb120122bfea4b93c853ec8f80bdb3b828ac6518",
+      "bytes": 10600,
+      "restore": "PASS: exclusive local template0 DB, no-owner/no-acl, history deep-equal, public relations0, DB removed"
+    },
+    "fullManagedPlatformRestore": "NOT VERIFIED",
+    "privateBackupACL": "owner and SYSTEM only"
+  }
+}

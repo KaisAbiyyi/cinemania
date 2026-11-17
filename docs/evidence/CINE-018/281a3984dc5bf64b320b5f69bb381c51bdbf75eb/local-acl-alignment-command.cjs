@@ -1,0 +1,14 @@
+const fs=require('node:fs'),cp=require('node:child_process'),crypto=require('node:crypto'),assert=require('node:assert/strict');
+process.chdir('D:/projects/cinemania');
+const {assertLocalStack}=require('D:/projects/cinemania/scripts/local-supabase/runtime.cjs');
+const db=assertLocalStack().find(c=>c.name==='cinematch-gh52d-db-1');
+const sql=q=>cp.execFileSync('docker',['exec','-i',db.id,'psql','-X','-U','supabase_admin','-d','postgres','-tA','-v','ON_ERROR_STOP=1'],{input:q,encoding:'utf8'}).trim();
+assert.equal(sql("SELECT count(*) FROM public.rooms WHERE id NOT IN ('00000000-0000-4000-8000-000000005201','00000000-0000-4000-8000-000000005202');"),'0','Unknown local rooms; no ACL writes');
+const dump=cp.execFileSync('docker',['exec',db.id,'pg_dump','-U','supabase_admin','-d','postgres','--schema=public','--format=custom'],{maxBuffer:64000000});
+fs.writeFileSync('D:/projects/cinemania-cine018-evidence/staging-epoch4-private/local-public-before-acl.dump',dump);
+const query=`SELECT jsonb_build_object('rooms',(SELECT md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'')) FROM public.rooms t),'participants',(SELECT md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'')) FROM public.room_participants t),'events',(SELECT md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'')) FROM public.room_events t),'sequence',(SELECT jsonb_build_array(last_value,is_called) FROM public.room_events_id_seq));`;
+const before=sql(query);
+sql('BEGIN; REVOKE ALL ON FUNCTION public.is_current_user_room_participant(UUID) FROM anon; REVOKE ALL ON FUNCTION public.prevent_vote_mutation(),public.prevent_vote_delete_except_room_purge(),public.enforce_room_retention() FROM PUBLIC,anon,authenticated; ALTER FUNCTION public.prevent_vote_mutation() SET search_path=pg_catalog; REVOKE UPDATE ON SEQUENCE public.room_events_id_seq FROM service_role; COMMIT;');
+assert.equal(sql(query),before,'Local data/sequence state changed');
+assert.equal(sql("SELECT has_function_privilege('anon','public.is_current_user_room_participant(uuid)','EXECUTE');"),'f');
+console.log(JSON.stringify({ok:true,localAclAlignedToCanonical005:true,developerDataAndSequenceUnchanged:true,backupSha256:crypto.createHash('sha256').update(dump).digest('hex')}));

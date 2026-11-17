@@ -1,0 +1,13 @@
+SHA: 281a3984dc5bf64b320b5f69bb381c51bdbf75eb
+CWD: D:/projects/cinemania
+UTC: 2026-11-17T13:55:47.512Z
+WORKTREE: clean
+COMMAND: C:\Program Files\nodejs\node.exe C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js run typecheck
+ENV: ALLOW_DESTRUCTIVE_PG_TESTS=false; offline/local scope
+
+> cinemania@0.1.0 typecheck
+> tsc --noEmit
+
+
+EXIT: 0
+END UTC: 2026-11-17T13:56:08.699Z

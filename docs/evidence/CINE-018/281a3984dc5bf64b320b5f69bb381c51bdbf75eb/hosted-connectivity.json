@@ -1,0 +1,118 @@
+{
+  "head": "281a3984dc5bf64b320b5f69bb381c51bdbf75eb",
+  "utc": "2026-11-17T14:13:42.614Z",
+  "project": "dmrbticnsczhyaiftrar",
+  "readOnly": true,
+  "connectionTimeoutMs": 10000,
+  "tlsVerification": "strict root CA and hostname; unchanged",
+  "addresses": [
+    {
+      "address": "13.124.111.232",
+      "family": 4
+    },
+    {
+      "address": "15.164.120.176",
+      "family": 4
+    },
+    {
+      "address": "15.165.245.138",
+      "family": 4
+    }
+  ],
+  "results": [
+    {
+      "attempt": 1,
+      "probe": "normal DNS",
+      "status": "PASS",
+      "elapsedMs": 1511,
+      "tcpMs": 98,
+      "remoteAddress": "13.124.111.232",
+      "clientTls": {
+        "encrypted": true,
+        "authorized": true,
+        "protocol": "TLSv1.3"
+      },
+      "database": "postgres",
+      "actor": "postgres",
+      "backend_tls_from_pooler": false
+    },
+    {
+      "attempt": 2,
+      "probe": "normal DNS",
+      "status": "PASS",
+      "elapsedMs": 3215,
+      "tcpMs": 85,
+      "remoteAddress": "13.124.111.232",
+      "clientTls": {
+        "encrypted": true,
+        "authorized": true,
+        "protocol": "TLSv1.3"
+      },
+      "database": "postgres",
+      "actor": "postgres",
+      "backend_tls_from_pooler": false
+    },
+    {
+      "attempt": 3,
+      "probe": "normal DNS",
+      "status": "FAIL",
+      "elapsedMs": 10014,
+      "tcpMs": 5178,
+      "remoteAddress": "13.124.111.232",
+      "code": null,
+      "error": "timeout expired"
+    },
+    {
+      "attempt": 4,
+      "probe": "normal DNS",
+      "status": "FAIL",
+      "elapsedMs": 10008,
+      "tcpMs": 247,
+      "remoteAddress": "15.165.245.138",
+      "code": null,
+      "error": "timeout expired"
+    },
+    {
+      "attempt": 5,
+      "probe": "13.124.111.232",
+      "status": "FAIL",
+      "elapsedMs": 10004,
+      "tcpMs": 3069,
+      "remoteAddress": "13.124.111.232",
+      "code": null,
+      "error": "timeout expired"
+    },
+    {
+      "attempt": 6,
+      "probe": "15.164.120.176",
+      "status": "PASS",
+      "elapsedMs": 7971,
+      "tcpMs": 2735,
+      "remoteAddress": "15.164.120.176",
+      "clientTls": {
+        "encrypted": true,
+        "authorized": true,
+        "protocol": "TLSv1.3"
+      },
+      "database": "postgres",
+      "actor": "postgres",
+      "backend_tls_from_pooler": false
+    },
+    {
+      "attempt": 7,
+      "probe": "15.165.245.138",
+      "status": "PASS",
+      "elapsedMs": 10608,
+      "tcpMs": 336,
+      "remoteAddress": "15.165.245.138",
+      "clientTls": {
+        "encrypted": true,
+        "authorized": true,
+        "protocol": "TLSv1.3"
+      },
+      "database": "postgres",
+      "actor": "postgres",
+      "backend_tls_from_pooler": false
+    }
+  ]
+}

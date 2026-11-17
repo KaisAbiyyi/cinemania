@@ -1,0 +1,106 @@
+SHA: 281a3984dc5bf64b320b5f69bb381c51bdbf75eb
+CWD: D:/projects/cinemania
+UTC: 2026-11-17T13:56:48.696Z
+WORKTREE: clean
+COMMAND: C:\Program Files\nodejs\node.exe C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js run build
+ENV: ALLOW_DESTRUCTIVE_PG_TESTS=false; offline/local scope
+
+> cinemania@0.1.0 build
+> next build
+
+▲ Next.js 16.4.5 (Turbopack)
+✓ Running next.config.ts took 1512ms
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 11.5s
+  Running TypeScript ...
+  Finished TypeScript in 2.3s ...
+  Collecting page data using 23 workers ...
+  Generating static pages using 23 workers (0/31) ...
+  Generating static pages using 23 workers (7/31) 
+  Generating static pages using 23 workers (15/31) 
+  Generating static pages using 23 workers (23/31) 
+✓ Generating static pages using 23 workers (31/31) in 467ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/genres
+├ ƒ /api/geolocation
+├ ƒ /api/guest/host-check
+├ ƒ /api/guest/session
+├ ƒ /api/guest/session/rotate
+├ ƒ /api/keywords
+├ ƒ /api/languages
+├ ƒ /api/media
+├ ƒ /api/media/[id]
+├ ƒ /api/media/[id]/aggregate_credits
+├ ƒ /api/media/[id]/content_ratings
+├ ƒ /api/media/[id]/credits
+├ ƒ /api/media/[id]/images
+├ ƒ /api/media/[id]/keywords
+├ ƒ /api/media/[id]/recommendations
+├ ƒ /api/media/[id]/release_dates
+├ ƒ /api/media/[id]/reviews
+├ ƒ /api/media/[id]/similar
+├ ƒ /api/media/[id]/videos
+├ ƒ /api/media/trending
+├ ƒ /api/person/[id]
+├ ƒ /api/person/[id]/combined_credits
+├ ƒ /api/person/[id]/images
+├ ƒ /api/providers/[mediaType]
+├ ƒ /api/providers/region
+├ ƒ /api/rooms
+├ ƒ /api/rooms/[roomId]
+├ ƒ /api/rooms/[roomId]/deck
+├ ƒ /api/rooms/[roomId]/events
+├ ƒ /api/rooms/[roomId]/filters
+├ ƒ /api/rooms/[roomId]/leave
+├ ƒ /api/rooms/[roomId]/realtime-token
+├ ƒ /api/rooms/[roomId]/start
+├ ƒ /api/rooms/[roomId]/vote
+├ ƒ /api/rooms/[roomId]/votes
+├ ƒ /api/rooms/join
+├ ƒ /api/search/keyword
+├ ƒ /api/search/movie
+├ ƒ /api/search/person
+├ ƒ /api/search/tv
+├ ƒ /api/youtube
+├ ƒ /genre/[slug]
+├ ƒ /genre/[slug]/movie
+├ ƒ /genre/[slug]/tv
+├ ƒ /keyword/[slug]
+├ ƒ /keyword/[slug]/movie
+├ ƒ /keyword/[slug]/tv
+├ ○ /movie
+├ ƒ /movie/[slug]
+├ ƒ /movie/[slug]/cast
+├ ƒ /movie/[slug]/images
+├ ƒ /movie/[slug]/reviews
+├ ƒ /movie/[slug]/videos
+├ ○ /movie/now-playing
+├ ○ /movie/top-rated
+├ ○ /movie/upcoming
+├ ƒ /person/[slug]
+├ ƒ /person/[slug]/images
+├ ○ /robots.txt
+├ ƒ /search
+├ ○ /trending
+├ ○ /tv
+├ ƒ /tv/[slug]
+├ ƒ /tv/[slug]/cast
+├ ƒ /tv/[slug]/images
+├ ƒ /tv/[slug]/reviews
+├ ƒ /tv/[slug]/videos
+├ ○ /tv/airing-today
+├ ○ /tv/on-tv
+└ ○ /tv/top-rated
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+
+EXIT: 0
+END UTC: 2026-11-17T13:57:10.933Z

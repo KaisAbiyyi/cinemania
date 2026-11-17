@@ -1,0 +1,29 @@
+SHA: 281a3984dc5bf64b320b5f69bb381c51bdbf75eb
+CWD: D:/projects/cinemania
+UTC: 2026-11-17T13:49:18.809Z
+WORKTREE: clean
+COMMAND: C:\Program Files\nodejs\node.exe C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js ci
+ENV: ALLOW_DESTRUCTIVE_PG_TESTS=false; offline/local scope
+npm warn deprecated tsconfck@3.1.6: unmaintained
+
+added 513 packages, and audited 514 packages in 2m
+
+154 packages are looking for funding
+  run `npm fund` for details
+
+15 vulnerabilities (2 low, 8 moderate, 5 high)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:
+npm warn install-scripts   esbuild@0.28.2 (postinstall: node install.js)
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.
+
+EXIT: 0
+END UTC: 2026-11-17T13:51:00.233Z

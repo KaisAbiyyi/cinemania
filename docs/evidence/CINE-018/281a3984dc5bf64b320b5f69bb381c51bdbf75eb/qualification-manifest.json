@@ -1,0 +1,73 @@
+{
+  "task": "CINE-018",
+  "issue": "https://github.com/KaisAbiyyi/cinemania/issues/20",
+  "pr": "https://github.com/KaisAbiyyi/cinemania/pull/51",
+  "sourceHead": "281a3984dc5bf64b320b5f69bb381c51bdbf75eb",
+  "sourceTree": "9bccda6d749d79bb99ba27030c519d42b49a503a",
+  "mainBase": "80c1464aca698712c7f283ff2e97d70fca25acbf",
+  "branch": "feature/cine-018-realtime-publication",
+  "actor": "single Codex, owner-requested GPT-6.1 Sol High profile; runtime build not exposed",
+  "session": "cine018-staging-20261117 epoch4",
+  "tools": {
+    "node": "24.21.0",
+    "npm": "11.19.0",
+    "docker": "28.3.2",
+    "localPostgres": "17.6",
+    "hostedPostgres": "17.11.0.018",
+    "pg_dump": "18.0",
+    "pg_restore": "18.0",
+    "Next": "16.4.5",
+    "vitest": "5.1.0"
+  },
+  "ci": {
+    "run": 44096854947,
+    "checkout": "9899fc488983b57cf2d6b562004b7484f92e65ca",
+    "checkoutTree": "9bccda6d749d79bb99ba27030c519d42b49a503a",
+    "featureTreeEquivalent": true,
+    "jobs": "5/5 success"
+  },
+  "counts": {
+    "changedFilesFromMain": 45,
+    "changedFilesFromInheritedHead": 13,
+    "unitIntegrationPassed": 403,
+    "legacyOptionalTestsNotRun": 7,
+    "e2eChromiumPassed": 27,
+    "safetyGuardsPassed": 15,
+    "buildBundleTestsPassed": 2,
+    "actualSecretScanClientJsFiles": 44,
+    "actualSecretScanTrackedFiles": 425
+  },
+  "hostedFinal": {
+    "suite": "FAIL exit1: initial PG connection timeout before fixture creation",
+    "overallAcceptance": "BLOCKED",
+    "schemaConsistency": "PASS after unchanged-source timeout retry",
+    "privateWsJwtRls": "PASS",
+    "outboxFaults": "PASS real hosted PG; simulated publisher faults",
+    "twoNextTwoBrowserGroupsCrashAndLatency": "NOT RUN on final HEAD after setup connection failed",
+    "latencyPercentiles": "NOT RUN; local numbers and partial candidates are not hosted PASS"
+  },
+  "finalInventory": {
+    "rooms": 0,
+    "users": 0,
+    "votes": 0,
+    "events": 0,
+    "buckets": 0,
+    "objects": 0,
+    "participants": 0,
+    "realtime_messages": 0,
+    "owned_qual_schemas": 0,
+    "competing_test_policies": 0
+  },
+  "gates": {
+    "independentFinalReview": "NOT RUN / requested handoff only",
+    "ownerAcceptance": "NOT RUN",
+    "merge": "NOT RUN / prohibited",
+    "productionDeployment": "NOT RUN / prohibited",
+    "fullManagedPlatformRestore": "NOT VERIFIED"
+  },
+  "securityCaveats": [
+    "Initial private UI trace redaction missed split credential suffix; no public artifact may contain secrets; existing keys not rotated.",
+    "Candidate hosted join HTTP500 cause NOT VERIFIED; no fix claimed.",
+    "First catalog comparison full stdout overwritten before logger became non-overwriting; observed excerpt/diagnosis preserved separately."
+  ]
+}

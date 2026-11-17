@@ -1,0 +1,23 @@
+SHA: 979f5d35f603a88232647c6ac1bc9ed60ab04ce8
+CWD: D:/projects/cinemania
+UTC: 2026-11-17T13:14:17.488Z
+COMMAND: C:\Program Files\nodejs\node.exe tests/local-supabase/realtime-rls-qualification.cjs --hosted-staging
+ENV: ALLOW_DESTRUCTIVE_PG_TESTS=false (offline/local scope)
+Local WS/RLS qualification failed: AssertionError [ERR_ASSERTION]: Authorized member must subscribe to private room:<uuid>
++ actual - expected
+
++ 'CHANNEL_ERROR'
+- 'SUBSCRIBED'
+
+    at main (D:\projects\cinemania\tests\local-supabase\realtime-rls-qualification.cjs:120:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: 'CHANNEL_ERROR',
+  expected: 'SUBSCRIBED',
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+EXIT: 1
+END UTC: 2026-11-17T13:14:24.542Z

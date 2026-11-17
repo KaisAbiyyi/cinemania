@@ -1,0 +1,2494 @@
+{
+  "head": "281a3984dc5bf64b320b5f69bb381c51bdbf75eb",
+  "project": "dmrbticnsczhyaiftrar",
+  "catalogSha256": "3261dfe93ef6659b20c3ddd1833fc545f0cc4b15f865bcd9ec46773ce614c947",
+  "history": [
+    {
+      "version": "20261112011644",
+      "name": "001_create_room_schema"
+    },
+    {
+      "version": "20261117131107",
+      "name": "cine018_restore_missing_canonical_001"
+    },
+    {
+      "version": "20261117131126",
+      "name": "002_guest_capability_sessions"
+    },
+    {
+      "version": "20261117131152",
+      "name": "003_round_roster_freeze"
+    },
+    {
+      "version": "20261117131215",
+      "name": "004_vote_operation_idempotency"
+    },
+    {
+      "version": "20261117131224",
+      "name": "005_realtime_authorization"
+    },
+    {
+      "version": "20261117131530",
+      "name": "cine018_explicit_function_execute_acl_hardening"
+    },
+    {
+      "version": "20261117132039",
+      "name": "cine018_sequence_grant_alignment"
+    }
+  ],
+  "canonicalMigrations": [
+    {
+      "file": "src/db/migrations/001_create_room_schema.sql",
+      "sha256": "eec90543e14a10bbc2459a795ec94446f56497fa85f9e2df4e34cfc041bbfb42"
+    },
+    {
+      "file": "src/db/migrations/002_guest_capability_sessions.sql",
+      "sha256": "0a3a9d2a43ba38367537cc5bea56be824fe92d8388ccf7b883d5a2eb24d9a423"
+    },
+    {
+      "file": "src/db/migrations/003_round_roster_freeze.sql",
+      "sha256": "1e1b657986e4d5be8d14dd1b39ed24e3ec6c37e931814f8ddc20728a46c57656"
+    },
+    {
+      "file": "src/db/migrations/004_vote_operation_idempotency.sql",
+      "sha256": "92098b91830997a6c785ef523e1eb3fd2743871d53604d65c01f7b53aafe3c82"
+    },
+    {
+      "file": "src/db/migrations/005_realtime_authorization.sql",
+      "sha256": "ce317636da035174038f312f47fb29831695fde7a49725314af7be0604dc9f23"
+    }
+  ],
+  "catalog": {
+    "columns": [
+      {
+        "table_name": "candidates",
+        "column_name": "id",
+        "ordinal_position": 1,
+        "column_default": "gen_random_uuid()",
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "candidates",
+        "column_name": "room_id",
+        "ordinal_position": 2,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "candidates",
+        "column_name": "round_id",
+        "ordinal_position": 3,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "candidates",
+        "column_name": "movie_id",
+        "ordinal_position": 4,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "candidates",
+        "column_name": "position",
+        "ordinal_position": 5,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "candidates",
+        "column_name": "title",
+        "ordinal_position": 6,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "character varying",
+        "udt_name": "varchar",
+        "character_maximum_length": 255,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "candidates",
+        "column_name": "poster_path",
+        "ordinal_position": 7,
+        "column_default": null,
+        "is_nullable": "YES",
+        "data_type": "character varying",
+        "udt_name": "varchar",
+        "character_maximum_length": 255,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "candidates",
+        "column_name": "overview",
+        "ordinal_position": 8,
+        "column_default": null,
+        "is_nullable": "YES",
+        "data_type": "text",
+        "udt_name": "text",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "candidates",
+        "column_name": "release_date",
+        "ordinal_position": 9,
+        "column_default": null,
+        "is_nullable": "YES",
+        "data_type": "character varying",
+        "udt_name": "varchar",
+        "character_maximum_length": 20,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "candidates",
+        "column_name": "vote_average",
+        "ordinal_position": 10,
+        "column_default": null,
+        "is_nullable": "YES",
+        "data_type": "numeric",
+        "udt_name": "numeric",
+        "character_maximum_length": null,
+        "numeric_precision": 3,
+        "numeric_scale": 1
+      },
+      {
+        "table_name": "guest_capability_sessions",
+        "column_name": "room_id",
+        "ordinal_position": 1,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "guest_capability_sessions",
+        "column_name": "participant_id",
+        "ordinal_position": 2,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "guest_capability_sessions",
+        "column_name": "min_generation",
+        "ordinal_position": 3,
+        "column_default": "1",
+        "is_nullable": "NO",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "guest_capability_sessions",
+        "column_name": "rotated_at",
+        "ordinal_position": 4,
+        "column_default": "now()",
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "guest_capability_sessions",
+        "column_name": "expires_at",
+        "ordinal_position": 5,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_events",
+        "column_name": "id",
+        "ordinal_position": 1,
+        "column_default": "nextval('public.room_events_id_seq'::regclass)",
+        "is_nullable": "NO",
+        "data_type": "bigint",
+        "udt_name": "int8",
+        "character_maximum_length": null,
+        "numeric_precision": 64,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "room_events",
+        "column_name": "room_id",
+        "ordinal_position": 2,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_events",
+        "column_name": "version",
+        "ordinal_position": 3,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "room_events",
+        "column_name": "event_type",
+        "ordinal_position": 4,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "character varying",
+        "udt_name": "varchar",
+        "character_maximum_length": 50,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_events",
+        "column_name": "payload",
+        "ordinal_position": 5,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "jsonb",
+        "udt_name": "jsonb",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_events",
+        "column_name": "dispatched",
+        "ordinal_position": 6,
+        "column_default": "false",
+        "is_nullable": "NO",
+        "data_type": "boolean",
+        "udt_name": "bool",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_events",
+        "column_name": "dispatched_at",
+        "ordinal_position": 7,
+        "column_default": null,
+        "is_nullable": "YES",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_events",
+        "column_name": "retry_count",
+        "ordinal_position": 8,
+        "column_default": "0",
+        "is_nullable": "NO",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "room_events",
+        "column_name": "poison",
+        "ordinal_position": 9,
+        "column_default": "false",
+        "is_nullable": "NO",
+        "data_type": "boolean",
+        "udt_name": "bool",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_events",
+        "column_name": "created_at",
+        "ordinal_position": 10,
+        "column_default": "now()",
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_events",
+        "column_name": "permanent_retry_count",
+        "ordinal_position": 11,
+        "column_default": "0",
+        "is_nullable": "NO",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "room_participants",
+        "column_name": "room_id",
+        "ordinal_position": 1,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_participants",
+        "column_name": "participant_id",
+        "ordinal_position": 2,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_participants",
+        "column_name": "display_name",
+        "ordinal_position": 3,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "character varying",
+        "udt_name": "varchar",
+        "character_maximum_length": 50,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_participants",
+        "column_name": "role",
+        "ordinal_position": 4,
+        "column_default": "'MEMBER'::public.participant_role",
+        "is_nullable": "NO",
+        "data_type": "USER-DEFINED",
+        "udt_name": "participant_role",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_participants",
+        "column_name": "is_connected",
+        "ordinal_position": 5,
+        "column_default": "true",
+        "is_nullable": "NO",
+        "data_type": "boolean",
+        "udt_name": "bool",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_participants",
+        "column_name": "joined_at",
+        "ordinal_position": 6,
+        "column_default": "now()",
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "room_participants",
+        "column_name": "last_seen_at",
+        "ordinal_position": 7,
+        "column_default": "now()",
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "id",
+        "ordinal_position": 1,
+        "column_default": "gen_random_uuid()",
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "code",
+        "ordinal_position": 2,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "character varying",
+        "udt_name": "varchar",
+        "character_maximum_length": 6,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "status",
+        "ordinal_position": 3,
+        "column_default": "'LOBBY'::public.room_status",
+        "is_nullable": "NO",
+        "data_type": "USER-DEFINED",
+        "udt_name": "room_status",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "host_participant_id",
+        "ordinal_position": 4,
+        "column_default": null,
+        "is_nullable": "YES",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "current_round_id",
+        "ordinal_position": 5,
+        "column_default": null,
+        "is_nullable": "YES",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "state_version",
+        "ordinal_position": 6,
+        "column_default": "1",
+        "is_nullable": "NO",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "participant_count",
+        "ordinal_position": 7,
+        "column_default": "1",
+        "is_nullable": "NO",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "matched_movie_id",
+        "ordinal_position": 8,
+        "column_default": null,
+        "is_nullable": "YES",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "deck_filter",
+        "ordinal_position": 9,
+        "column_default": null,
+        "is_nullable": "YES",
+        "data_type": "jsonb",
+        "udt_name": "jsonb",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "inactivity_ttl_seconds",
+        "ordinal_position": 10,
+        "column_default": "86400",
+        "is_nullable": "NO",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "last_activity_at",
+        "ordinal_position": 11,
+        "column_default": "now()",
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "expires_at",
+        "ordinal_position": 12,
+        "column_default": "(now() + '24:00:00'::interval)",
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "created_at",
+        "ordinal_position": 13,
+        "column_default": "now()",
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rooms",
+        "column_name": "updated_at",
+        "ordinal_position": 14,
+        "column_default": "now()",
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "round_participants",
+        "column_name": "room_id",
+        "ordinal_position": 1,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "round_participants",
+        "column_name": "round_id",
+        "ordinal_position": 2,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "round_participants",
+        "column_name": "participant_id",
+        "ordinal_position": 3,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "round_participants",
+        "column_name": "frozen_role",
+        "ordinal_position": 4,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "USER-DEFINED",
+        "udt_name": "participant_role",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "round_participants",
+        "column_name": "joined_at",
+        "ordinal_position": 5,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "round_participants",
+        "column_name": "frozen_at",
+        "ordinal_position": 6,
+        "column_default": "now()",
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rounds",
+        "column_name": "id",
+        "ordinal_position": 1,
+        "column_default": "gen_random_uuid()",
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rounds",
+        "column_name": "room_id",
+        "ordinal_position": 2,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rounds",
+        "column_name": "round_number",
+        "ordinal_position": 3,
+        "column_default": "1",
+        "is_nullable": "NO",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "rounds",
+        "column_name": "status",
+        "ordinal_position": 4,
+        "column_default": "'ACTIVE'::public.round_status",
+        "is_nullable": "NO",
+        "data_type": "USER-DEFINED",
+        "udt_name": "round_status",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rounds",
+        "column_name": "started_at",
+        "ordinal_position": 5,
+        "column_default": "now()",
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "rounds",
+        "column_name": "completed_at",
+        "ordinal_position": 6,
+        "column_default": null,
+        "is_nullable": "YES",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "votes",
+        "column_name": "id",
+        "ordinal_position": 1,
+        "column_default": "gen_random_uuid()",
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "votes",
+        "column_name": "room_id",
+        "ordinal_position": 2,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "votes",
+        "column_name": "round_id",
+        "ordinal_position": 3,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "votes",
+        "column_name": "participant_id",
+        "ordinal_position": 4,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "votes",
+        "column_name": "candidate_id",
+        "ordinal_position": 5,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "uuid",
+        "udt_name": "uuid",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "votes",
+        "column_name": "movie_id",
+        "ordinal_position": 6,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "integer",
+        "udt_name": "int4",
+        "character_maximum_length": null,
+        "numeric_precision": 32,
+        "numeric_scale": 0
+      },
+      {
+        "table_name": "votes",
+        "column_name": "vote",
+        "ordinal_position": 7,
+        "column_default": null,
+        "is_nullable": "NO",
+        "data_type": "USER-DEFINED",
+        "udt_name": "vote_type",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "votes",
+        "column_name": "created_at",
+        "ordinal_position": 8,
+        "column_default": "now()",
+        "is_nullable": "NO",
+        "data_type": "timestamp with time zone",
+        "udt_name": "timestamptz",
+        "character_maximum_length": null,
+        "numeric_precision": null,
+        "numeric_scale": null
+      },
+      {
+        "table_name": "votes",
+        "column_name": "operation_id",
+        "ordinal_position": 9,
+        "column_default": null,
+        "is_nullable": "YES",
+        "data_type": "character varying",
+        "udt_name": "varchar",
+        "character_maximum_length": 128,
+        "numeric_precision": null,
+        "numeric_scale": null
+      }
+    ],
+    "constraints": [
+      {
+        "relname": "candidates",
+        "conname": "candidates_pkey",
+        "def": "PRIMARY KEY (id)"
+      },
+      {
+        "relname": "candidates",
+        "conname": "candidates_room_id_fkey",
+        "def": "FOREIGN KEY (room_id) REFERENCES public.rooms(id) ON DELETE CASCADE"
+      },
+      {
+        "relname": "candidates",
+        "conname": "chk_candidate_position",
+        "def": "CHECK (((\"position\" >= 0) AND (\"position\" < 20)))"
+      },
+      {
+        "relname": "candidates",
+        "conname": "fk_candidates_round_room",
+        "def": "FOREIGN KEY (room_id, round_id) REFERENCES public.rounds(room_id, id) ON DELETE CASCADE"
+      },
+      {
+        "relname": "candidates",
+        "conname": "uq_candidates_composite",
+        "def": "UNIQUE (room_id, round_id, id, movie_id)"
+      },
+      {
+        "relname": "candidates",
+        "conname": "uq_round_movie",
+        "def": "UNIQUE (round_id, movie_id)"
+      },
+      {
+        "relname": "candidates",
+        "conname": "uq_round_position",
+        "def": "UNIQUE (round_id, \"position\")"
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "conname": "guest_capability_sessions_min_generation_check",
+        "def": "CHECK ((min_generation >= 1))"
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "conname": "guest_capability_sessions_pkey",
+        "def": "PRIMARY KEY (room_id, participant_id)"
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "conname": "guest_capability_sessions_room_id_participant_id_fkey",
+        "def": "FOREIGN KEY (room_id, participant_id) REFERENCES public.room_participants(room_id, participant_id) ON DELETE CASCADE"
+      },
+      {
+        "relname": "room_events",
+        "conname": "room_events_pkey",
+        "def": "PRIMARY KEY (id)"
+      },
+      {
+        "relname": "room_events",
+        "conname": "room_events_room_id_fkey",
+        "def": "FOREIGN KEY (room_id) REFERENCES public.rooms(id) ON DELETE CASCADE"
+      },
+      {
+        "relname": "room_events",
+        "conname": "uq_room_event_version",
+        "def": "UNIQUE (room_id, version)"
+      },
+      {
+        "relname": "room_participants",
+        "conname": "chk_display_name_not_empty",
+        "def": "CHECK ((char_length(TRIM(BOTH FROM display_name)) > 0))"
+      },
+      {
+        "relname": "room_participants",
+        "conname": "room_participants_pkey",
+        "def": "PRIMARY KEY (room_id, participant_id)"
+      },
+      {
+        "relname": "room_participants",
+        "conname": "room_participants_room_id_fkey",
+        "def": "FOREIGN KEY (room_id) REFERENCES public.rooms(id) ON DELETE CASCADE"
+      },
+      {
+        "relname": "rooms",
+        "conname": "chk_participant_count",
+        "def": "CHECK (((participant_count >= 1) AND (participant_count <= 5)))"
+      },
+      {
+        "relname": "rooms",
+        "conname": "chk_room_code_len",
+        "def": "CHECK ((char_length((code)::text) = 6))"
+      },
+      {
+        "relname": "rooms",
+        "conname": "chk_ttl_positive",
+        "def": "CHECK ((inactivity_ttl_seconds > 0))"
+      },
+      {
+        "relname": "rooms",
+        "conname": "fk_rooms_current_round",
+        "def": "FOREIGN KEY (id, current_round_id) REFERENCES public.rounds(room_id, id) ON DELETE SET NULL (current_round_id)"
+      },
+      {
+        "relname": "rooms",
+        "conname": "fk_rooms_host_participant",
+        "def": "FOREIGN KEY (id, host_participant_id) REFERENCES public.room_participants(room_id, participant_id) ON DELETE SET NULL (host_participant_id)"
+      },
+      {
+        "relname": "rooms",
+        "conname": "rooms_pkey",
+        "def": "PRIMARY KEY (id)"
+      },
+      {
+        "relname": "rooms",
+        "conname": "uq_rooms_id_code",
+        "def": "UNIQUE (id, code)"
+      },
+      {
+        "relname": "round_participants",
+        "conname": "fk_round_participants_participant",
+        "def": "FOREIGN KEY (room_id, participant_id) REFERENCES public.room_participants(room_id, participant_id) ON DELETE CASCADE"
+      },
+      {
+        "relname": "round_participants",
+        "conname": "fk_round_participants_round",
+        "def": "FOREIGN KEY (room_id, round_id) REFERENCES public.rounds(room_id, id) ON DELETE CASCADE"
+      },
+      {
+        "relname": "round_participants",
+        "conname": "round_participants_pkey",
+        "def": "PRIMARY KEY (round_id, participant_id)"
+      },
+      {
+        "relname": "rounds",
+        "conname": "chk_round_number_positive",
+        "def": "CHECK ((round_number >= 1))"
+      },
+      {
+        "relname": "rounds",
+        "conname": "rounds_pkey",
+        "def": "PRIMARY KEY (id)"
+      },
+      {
+        "relname": "rounds",
+        "conname": "rounds_room_id_fkey",
+        "def": "FOREIGN KEY (room_id) REFERENCES public.rooms(id) ON DELETE CASCADE"
+      },
+      {
+        "relname": "rounds",
+        "conname": "uq_room_round_number",
+        "def": "UNIQUE (room_id, round_number)"
+      },
+      {
+        "relname": "rounds",
+        "conname": "uq_rounds_composite",
+        "def": "UNIQUE (room_id, id)"
+      },
+      {
+        "relname": "votes",
+        "conname": "chk_votes_operation_id_nonempty",
+        "def": "CHECK (((operation_id IS NULL) OR (length(TRIM(BOTH FROM operation_id)) > 0)))"
+      },
+      {
+        "relname": "votes",
+        "conname": "fk_votes_candidate",
+        "def": "FOREIGN KEY (room_id, round_id, candidate_id, movie_id) REFERENCES public.candidates(room_id, round_id, id, movie_id) ON DELETE CASCADE"
+      },
+      {
+        "relname": "votes",
+        "conname": "fk_votes_participant",
+        "def": "FOREIGN KEY (room_id, participant_id) REFERENCES public.room_participants(room_id, participant_id) ON DELETE CASCADE"
+      },
+      {
+        "relname": "votes",
+        "conname": "uq_vote_candidate",
+        "def": "UNIQUE (round_id, participant_id, candidate_id)"
+      },
+      {
+        "relname": "votes",
+        "conname": "uq_vote_movie",
+        "def": "UNIQUE (round_id, participant_id, movie_id)"
+      },
+      {
+        "relname": "votes",
+        "conname": "votes_pkey",
+        "def": "PRIMARY KEY (id)"
+      }
+    ],
+    "indexes": [
+      {
+        "tablename": "candidates",
+        "indexname": "candidates_pkey",
+        "indexdef": "CREATE UNIQUE INDEX candidates_pkey ON public.candidates USING btree (id)"
+      },
+      {
+        "tablename": "candidates",
+        "indexname": "idx_candidates_round",
+        "indexdef": "CREATE INDEX idx_candidates_round ON public.candidates USING btree (round_id, \"position\")"
+      },
+      {
+        "tablename": "candidates",
+        "indexname": "uq_candidates_composite",
+        "indexdef": "CREATE UNIQUE INDEX uq_candidates_composite ON public.candidates USING btree (room_id, round_id, id, movie_id)"
+      },
+      {
+        "tablename": "candidates",
+        "indexname": "uq_round_movie",
+        "indexdef": "CREATE UNIQUE INDEX uq_round_movie ON public.candidates USING btree (round_id, movie_id)"
+      },
+      {
+        "tablename": "candidates",
+        "indexname": "uq_round_position",
+        "indexdef": "CREATE UNIQUE INDEX uq_round_position ON public.candidates USING btree (round_id, \"position\")"
+      },
+      {
+        "tablename": "guest_capability_sessions",
+        "indexname": "guest_capability_sessions_pkey",
+        "indexdef": "CREATE UNIQUE INDEX guest_capability_sessions_pkey ON public.guest_capability_sessions USING btree (room_id, participant_id)"
+      },
+      {
+        "tablename": "guest_capability_sessions",
+        "indexname": "idx_guest_capability_expires_at",
+        "indexdef": "CREATE INDEX idx_guest_capability_expires_at ON public.guest_capability_sessions USING btree (expires_at)"
+      },
+      {
+        "tablename": "room_events",
+        "indexname": "idx_room_events_lookup",
+        "indexdef": "CREATE INDEX idx_room_events_lookup ON public.room_events USING btree (room_id, version)"
+      },
+      {
+        "tablename": "room_events",
+        "indexname": "idx_room_events_pending",
+        "indexdef": "CREATE INDEX idx_room_events_pending ON public.room_events USING btree (room_id, version) WHERE ((NOT dispatched) AND (NOT poison))"
+      },
+      {
+        "tablename": "room_events",
+        "indexname": "room_events_pkey",
+        "indexdef": "CREATE UNIQUE INDEX room_events_pkey ON public.room_events USING btree (id)"
+      },
+      {
+        "tablename": "room_events",
+        "indexname": "uq_room_event_version",
+        "indexdef": "CREATE UNIQUE INDEX uq_room_event_version ON public.room_events USING btree (room_id, version)"
+      },
+      {
+        "tablename": "room_participants",
+        "indexname": "idx_participants_room",
+        "indexdef": "CREATE INDEX idx_participants_room ON public.room_participants USING btree (room_id)"
+      },
+      {
+        "tablename": "room_participants",
+        "indexname": "room_participants_pkey",
+        "indexdef": "CREATE UNIQUE INDEX room_participants_pkey ON public.room_participants USING btree (room_id, participant_id)"
+      },
+      {
+        "tablename": "rooms",
+        "indexname": "idx_rooms_code",
+        "indexdef": "CREATE UNIQUE INDEX idx_rooms_code ON public.rooms USING btree (code)"
+      },
+      {
+        "tablename": "rooms",
+        "indexname": "idx_rooms_expires_at",
+        "indexdef": "CREATE INDEX idx_rooms_expires_at ON public.rooms USING btree (expires_at)"
+      },
+      {
+        "tablename": "rooms",
+        "indexname": "idx_rooms_last_activity",
+        "indexdef": "CREATE INDEX idx_rooms_last_activity ON public.rooms USING btree (last_activity_at)"
+      },
+      {
+        "tablename": "rooms",
+        "indexname": "idx_rooms_status",
+        "indexdef": "CREATE INDEX idx_rooms_status ON public.rooms USING btree (status)"
+      },
+      {
+        "tablename": "rooms",
+        "indexname": "rooms_pkey",
+        "indexdef": "CREATE UNIQUE INDEX rooms_pkey ON public.rooms USING btree (id)"
+      },
+      {
+        "tablename": "rooms",
+        "indexname": "uq_rooms_id_code",
+        "indexdef": "CREATE UNIQUE INDEX uq_rooms_id_code ON public.rooms USING btree (id, code)"
+      },
+      {
+        "tablename": "round_participants",
+        "indexname": "idx_round_participants_room_round",
+        "indexdef": "CREATE INDEX idx_round_participants_room_round ON public.round_participants USING btree (room_id, round_id)"
+      },
+      {
+        "tablename": "round_participants",
+        "indexname": "round_participants_pkey",
+        "indexdef": "CREATE UNIQUE INDEX round_participants_pkey ON public.round_participants USING btree (round_id, participant_id)"
+      },
+      {
+        "tablename": "rounds",
+        "indexname": "idx_rounds_room",
+        "indexdef": "CREATE INDEX idx_rounds_room ON public.rounds USING btree (room_id)"
+      },
+      {
+        "tablename": "rounds",
+        "indexname": "rounds_pkey",
+        "indexdef": "CREATE UNIQUE INDEX rounds_pkey ON public.rounds USING btree (id)"
+      },
+      {
+        "tablename": "rounds",
+        "indexname": "uq_room_round_number",
+        "indexdef": "CREATE UNIQUE INDEX uq_room_round_number ON public.rounds USING btree (room_id, round_number)"
+      },
+      {
+        "tablename": "rounds",
+        "indexname": "uq_rounds_composite",
+        "indexdef": "CREATE UNIQUE INDEX uq_rounds_composite ON public.rounds USING btree (room_id, id)"
+      },
+      {
+        "tablename": "votes",
+        "indexname": "idx_votes_participant",
+        "indexdef": "CREATE INDEX idx_votes_participant ON public.votes USING btree (round_id, participant_id)"
+      },
+      {
+        "tablename": "votes",
+        "indexname": "idx_votes_round_movie",
+        "indexdef": "CREATE INDEX idx_votes_round_movie ON public.votes USING btree (round_id, movie_id, vote)"
+      },
+      {
+        "tablename": "votes",
+        "indexname": "idx_votes_round_participant_operation",
+        "indexdef": "CREATE UNIQUE INDEX idx_votes_round_participant_operation ON public.votes USING btree (round_id, participant_id, operation_id) WHERE (operation_id IS NOT NULL)"
+      },
+      {
+        "tablename": "votes",
+        "indexname": "uq_vote_candidate",
+        "indexdef": "CREATE UNIQUE INDEX uq_vote_candidate ON public.votes USING btree (round_id, participant_id, candidate_id)"
+      },
+      {
+        "tablename": "votes",
+        "indexname": "uq_vote_movie",
+        "indexdef": "CREATE UNIQUE INDEX uq_vote_movie ON public.votes USING btree (round_id, participant_id, movie_id)"
+      },
+      {
+        "tablename": "votes",
+        "indexname": "votes_pkey",
+        "indexdef": "CREATE UNIQUE INDEX votes_pkey ON public.votes USING btree (id)"
+      }
+    ],
+    "functions": [
+      {
+        "proname": "enforce_room_retention",
+        "prosecdef": false,
+        "proconfig": [
+          "search_path=pg_catalog"
+        ],
+        "def": "CREATE OR REPLACE FUNCTION public.enforce_room_retention()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'pg_catalog'\nAS $function$\nBEGIN\n  IF OLD.status <> 'EXPIRED' OR OLD.expires_at IS NULL OR OLD.expires_at > CURRENT_TIMESTAMP THEN\n    RAISE EXCEPTION 'ROOM_RETENTION: room must be expired before deletion' USING ERRCODE = '23514';\n  END IF;\n  RETURN OLD;\nEND;\n$function$\n",
+        "anon_execute": false,
+        "authenticated_execute": false
+      },
+      {
+        "proname": "get_room_by_code",
+        "prosecdef": true,
+        "proconfig": [
+          "search_path=public, pg_temp"
+        ],
+        "def": "CREATE OR REPLACE FUNCTION public.get_room_by_code(lookup_code character varying)\n RETURNS TABLE(id uuid, code character varying, status public.room_status, participant_count integer)\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'public', 'pg_temp'\nAS $function$\nBEGIN\n  RETURN QUERY\n  SELECT r.id, r.code, r.status, r.participant_count\n  FROM public.rooms r\n  WHERE r.code = lookup_code\n    AND r.status = 'LOBBY';\nEND;\n$function$\n",
+        "anon_execute": false,
+        "authenticated_execute": false
+      },
+      {
+        "proname": "is_current_user_room_participant",
+        "prosecdef": true,
+        "proconfig": [
+          "search_path=public, pg_temp"
+        ],
+        "def": "CREATE OR REPLACE FUNCTION public.is_current_user_room_participant(target_room_id uuid)\n RETURNS boolean\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'public', 'pg_temp'\nAS $function$\nBEGIN\n  RETURN EXISTS (\n    SELECT 1 FROM public.room_participants\n    WHERE room_id = target_room_id\n      AND participant_id = (auth.jwt() ->> 'sub')::uuid\n  );\nEND;\n$function$\n",
+        "anon_execute": false,
+        "authenticated_execute": true
+      },
+      {
+        "proname": "prevent_vote_delete_except_room_purge",
+        "prosecdef": true,
+        "proconfig": [
+          "search_path=pg_catalog",
+          "row_security=off"
+        ],
+        "def": "CREATE OR REPLACE FUNCTION public.prevent_vote_delete_except_room_purge()\n RETURNS trigger\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\n SET row_security TO 'off'\nAS $function$\nDECLARE parent_exists boolean;\nBEGIN\n  EXECUTE format('SELECT EXISTS (SELECT 1 FROM %I.rooms WHERE id = $1)', TG_TABLE_SCHEMA)\n    INTO parent_exists USING OLD.room_id;\n  IF parent_exists THEN\n    RAISE EXCEPTION 'VOTE_IMMUTABLE: votes are immutable once recorded' USING ERRCODE = '23514';\n  END IF;\n  RETURN OLD;\nEND;\n$function$\n",
+        "anon_execute": false,
+        "authenticated_execute": false
+      },
+      {
+        "proname": "prevent_vote_mutation",
+        "prosecdef": false,
+        "proconfig": [
+          "search_path=pg_catalog"
+        ],
+        "def": "CREATE OR REPLACE FUNCTION public.prevent_vote_mutation()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'pg_catalog'\nAS $function$\nBEGIN\n  RAISE EXCEPTION 'VOTE_IMMUTABLE: votes are immutable once recorded'\n    USING ERRCODE = '23514';\nEND;\n$function$\n",
+        "anon_execute": false,
+        "authenticated_execute": false
+      }
+    ],
+    "policies": [
+      {
+        "schemaname": "public",
+        "tablename": "candidates",
+        "policyname": "candidates_read_policy",
+        "permissive": "PERMISSIVE",
+        "roles": [
+          "authenticated"
+        ],
+        "cmd": "SELECT",
+        "qual": "public.is_current_user_room_participant(room_id)",
+        "with_check": null
+      },
+      {
+        "schemaname": "public",
+        "tablename": "room_participants",
+        "policyname": "participants_self_read_policy",
+        "permissive": "PERMISSIVE",
+        "roles": [
+          "authenticated"
+        ],
+        "cmd": "SELECT",
+        "qual": "(participant_id = ((auth.jwt() ->> 'sub'::text))::uuid)",
+        "with_check": null
+      },
+      {
+        "schemaname": "public",
+        "tablename": "rooms",
+        "policyname": "rooms_participant_read_policy",
+        "permissive": "PERMISSIVE",
+        "roles": [
+          "authenticated"
+        ],
+        "cmd": "SELECT",
+        "qual": "public.is_current_user_room_participant(id)",
+        "with_check": null
+      },
+      {
+        "schemaname": "public",
+        "tablename": "round_participants",
+        "policyname": "round_participants_self_read_policy",
+        "permissive": "PERMISSIVE",
+        "roles": [
+          "authenticated"
+        ],
+        "cmd": "SELECT",
+        "qual": "(participant_id = ((auth.jwt() ->> 'sub'::text))::uuid)",
+        "with_check": null
+      },
+      {
+        "schemaname": "public",
+        "tablename": "rounds",
+        "policyname": "rounds_read_policy",
+        "permissive": "PERMISSIVE",
+        "roles": [
+          "authenticated"
+        ],
+        "cmd": "SELECT",
+        "qual": "public.is_current_user_room_participant(room_id)",
+        "with_check": null
+      },
+      {
+        "schemaname": "realtime",
+        "tablename": "messages",
+        "policyname": "cinematch_room_insert_fence",
+        "permissive": "RESTRICTIVE",
+        "roles": [
+          "anon",
+          "authenticated"
+        ],
+        "cmd": "INSERT",
+        "qual": null,
+        "with_check": "(realtime.topic() !~~ 'room:%'::text)"
+      },
+      {
+        "schemaname": "realtime",
+        "tablename": "messages",
+        "policyname": "cinematch_room_select_allow",
+        "permissive": "PERMISSIVE",
+        "roles": [
+          "authenticated"
+        ],
+        "cmd": "SELECT",
+        "qual": "((realtime.topic() = ('room:'::text || (auth.jwt() ->> 'room_id'::text))) AND public.is_current_user_room_participant(((auth.jwt() ->> 'room_id'::text))::uuid))",
+        "with_check": null
+      },
+      {
+        "schemaname": "realtime",
+        "tablename": "messages",
+        "policyname": "cinematch_room_select_fence",
+        "permissive": "RESTRICTIVE",
+        "roles": [
+          "anon",
+          "authenticated"
+        ],
+        "cmd": "SELECT",
+        "qual": "\nCASE\n    WHEN (realtime.topic() ~~ 'room:%'::text) THEN ((realtime.topic() = ('room:'::text || (auth.jwt() ->> 'room_id'::text))) AND public.is_current_user_room_participant(((auth.jwt() ->> 'room_id'::text))::uuid))\n    ELSE true\nEND",
+        "with_check": null
+      }
+    ],
+    "tables": [
+      {
+        "relname": "candidates",
+        "relrowsecurity": true,
+        "relforcerowsecurity": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "relrowsecurity": true,
+        "relforcerowsecurity": false
+      },
+      {
+        "relname": "room_events",
+        "relrowsecurity": true,
+        "relforcerowsecurity": false
+      },
+      {
+        "relname": "room_participants",
+        "relrowsecurity": true,
+        "relforcerowsecurity": false
+      },
+      {
+        "relname": "rooms",
+        "relrowsecurity": true,
+        "relforcerowsecurity": false
+      },
+      {
+        "relname": "round_participants",
+        "relrowsecurity": true,
+        "relforcerowsecurity": false
+      },
+      {
+        "relname": "rounds",
+        "relrowsecurity": true,
+        "relforcerowsecurity": false
+      },
+      {
+        "relname": "votes",
+        "relrowsecurity": true,
+        "relforcerowsecurity": false
+      }
+    ],
+    "triggers": [
+      {
+        "relname": "rooms",
+        "tgname": "trg_rooms_retention_delete",
+        "def": "CREATE TRIGGER trg_rooms_retention_delete BEFORE DELETE ON public.rooms FOR EACH ROW EXECUTE FUNCTION public.enforce_room_retention()"
+      },
+      {
+        "relname": "votes",
+        "tgname": "trg_votes_immutable_delete",
+        "def": "CREATE TRIGGER trg_votes_immutable_delete BEFORE DELETE ON public.votes FOR EACH ROW EXECUTE FUNCTION public.prevent_vote_delete_except_room_purge()"
+      },
+      {
+        "relname": "votes",
+        "tgname": "trg_votes_immutable_update",
+        "def": "CREATE TRIGGER trg_votes_immutable_update BEFORE UPDATE ON public.votes FOR EACH ROW EXECUTE FUNCTION public.prevent_vote_mutation()"
+      }
+    ],
+    "effective_grants": [
+      {
+        "relname": "candidates",
+        "rolname": "anon",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "anon",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "anon",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "anon",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "anon",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "anon",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "anon",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "authenticated",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "authenticated",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "authenticated",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "authenticated",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "candidates",
+        "rolname": "authenticated",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "authenticated",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "authenticated",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "candidates",
+        "rolname": "service_role",
+        "privilege": "DELETE",
+        "allowed": true
+      },
+      {
+        "relname": "candidates",
+        "rolname": "service_role",
+        "privilege": "INSERT",
+        "allowed": true
+      },
+      {
+        "relname": "candidates",
+        "rolname": "service_role",
+        "privilege": "REFERENCES",
+        "allowed": true
+      },
+      {
+        "relname": "candidates",
+        "rolname": "service_role",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "candidates",
+        "rolname": "service_role",
+        "privilege": "TRIGGER",
+        "allowed": true
+      },
+      {
+        "relname": "candidates",
+        "rolname": "service_role",
+        "privilege": "TRUNCATE",
+        "allowed": true
+      },
+      {
+        "relname": "candidates",
+        "rolname": "service_role",
+        "privilege": "UPDATE",
+        "allowed": true
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "anon",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "anon",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "anon",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "anon",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "anon",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "anon",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "anon",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "authenticated",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "authenticated",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "authenticated",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "authenticated",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "authenticated",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "authenticated",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "authenticated",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "service_role",
+        "privilege": "DELETE",
+        "allowed": true
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "service_role",
+        "privilege": "INSERT",
+        "allowed": true
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "service_role",
+        "privilege": "REFERENCES",
+        "allowed": true
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "service_role",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "service_role",
+        "privilege": "TRIGGER",
+        "allowed": true
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "service_role",
+        "privilege": "TRUNCATE",
+        "allowed": true
+      },
+      {
+        "relname": "guest_capability_sessions",
+        "rolname": "service_role",
+        "privilege": "UPDATE",
+        "allowed": true
+      },
+      {
+        "relname": "room_events",
+        "rolname": "anon",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "anon",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "anon",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "anon",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "anon",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "anon",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "anon",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "authenticated",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "authenticated",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "authenticated",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "authenticated",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "authenticated",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "authenticated",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "authenticated",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "room_events",
+        "rolname": "service_role",
+        "privilege": "DELETE",
+        "allowed": true
+      },
+      {
+        "relname": "room_events",
+        "rolname": "service_role",
+        "privilege": "INSERT",
+        "allowed": true
+      },
+      {
+        "relname": "room_events",
+        "rolname": "service_role",
+        "privilege": "REFERENCES",
+        "allowed": true
+      },
+      {
+        "relname": "room_events",
+        "rolname": "service_role",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "room_events",
+        "rolname": "service_role",
+        "privilege": "TRIGGER",
+        "allowed": true
+      },
+      {
+        "relname": "room_events",
+        "rolname": "service_role",
+        "privilege": "TRUNCATE",
+        "allowed": true
+      },
+      {
+        "relname": "room_events",
+        "rolname": "service_role",
+        "privilege": "UPDATE",
+        "allowed": true
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "anon",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "anon",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "anon",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "anon",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "anon",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "anon",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "anon",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "authenticated",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "authenticated",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "authenticated",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "authenticated",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "authenticated",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "authenticated",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "authenticated",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "service_role",
+        "privilege": "DELETE",
+        "allowed": true
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "service_role",
+        "privilege": "INSERT",
+        "allowed": true
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "service_role",
+        "privilege": "REFERENCES",
+        "allowed": true
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "service_role",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "service_role",
+        "privilege": "TRIGGER",
+        "allowed": true
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "service_role",
+        "privilege": "TRUNCATE",
+        "allowed": true
+      },
+      {
+        "relname": "room_participants",
+        "rolname": "service_role",
+        "privilege": "UPDATE",
+        "allowed": true
+      },
+      {
+        "relname": "rooms",
+        "rolname": "anon",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "anon",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "anon",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "anon",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "anon",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "anon",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "anon",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "authenticated",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "authenticated",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "authenticated",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "authenticated",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "rooms",
+        "rolname": "authenticated",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "authenticated",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "authenticated",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "rooms",
+        "rolname": "service_role",
+        "privilege": "DELETE",
+        "allowed": true
+      },
+      {
+        "relname": "rooms",
+        "rolname": "service_role",
+        "privilege": "INSERT",
+        "allowed": true
+      },
+      {
+        "relname": "rooms",
+        "rolname": "service_role",
+        "privilege": "REFERENCES",
+        "allowed": true
+      },
+      {
+        "relname": "rooms",
+        "rolname": "service_role",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "rooms",
+        "rolname": "service_role",
+        "privilege": "TRIGGER",
+        "allowed": true
+      },
+      {
+        "relname": "rooms",
+        "rolname": "service_role",
+        "privilege": "TRUNCATE",
+        "allowed": true
+      },
+      {
+        "relname": "rooms",
+        "rolname": "service_role",
+        "privilege": "UPDATE",
+        "allowed": true
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "anon",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "anon",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "anon",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "anon",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "anon",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "anon",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "anon",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "authenticated",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "authenticated",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "authenticated",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "authenticated",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "authenticated",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "authenticated",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "authenticated",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "service_role",
+        "privilege": "DELETE",
+        "allowed": true
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "service_role",
+        "privilege": "INSERT",
+        "allowed": true
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "service_role",
+        "privilege": "REFERENCES",
+        "allowed": true
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "service_role",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "service_role",
+        "privilege": "TRIGGER",
+        "allowed": true
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "service_role",
+        "privilege": "TRUNCATE",
+        "allowed": true
+      },
+      {
+        "relname": "round_participants",
+        "rolname": "service_role",
+        "privilege": "UPDATE",
+        "allowed": true
+      },
+      {
+        "relname": "rounds",
+        "rolname": "anon",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "anon",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "anon",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "anon",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "anon",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "anon",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "anon",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "authenticated",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "authenticated",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "authenticated",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "authenticated",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "rounds",
+        "rolname": "authenticated",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "authenticated",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "authenticated",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "rounds",
+        "rolname": "service_role",
+        "privilege": "DELETE",
+        "allowed": true
+      },
+      {
+        "relname": "rounds",
+        "rolname": "service_role",
+        "privilege": "INSERT",
+        "allowed": true
+      },
+      {
+        "relname": "rounds",
+        "rolname": "service_role",
+        "privilege": "REFERENCES",
+        "allowed": true
+      },
+      {
+        "relname": "rounds",
+        "rolname": "service_role",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "rounds",
+        "rolname": "service_role",
+        "privilege": "TRIGGER",
+        "allowed": true
+      },
+      {
+        "relname": "rounds",
+        "rolname": "service_role",
+        "privilege": "TRUNCATE",
+        "allowed": true
+      },
+      {
+        "relname": "rounds",
+        "rolname": "service_role",
+        "privilege": "UPDATE",
+        "allowed": true
+      },
+      {
+        "relname": "votes",
+        "rolname": "anon",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "anon",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "anon",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "anon",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "anon",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "anon",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "anon",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "authenticated",
+        "privilege": "DELETE",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "authenticated",
+        "privilege": "INSERT",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "authenticated",
+        "privilege": "REFERENCES",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "authenticated",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "authenticated",
+        "privilege": "TRIGGER",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "authenticated",
+        "privilege": "TRUNCATE",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "authenticated",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "relname": "votes",
+        "rolname": "service_role",
+        "privilege": "DELETE",
+        "allowed": true
+      },
+      {
+        "relname": "votes",
+        "rolname": "service_role",
+        "privilege": "INSERT",
+        "allowed": true
+      },
+      {
+        "relname": "votes",
+        "rolname": "service_role",
+        "privilege": "REFERENCES",
+        "allowed": true
+      },
+      {
+        "relname": "votes",
+        "rolname": "service_role",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "relname": "votes",
+        "rolname": "service_role",
+        "privilege": "TRIGGER",
+        "allowed": true
+      },
+      {
+        "relname": "votes",
+        "rolname": "service_role",
+        "privilege": "TRUNCATE",
+        "allowed": true
+      },
+      {
+        "relname": "votes",
+        "rolname": "service_role",
+        "privilege": "UPDATE",
+        "allowed": true
+      }
+    ],
+    "sequence_grants": [
+      {
+        "rolname": "anon",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "rolname": "anon",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "rolname": "anon",
+        "privilege": "USAGE",
+        "allowed": false
+      },
+      {
+        "rolname": "authenticated",
+        "privilege": "SELECT",
+        "allowed": false
+      },
+      {
+        "rolname": "authenticated",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "rolname": "authenticated",
+        "privilege": "USAGE",
+        "allowed": false
+      },
+      {
+        "rolname": "service_role",
+        "privilege": "SELECT",
+        "allowed": true
+      },
+      {
+        "rolname": "service_role",
+        "privilege": "UPDATE",
+        "allowed": false
+      },
+      {
+        "rolname": "service_role",
+        "privilege": "USAGE",
+        "allowed": true
+      }
+    ]
+  }
+}

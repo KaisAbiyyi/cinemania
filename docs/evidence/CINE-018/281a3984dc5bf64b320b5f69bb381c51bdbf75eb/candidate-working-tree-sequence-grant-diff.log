@@ -1,0 +1,28 @@
+SHA: 234ae88bea1a43e8c4aa18acb0cdc4deb85fce0b
+CWD: D:/projects/cinemania
+UTC: 2026-11-17T13:20:00.711Z
+WORKTREE: DIRTY / candidate source
+COMMAND: C:\Program Files\nodejs\node.exe tests/hosted-supabase/schema-consistency.cjs
+ENV: ALLOW_DESTRUCTIVE_PG_TESTS=false; CINE018_STAGING_PROJECT=dmrbticnsczhyaiftrar
+Schema consistency failed: Hosted canonical drift: sequence_grants
++ actual - expected
+... Skipped lines
+
+  [
+    {
+      allowed: false,
+      privilege: 'SELECT',
+      rolname: 'anon'
+...
+    {
++     allowed: true,
+-     allowed: false,
+      privilege: 'UPDATE',
+      rolname: 'service_role'
+    },
+    {
+      allowed: true,
+
+
+EXIT: 1
+END UTC: 2026-11-17T13:20:04.496Z
