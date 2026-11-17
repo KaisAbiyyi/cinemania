@@ -3,10 +3,21 @@ import { assertValidPgSchema } from "@/lib/server/room/postgresRoomRepository";
 import type { LockedOutbox, OutboxStore, PendingEvent } from "./dispatch";
 
 /** Separate transaction and advisory lock: no uncommitted domain event can be read. */
-export function postgresOutboxStore(pool: Pool, requestedSchema = "public"): OutboxStore {
+export function postgresOutboxStore(pool: Pool, requestedSchema = "public"): OutboxStore & {
+  scanPendingRooms(after: string | undefined, limit: number): Promise<string[]>;
+} {
   const schema = assertValidPgSchema(requestedSchema);
   const table = `"${schema}".room_events`;
   return {
+    async scanPendingRooms(after, limit) {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid outbox page size");
+      const result = await pool.query<{ room_id: string }>(
+        `SELECT DISTINCT room_id FROM ${table} WHERE NOT dispatched AND NOT poison
+         AND ($1::uuid IS NULL OR room_id > $1::uuid) ORDER BY room_id LIMIT $2`,
+        [after ?? null, limit],
+      );
+      return result.rows.map(row => row.room_id);
+    },
     async withRoomLock<T>(roomId: string, work: (outbox: LockedOutbox) => Promise<T>): Promise<T> {
       const client = await pool.connect();
       try {

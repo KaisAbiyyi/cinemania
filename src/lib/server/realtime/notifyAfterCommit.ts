@@ -3,7 +3,7 @@ export async function notifyAfterCommit(store: { dispatchRoomNotifications?: (ro
   try {
     await store.dispatchRoomNotifications(roomId);
   } catch {
-    // The committed outbox row remains pending; a later authenticated request retries it.
+    // The committed row remains pending for the independent worker (or another fast-path attempt).
     console.warn("Room notification dispatch failed; retry remains pending.");
   }
 }
