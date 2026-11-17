@@ -1,0 +1,25 @@
+{
+  "name": "cinematch-local-supabase-tools",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "supabase:version": "supabase --version",
+    "env": "node generate-env.cjs --app-env",
+    "start": "node ctl.cjs start",
+    "stop": "node ctl.cjs stop",
+    "reset": "node ctl.cjs reset",
+    "health": "node health.cjs",
+    "migrate": "node apply-migrations.cjs",
+    "seed": "node seed.cjs",
+    "test:guards": "node --test ../../tests/local-supabase/safety.test.cjs ../../tests/local-supabase/infra-guards.test.cjs ../../tests/local-supabase/migration-safety.test.cjs",
+    "test:rls-ws": "node ../../tests/local-supabase/realtime-rls-qualification.cjs",
+    "test:two-instances": "node ../../tests/local-supabase/two-instance-qualification.cjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.119.0",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "supabase": "3.2.0"
+  }
+}
