@@ -442,10 +442,10 @@ describe("CINE-020 Authoritative Finish States (Fake Clocks, Grace, Expiry & Cle
     const baseIso = "2026-11-18T12:00:00.000Z";
     const graceExpiredIso = "2026-11-18T12:01:31.000Z";
     const clock = new MutableClock(graceExpiredIso);
-    const roomId = crypto.randomUUID();
-    const hostId = crypto.randomUUID();
-    const guestId = crypto.randomUUID();
-    const roundId = crypto.randomUUID();
+    const roomId: string = crypto.randomUUID();
+    const hostId: string = crypto.randomUUID();
+    const guestId: string = crypto.randomUUID();
+    const roundId: string = crypto.randomUUID();
     const queries: Array<{ text: string; params: unknown[] | undefined }> = [];
 
     let roomRow = {
