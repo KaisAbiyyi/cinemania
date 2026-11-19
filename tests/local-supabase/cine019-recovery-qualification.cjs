@@ -222,7 +222,11 @@ async function main() {
     origin2 = `http://127.0.0.1:${PORT_2}`;
     startInstance(1); startInstance(2);
     await Promise.all([base.waitForServer(origin1, 120000), base.waitForServer(origin2, 120000)]);
-    await db.connect();
+    {
+      const t0 = Date.now();
+      try { await db.connect(); log("database connected in", Date.now() - t0, "ms"); }
+      catch (error) { log("database connect failed after", Date.now() - t0, "ms:", String(error && error.message).slice(0, 160)); throw error; }
+    }
     if (hosted) await assertEmptyHostedApplication(db);
     const unknown = await db.query("SELECT count(*)::int AS n FROM public.rooms WHERE id <> ALL($1::uuid[])", [SEED_ROOMS]);
     assert.equal(unknown.rows[0].n, 0, "Synthetic-only qualification refused: unknown existing rooms (another run may be using the stack)");
