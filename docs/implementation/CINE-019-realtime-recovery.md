@@ -8,8 +8,9 @@ Scope: client state and concurrency only (`src/lib/realtime/**`). The publisher,
 - A Realtime broadcast is only an invalidation hint. State comes from an authenticated HTTP snapshot, gated by a
   monotonic `stateVersion`: a duplicate, reordered or replayed hint, or a response that arrives late, can never
   deliver a version twice or move the view backwards (`roomReconciler.ts`).
-- A successful mutation response (`room` + `viewer`) is offered to the same gate, so the later hint for that
-  version is a no-op (`accept`).
+- A successful vote or start response (`room` + `viewer`, the full snapshot shape) is offered to the same gate, so
+  the later hint for that version is a no-op (`accept`). Filter responses have a reduced viewer and are not accepted;
+  a resync follows instead.
 - The server remains the only authority. Votes are serialized by the room row lock, immutable, and idempotent per
   `(round, participant, operationId)`, which is scoped to one room and one actor. The client never decides a match.
 

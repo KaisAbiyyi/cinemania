@@ -101,7 +101,7 @@ export function createRoomActions(options: RoomActionsOptions) {
           } else {
             const room = parsed.room as RoomSnapshot["room"] | undefined;
             if (mode.acceptSnapshot && room && typeof room === "object" && parsed.viewer) options.accept({ room, viewer: parsed.viewer });
-            else if (mode.resyncOnSuccess) await options.resync().catch(() => undefined);
+            else if (mode.resyncOnSuccess) void options.resync().catch(() => undefined); // must not block the filter queue
             return { ok: true, replayed: parsed.idempotentReplay === true, data: parsed };
           }
         } else {

@@ -382,6 +382,42 @@ describe("CINE-019 realtime recovery", () => {
     await handle();
   });
 
+  it("never lets the unused auth client initialise, and gives every client its own storage key", async () => {
+    const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
+    const handle = await start(rig);
+    rig.channels[0].emit("CLOSED");
+    await rig.clock.advance(3000);
+    const calls = vi.mocked(createClient).mock.calls as unknown as Array<[string, string, { auth?: { skipAutoInitialize?: boolean; storageKey?: string } }]>;
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    expect(calls.every((c) => c[2]?.auth?.skipAutoInitialize === true)).toBe(true);
+    expect(new Set(calls.map((c) => c[2]?.auth?.storageKey)).size).toBe(calls.length);
+    await handle();
+  });
+
+  it("does not swallow wake-ups after a backwards clock step, and a coalesced wake still cuts a backoff short", async () => {
+    const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
+    const handle = await start(rig);
+    await rig.clock.advance(1000);
+    rig.server.version = 4;
+    rig.clock.wake("visible");
+    await rig.clock.advance(0);
+    expect(rig.delivered).toEqual([1, 4]);
+    rig.clock.current -= 60_000; // NTP correction after sleep
+    rig.server.version = 6;
+    rig.clock.wake("online");
+    await rig.clock.advance(0);
+    expect(rig.delivered).toEqual([1, 4, 6]);
+    // recovery backoff is cut short by a wake even when that wake is coalesced
+    rig.channels[rig.channels.length - 1].emit("CLOSED");
+    await rig.clock.advance(0);
+    const before = rig.channels.length;
+    rig.clock.wake("online");
+    rig.clock.wake("online"); // coalesced
+    await rig.clock.advance(0);
+    expect(rig.channels.length).toBeGreaterThan(before);
+    await handle();
+  });
+
   it.each([-120000, 120000, 3_600_000])("never rotates in a loop when the client clock is skewed by %i ms", async (skew) => {
     const rig = makeRig();
     rig.server.tokenSkewMs = skew; // tokens look already expired (or far in the future) to the client clock

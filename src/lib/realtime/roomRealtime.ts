@@ -171,8 +171,10 @@ export async function startRoomRealtime(options: {
   //   EARLY (renewal at 30 s closed the channel at 50 s; at 20 s, at 30 s), so renewal is make-before-break.
   // The auth client is never used (the capability is set directly on the realtime socket). It would still
   // register a window visibilitychange listener per client, so it is not initialised and is disposed.
+  // A unique storage key per client keeps auth-js from logging "Multiple GoTrueClient instances" on every rotation.
+  let clientSeq = 0;
   const makeClient = () => createClient(options.supabaseUrl, options.publishableKey, {
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, skipAutoInitialize: true },
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, skipAutoInitialize: true, storageKey: `cinematch-realtime-${options.roomId}-${++clientSeq}` },
   });
   interface Slot {
     client: ReturnType<typeof makeClient>;
@@ -470,8 +472,9 @@ export async function startRoomRealtime(options: {
     if (closed || terminal) return;
     const now = env.now();
     if (reason !== "timer") {
-      // focus / visibilitychange / pageshow / online can fire in bursts: coalesce wake-ups.
-      if (now - lastWake < tuning.wakeMinIntervalMs) return;
+      // focus / visibilitychange / pageshow / online can fire in bursts: coalesce wake-ups. A burst never
+      // swallows the chance to cut a recovery backoff short, and a backwards clock step is never coalesced.
+      if (now >= lastWake && now - lastWake < tuning.wakeMinIntervalMs) { wakeSleepers(); return; }
       lastWake = now;
     }
     const gap = now - lastTick;
