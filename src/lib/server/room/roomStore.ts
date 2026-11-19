@@ -179,7 +179,10 @@ export interface RoomAuthorityStore {
   getNextRoundNumber(roomId: string): Promise<number>;
   findActiveRooms(): Promise<Room[]>;
   expireRoom(roomId: string, expectedVersion: number, expiredAt: string): Promise<boolean>;
-  purgeExpiredRooms(retentionBeforeIso: string): Promise<string[]>;
+  purgeExpiredRooms(
+    retentionBeforeIso: string,
+    options?: { roomIds?: readonly string[] }
+  ): Promise<string[]>;
   sweepRoomGraceTimeouts(
     roomId: string,
     options?: {
@@ -696,8 +699,11 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
     return this.repo.expireRoom(roomId, expectedVersion, expiredAt);
   }
 
-  async purgeExpiredRooms(retentionBeforeIso: string): Promise<string[]> {
-    return this.repo.purgeExpiredRooms(retentionBeforeIso);
+  async purgeExpiredRooms(
+    retentionBeforeIso: string,
+    options?: { roomIds?: readonly string[] }
+  ): Promise<string[]> {
+    return this.repo.purgeExpiredRooms(retentionBeforeIso, options);
   }
 
   async sweepRoomGraceTimeouts(
@@ -1207,8 +1213,11 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     return this.repo.expireRoom(roomId, expectedVersion, expiredAt);
   }
 
-  async purgeExpiredRooms(retentionBeforeIso: string): Promise<string[]> {
-    return this.repo.purgeExpiredRooms(retentionBeforeIso);
+  async purgeExpiredRooms(
+    retentionBeforeIso: string,
+    options?: { roomIds?: readonly string[] }
+  ): Promise<string[]> {
+    return this.repo.purgeExpiredRooms(retentionBeforeIso, options);
   }
 
   async sweepRoomGraceTimeouts(

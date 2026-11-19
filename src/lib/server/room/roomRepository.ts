@@ -2000,17 +2000,31 @@ export class SqliteRoomRepository {
    * Idempotently purges expired rooms past retention window while respecting
    * the database retention trigger (status='EXPIRED' AND expires_at <= CURRENT_TIMESTAMP).
    */
-  purgeExpiredRooms(retentionBeforeIso: string): string[] {
+  purgeExpiredRooms(
+    retentionBeforeIso: string,
+    options?: { roomIds?: readonly string[] }
+  ): string[] {
+    const scopedIds = options?.roomIds
+      ? Array.from(new Set(options.roomIds.map((id) => id.trim().toLowerCase()).filter(Boolean)))
+      : null;
+    if (scopedIds && scopedIds.length === 0) {
+      return [];
+    }
+
     return this.runInImmediateTransaction(() => {
+      const scopeClause = scopedIds
+        ? ` AND LOWER(id) IN (${scopedIds.map(() => "?").join(", ")})`
+        : "";
+      const params = scopedIds ? [retentionBeforeIso, ...scopedIds] : [retentionBeforeIso];
       const deletedRows = this.db
         .prepare(
           `DELETE FROM rooms
            WHERE status = 'EXPIRED'
              AND julianday(expires_at) <= julianday(?)
-             AND julianday(expires_at) <= julianday('now')
+             AND julianday(expires_at) <= julianday('now')${scopeClause}
            RETURNING id;`
         )
-        .all(retentionBeforeIso) as Array<{ id: string }>;
+        .all(...params) as Array<{ id: string }>;
       return deletedRows.map((row) => String(row.id));
     });
   }

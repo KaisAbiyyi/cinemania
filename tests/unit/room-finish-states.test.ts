@@ -616,12 +616,51 @@ describe("CINE-020 Authoritative Finish States (Fake Clocks, Grace, Expiry & Cle
       )
     ).toBe(true);
 
-    // 5. Purge expired rooms executes FOR UPDATE SKIP LOCKED + CURRENT_TIMESTAMP
+    // 5. Purge expired rooms executes FOR UPDATE SKIP LOCKED + CURRENT_TIMESTAMP and supports scoped roomIds
     const purged = await pgRepo.purgeExpiredRooms(graceExpiredIso);
     expect(purged).toEqual(["room-purged-1"]);
     const deleteQuery = queries.find((q) => q.text.includes("DELETE FROM rooms"));
     expect(deleteQuery?.text).toContain("FOR UPDATE SKIP LOCKED");
     expect(deleteQuery?.text).toContain("CURRENT_TIMESTAMP");
+
+    const scopedPurged = await pgRepo.purgeExpiredRooms(graceExpiredIso, {
+      roomIds: [roomId.toUpperCase()],
+    });
+    expect(scopedPurged).toEqual(["room-purged-1"]);
+    const scopedDeleteQuery = queries.filter((q) => q.text.includes("DELETE FROM rooms")).at(-1);
+    expect(scopedDeleteQuery?.text).toContain("LOWER(id::text) = ANY($2::text[])");
+    expect(scopedDeleteQuery?.params).toEqual([graceExpiredIso, [roomId.toLowerCase()]]);
+
+    const queryCountBeforeEmpty = queries.length;
+    expect(await pgRepo.purgeExpiredRooms(graceExpiredIso, { roomIds: [] })).toEqual([]);
+    expect(queries.length).toBe(queryCountBeforeEmpty);
+  });
+
+  it("scopes RoomExpiryWorker expiry, grace sweeps, and cleanup to specified roomIds without touching other expired rooms", async () => {
+    const pastStartIso = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const clock = new MutableClock(pastStartIso);
+    const { db, repo, roomId: targetRoomId } = createMigratedRepo(clock, 3600);
+    const untouched = repo.createRoom({ hostDisplayName: "SeedLike", inactivityTtlSeconds: 3600 });
+
+    clock.advanceSeconds(3605);
+    const worker = new RoomExpiryWorker(3600, clock);
+
+    const scopedExpiry = await worker.processExpiredRooms(repo, { roomIds: [targetRoomId] });
+    expect(scopedExpiry.expiredRoomIds).toEqual([targetRoomId]);
+    expect(repo.getRoomById(targetRoomId)?.status).toBe("EXPIRED");
+    expect(repo.getRoomById(untouched.room.id)?.status).toBe("LOBBY");
+
+    const scopedCleanup = await worker.cleanupExpiredRooms(repo, { roomIds: [targetRoomId] });
+    expect(scopedCleanup.purgedRoomIds).toEqual([targetRoomId]);
+    expect(repo.getRoomById(targetRoomId)).toBeNull();
+    expect(repo.getRoomById(untouched.room.id)?.status).toBe("LOBBY");
+
+    const emptySweep = await worker.runLifecycleSweep(repo, { roomIds: [] });
+    expect(emptySweep.grace.processedCount).toBe(0);
+    expect(emptySweep.cleanup.expiredCount).toBe(0);
+    expect(emptySweep.cleanup.purgedCount).toBe(0);
+    expect(repo.getRoomById(untouched.room.id)?.status).toBe("LOBBY");
+    db.close();
   });
 
   it("verifies client actions retryRound/reportPresence and startRoomRealtime 410 permanent stop", async () => {

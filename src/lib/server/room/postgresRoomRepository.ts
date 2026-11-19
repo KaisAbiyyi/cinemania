@@ -2120,19 +2120,31 @@ export class PostgresRoomRepository {
     });
   }
 
-  async purgeExpiredRooms(retentionBeforeIso: string): Promise<string[]> {
+  async purgeExpiredRooms(
+    retentionBeforeIso: string,
+    options?: { roomIds?: readonly string[] }
+  ): Promise<string[]> {
+    const scopedIds = options?.roomIds
+      ? Array.from(new Set(options.roomIds.map((id) => id.trim().toLowerCase()).filter(Boolean)))
+      : null;
+    if (scopedIds && scopedIds.length === 0) {
+      return [];
+    }
+
     return this.withTransaction(async (client) => {
+      const scopeClause = scopedIds ? " AND LOWER(id::text) = ANY($2::text[])" : "";
+      const params: unknown[] = scopedIds ? [retentionBeforeIso, scopedIds] : [retentionBeforeIso];
       const deletedRes = await client.query(
         `DELETE FROM rooms
          WHERE id IN (
            SELECT id FROM rooms
            WHERE status = 'EXPIRED'
              AND expires_at <= $1::timestamptz
-             AND expires_at <= CURRENT_TIMESTAMP
+             AND expires_at <= CURRENT_TIMESTAMP${scopeClause}
            FOR UPDATE SKIP LOCKED
          )
          RETURNING id;`,
-        [retentionBeforeIso]
+        params
       );
       return deletedRes.rows.map((row) => String(row.id));
     });

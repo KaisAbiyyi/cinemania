@@ -62,7 +62,21 @@ export interface RoomLifecycleAdapter extends RoomPersistenceAdapter {
     roomId: string,
     options?: { nowIso?: string; graceSeconds?: number; heartbeatStaleSeconds?: number }
   ): Promise<GraceRoomSweepOutcome> | GraceRoomSweepOutcome;
-  purgeExpiredRooms(cutoffIso: string): Promise<string[]> | string[];
+  purgeExpiredRooms(
+    cutoffIso: string,
+    options?: { roomIds?: readonly string[] }
+  ): Promise<string[]> | string[];
+}
+
+function filterRoomsByIds(rooms: Room[], roomIds?: readonly string[]): Room[] {
+  if (!roomIds) {
+    return rooms;
+  }
+  if (roomIds.length === 0) {
+    return [];
+  }
+  const allowedIds = new Set(roomIds.map((id) => id.toLowerCase()));
+  return rooms.filter((room) => allowedIds.has(room.id.toLowerCase()));
 }
 
 /**
@@ -94,9 +108,12 @@ export class RoomExpiryWorker {
   /**
    * Processes all non-expired rooms, transitioning lapsed rooms to 'EXPIRED' status.
    */
-  async processExpiredRooms(adapter: RoomPersistenceAdapter): Promise<ExpiryResult> {
+  async processExpiredRooms(
+    adapter: RoomPersistenceAdapter,
+    options?: { roomIds?: readonly string[] }
+  ): Promise<ExpiryResult> {
     const now = this.clock.now();
-    const rooms = await adapter.findActiveRooms();
+    const rooms = filterRoomsByIds(await adapter.findActiveRooms(), options?.roomIds);
     const expiredRoomIds: string[] = [];
 
     for (const room of rooms) {
@@ -137,12 +154,12 @@ export class RoomExpiryWorker {
    */
   async processGraceTimeouts(
     adapter: Pick<RoomLifecycleAdapter, "findActiveRooms" | "sweepRoomGraceTimeouts">,
-    options?: { graceSeconds?: number; heartbeatStaleSeconds?: number }
+    options?: { graceSeconds?: number; heartbeatStaleSeconds?: number; roomIds?: readonly string[] }
   ): Promise<GraceSweepResult> {
     const now = this.clock.now();
     const nowIso = now.toISOString();
     const graceSeconds = options?.graceSeconds ?? this.defaultGraceSeconds;
-    const rooms = await adapter.findActiveRooms();
+    const rooms = filterRoomsByIds(await adapter.findActiveRooms(), options?.roomIds);
 
     const hostTransferredRoomIds: string[] = [];
     const cancelledRoundRoomIds: string[] = [];
@@ -181,14 +198,20 @@ export class RoomExpiryWorker {
    */
   async cleanupExpiredRooms(
     adapter: Pick<RoomLifecycleAdapter, "findActiveRooms" | "expireRoom" | "purgeExpiredRooms">,
-    options?: { retentionGraceSeconds?: number }
+    options?: { retentionGraceSeconds?: number; roomIds?: readonly string[] }
   ): Promise<CleanupResult> {
-    const expiry = await this.processExpiredRooms(adapter);
+    const expiry = await this.processExpiredRooms(
+      adapter,
+      options?.roomIds ? { roomIds: options.roomIds } : undefined
+    );
     const now = this.clock.now();
     const retentionSeconds =
       options?.retentionGraceSeconds ?? DEFAULT_EXPIRED_ROOM_RETENTION_SECONDS;
     const cutoffIso = new Date(now.getTime() - retentionSeconds * 1000).toISOString();
-    const purgedRoomIds = await adapter.purgeExpiredRooms(cutoffIso);
+    const purgedRoomIds = await adapter.purgeExpiredRooms(
+      cutoffIso,
+      options?.roomIds ? { roomIds: options.roomIds } : undefined
+    );
 
     return {
       expiredRoomIds: expiry.expiredRoomIds,
@@ -208,14 +231,17 @@ export class RoomExpiryWorker {
       graceSeconds?: number;
       heartbeatStaleSeconds?: number;
       retentionGraceSeconds?: number;
+      roomIds?: readonly string[];
     }
   ): Promise<LifecycleSweepResult> {
     const grace = await this.processGraceTimeouts(adapter, {
       graceSeconds: options?.graceSeconds,
       heartbeatStaleSeconds: options?.heartbeatStaleSeconds,
+      ...(options?.roomIds ? { roomIds: options.roomIds } : {}),
     });
     const cleanup = await this.cleanupExpiredRooms(adapter, {
       retentionGraceSeconds: options?.retentionGraceSeconds,
+      ...(options?.roomIds ? { roomIds: options.roomIds } : {}),
     });
     return {
       grace,

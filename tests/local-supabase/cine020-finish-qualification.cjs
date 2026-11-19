@@ -550,12 +550,13 @@ async function main() {
     const pgStore = new ServerHelper.PostgresRoomAuthorityStore(pool);
     const worker = new ServerHelper.RoomExpiryWorker(86400, new ServerHelper.SystemClock());
 
-    // Shift both roomK (MATCHED) and roomL (ACTIVE) past 24h inactivity TTL
+    // Scope lifecycle expiry & cleanup strictly to synthetic rooms created by this run so seed/shared rooms are never touched.
+    const scopedRoomIds = [...createdRoomIds];
     await db.query(
       "UPDATE public.rooms SET last_activity_at = NOW() - INTERVAL '25 hours', expires_at = NOW() - INTERVAL '1 hour' WHERE id = ANY($1::uuid[]);",
-      [createdRoomIds]
+      [scopedRoomIds]
     );
-    const expiryRes = await worker.processExpiredRooms(pgStore);
+    const expiryRes = await worker.processExpiredRooms(pgStore, { roomIds: scopedRoomIds });
     assert.equal(expiryRes.processedCount, 2);
 
     // Mint fresh valid 2h token for expired roomK host to prove 410 ROOM_EXPIRED (not just 401 token expiry)
@@ -597,11 +598,19 @@ async function main() {
     assert.equal(expTokenRes.status, 401);
     assert.equal((await expTokenRes.json()).error, "CAPABILITY_EXPIRED");
 
-    // Idempotent PG cleanup removes both expired synthetic rooms (with immutable votes cascading safely)
-    const clean1 = await worker.cleanupExpiredRooms(pgStore);
-    assert.deepEqual(clean1.purgedRoomIds.sort(), [...createdRoomIds].sort());
-    const clean2 = await worker.cleanupExpiredRooms(pgStore);
+    // Idempotent PG cleanup removes only our expired synthetic rooms and leaves seed rooms untouched
+    const clean1 = await worker.cleanupExpiredRooms(pgStore, { roomIds: scopedRoomIds });
+    assert.deepEqual(clean1.purgedRoomIds.sort(), [...scopedRoomIds].sort());
+    const clean2 = await worker.cleanupExpiredRooms(pgStore, { roomIds: scopedRoomIds });
     assert.equal(clean2.purgedCount, 0);
+    const seedCheck = await db.query(
+      "SELECT id::text, status::text FROM public.rooms WHERE id = ANY($1::uuid[]) ORDER BY id ASC;",
+      [SEED_ROOMS]
+    );
+    assert.deepEqual(seedCheck.rows.map((r) => [r.id, r.status]), [
+      [SEED_ROOMS[0], "LOBBY"],
+      [SEED_ROOMS[1], "ACTIVE"],
+    ]);
     createdRoomIds.length = 0;
 
     evidence.scenarios.push({ id: "M", result: "PASS", purgedCount: clean1.purgedCount, idempotentSecondPass: clean2.purgedCount });
