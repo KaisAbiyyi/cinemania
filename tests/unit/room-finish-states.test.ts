@@ -337,8 +337,8 @@ describe("CINE-020 Authoritative Finish States (Fake Clocks, Grace, Expiry & Cle
   });
 
   it("enforces exact 24h TTL across LOBBY/ACTIVE/MATCHED/EXHAUSTED, rejects expired actions, and runs idempotent retention-compliant cleanup", async () => {
-    // Initialize clock >= 25h in the past so DB julianday('now') retention trigger allows purge after +24h advance
-    const clock = new MutableClock("2026-11-17T00:00:00.000Z");
+    // Initialize clock 25h in the past so DB julianday('now') retention trigger allows purge after +24h advance
+    const clock = new MutableClock(new Date(Date.now() - 25 * 3600 * 1000).toISOString());
     const db = new DatabaseSync(":memory:");
     applySqliteMigrations(db);
     const repo = new SqliteRoomRepository(db, { enforceMigrationAuthority: true, clock });
@@ -438,12 +438,114 @@ describe("CINE-020 Authoritative Finish States (Fake Clocks, Grace, Expiry & Cle
     db.close();
   });
 
-  it("verifies PostgresRoomRepository SQL queries for grace sweep, retry, ROUND_CANCELLED, and FOR UPDATE SKIP LOCKED purge", async () => {
-    const clock = new MutableClock("2026-11-18T12:00:00.000Z");
+  it("verifies PostgresRoomRepository SQL queries for grace sweep, retry, presence, ROUND_CANCELLED, and FOR UPDATE SKIP LOCKED purge", async () => {
+    const baseIso = "2026-11-18T12:00:00.000Z";
+    const graceExpiredIso = "2026-11-18T12:01:31.000Z";
+    const clock = new MutableClock(graceExpiredIso);
+    const roomId = crypto.randomUUID();
+    const hostId = crypto.randomUUID();
+    const guestId = crypto.randomUUID();
+    const roundId = crypto.randomUUID();
     const queries: Array<{ text: string; params: unknown[] | undefined }> = [];
+
+    let roomRow = {
+      id: roomId,
+      code: "PGC020",
+      status: "ACTIVE",
+      host_participant_id: hostId,
+      state_version: 4,
+      participant_count: 2,
+      matched_movie_id: null as number | null,
+      current_round_id: roundId as string | null,
+      deck_filter: null,
+      inactivity_ttl_seconds: 86400,
+      last_activity_at: baseIso,
+      expires_at: "2026-11-19T12:00:00.000Z",
+      created_at: baseIso,
+      updated_at: baseIso,
+    };
+    let hostRow = {
+      room_id: roomId,
+      participant_id: hostId,
+      display_name: "PG Host",
+      role: "HOST",
+      is_connected: false,
+      joined_at: baseIso,
+      last_seen_at: baseIso,
+    };
+    let guestRow = {
+      room_id: roomId,
+      participant_id: guestId,
+      display_name: "PG Guest",
+      role: "MEMBER",
+      is_connected: true,
+      joined_at: "2026-11-18T12:00:01.000Z",
+      last_seen_at: "2026-11-18T12:01:25.000Z",
+    };
+
     const client = {
       query: vi.fn(async (text: string, params?: unknown[]) => {
         queries.push({ text, params });
+        if (text.includes("information_schema.columns")) {
+          return { rows: [{ table_name: "guest_capability_sessions" }, { table_name: "round_participants" }] };
+        }
+        if (text.includes("SELECT * FROM rooms WHERE id = $1 FOR UPDATE")) {
+          return { rows: [{ ...roomRow }] };
+        }
+        if (text.includes("SELECT * FROM room_participants WHERE room_id = $1 ORDER BY")) {
+          return { rows: [{ ...hostRow }, { ...guestRow }] };
+        }
+        if (text.includes("SELECT * FROM room_participants WHERE room_id = $1 AND participant_id = $2")) {
+          const pid = String(params?.[1] ?? "");
+          if (pid === hostId) return { rows: [{ ...hostRow }] };
+          if (pid === guestId) return { rows: [{ ...guestRow }] };
+          return { rows: [] };
+        }
+        if (text.includes("FROM round_participants")) {
+          return {
+            rows: [
+              { participant_id: hostId },
+              { participant_id: guestId },
+            ],
+          };
+        }
+        if (text.includes("UPDATE room_participants SET role = 'MEMBER'")) {
+          hostRow = { ...hostRow, role: "MEMBER" };
+          return { rows: [] };
+        }
+        if (text.includes("UPDATE room_participants SET role = 'HOST'")) {
+          guestRow = { ...guestRow, role: "HOST" };
+          return { rows: [] };
+        }
+        if (text.includes("UPDATE room_participants SET is_connected =")) {
+          const connected = Boolean(params?.[0]);
+          const pid = String(params?.[3] ?? "");
+          if (pid === guestId) guestRow = { ...guestRow, is_connected: connected };
+          return { rows: [] };
+        }
+        if (text.includes("UPDATE rooms") && text.includes("SET status = $1, host_participant_id = $2")) {
+          roomRow = {
+            ...roomRow,
+            status: String(params?.[0]),
+            host_participant_id: String(params?.[1]),
+            current_round_id: (params?.[2] as string | null) ?? null,
+            state_version: Number(params?.[3]),
+          };
+          return { rows: [] };
+        }
+        if (text.includes("UPDATE rooms") && text.includes("SET status = 'LOBBY'")) {
+          roomRow = { ...roomRow, status: "LOBBY", current_round_id: null, state_version: Number(params?.[0]) };
+          return { rows: [] };
+        }
+        if (text.includes("SELECT * FROM rooms WHERE id = $1;")) {
+          return { rows: [{ ...roomRow }] };
+        }
+        if (text.includes("SELECT status FROM rounds WHERE id = $1 AND room_id = $2")) {
+          return { rows: [{ status: "CANCELLED" }] };
+        }
+        if (text.includes("FROM room_events") && text.includes("ROUND_RETRY_LOBBY")) {
+          return { rows: [] };
+        }
         if (text.includes("DELETE FROM rooms") && text.includes("FOR UPDATE SKIP LOCKED")) {
           return { rows: [{ id: "room-purged-1" }] };
         }
@@ -455,7 +557,67 @@ describe("CINE-020 Authoritative Finish States (Fake Clocks, Grace, Expiry & Cle
       clock,
     });
 
-    const purged = await pgRepo.purgeExpiredRooms("2026-11-18T12:00:00.000Z");
+    // 1. Grace sweep: locks room FOR UPDATE, demotes timed-out host, promotes guest, cancels ACTIVE round -> LOBBY
+    const sweep = await pgRepo.sweepRoomGraceTimeouts(roomId);
+    expect(sweep).toMatchObject({
+      roomId,
+      changed: true,
+      hostTransferred: true,
+      roundCancelled: true,
+      nextHostParticipantId: guestId,
+    });
+    expect(queries.some((q) => q.text.includes("SELECT * FROM rooms WHERE id = $1 FOR UPDATE"))).toBe(true);
+    expect(queries.some((q) => q.text.includes("UPDATE rounds SET status = 'CANCELLED'"))).toBe(true);
+    expect(
+      queries.some(
+        (q) =>
+          q.text.includes("INSERT INTO room_events") &&
+          String(q.params?.[2] ?? q.text).includes("HOST_TRANSFERRED")
+      )
+    ).toBe(true);
+    expect(
+      queries.some(
+        (q) =>
+          q.text.includes("INSERT INTO room_events") &&
+          String(q.params?.[2] ?? q.text).includes("ROUND_CANCELLED")
+      )
+    ).toBe(true);
+
+    // 2. Late vote referencing cancelled round throws ROUND_CANCELLED
+    await expect(
+      pgRepo.recordVote(roomId, roundId, guestId, crypto.randomUUID(), 9001, "LIKE")
+    ).rejects.toMatchObject({ code: "ROUND_CANCELLED" });
+
+    // 3. Explicit presence disconnect emits PARTICIPANT_DISCONNECTED
+    const pres = await pgRepo.updateParticipantPresence(roomId, guestId, false);
+    expect(pres.changed).toBe(true);
+    expect(pres.participant.is_connected).toBe(false);
+    expect(
+      queries.some(
+        (q) =>
+          q.text.includes("INSERT INTO room_events") &&
+          (q.text.includes("PARTICIPANT_DISCONNECTED") ||
+            String(q.params?.[2] ?? "").includes("PARTICIPANT_DISCONNECTED"))
+      )
+    ).toBe(true);
+
+    // 4. Retry EXHAUSTED -> LOBBY executes transactional UPDATE and ROUND_RETRY_LOBBY event
+    roomRow = { ...roomRow, status: "EXHAUSTED", current_round_id: roundId, state_version: 8 };
+    const retried = await pgRepo.retryExhaustedRound(roomId, guestId, {
+      startRound: false,
+      operationId: "pg-retry-lobby-op",
+    });
+    expect(retried.room.status).toBe("LOBBY");
+    expect(
+      queries.some(
+        (q) =>
+          q.text.includes("INSERT INTO room_events") &&
+          q.text.includes("ROUND_RETRY_LOBBY")
+      )
+    ).toBe(true);
+
+    // 5. Purge expired rooms executes FOR UPDATE SKIP LOCKED + CURRENT_TIMESTAMP
+    const purged = await pgRepo.purgeExpiredRooms(graceExpiredIso);
     expect(purged).toEqual(["room-purged-1"]);
     const deleteQuery = queries.find((q) => q.text.includes("DELETE FROM rooms"));
     expect(deleteQuery?.text).toContain("FOR UPDATE SKIP LOCKED");

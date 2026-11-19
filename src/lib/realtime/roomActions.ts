@@ -175,7 +175,11 @@ export function createRoomActions(options: RoomActionsOptions) {
       operationId?: string;
     } = {}): Promise<RoomActionResult> {
       const startRound = Boolean(input.startRound);
-      const operationId = input.operationId ?? retryOperationId(input.roundId);
+      const operationId =
+        input.operationId ??
+        (input.roundId
+          ? retryOperationId(input.roundId)
+          : `retry-ad-hoc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
       const signature = JSON.stringify({ startRound, deckFilter: input.deckFilter ?? null, operationId });
       const payload = {
         startRound,

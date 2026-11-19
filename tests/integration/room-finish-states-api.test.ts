@@ -342,6 +342,34 @@ describe("CINE-020 Finish States API Integration (Exhausted Retry, 90s Grace, Co
     expect(started2.room.currentRoundId).not.toBe(started1.room.currentRoundId);
     expect(started2.room.deck[0].movieId).toBeGreaterThanOrEqual(810500);
 
+    const start2 = started2;
+    expect(start2.room.frozenQuorum).toBe(3);
+
+    // Replaying Round 1's `startRound: false` operationId AFTER Round 2 started must NOT crash 409 FROZEN_ROSTER_MISSING
+    const replayAfterR2Start = await retryRoomPost(
+      createSameOriginRequest("POST", `http://localhost:3000/api/rooms/${roomId}/retry`, {
+        cookieHeader: cookies[0],
+        body: { startRound: false, operationId: retryOpId },
+      }),
+      { params: Promise.resolve({ roomId }) }
+    );
+    expect(replayAfterR2Start.status).toBe(200);
+    const replayR2Body = await replayAfterR2Start.json();
+    expect(replayR2Body.idempotentReplay).toBe(true);
+    expect(replayR2Body.room.status).toBe("ACTIVE");
+    expect(replayR2Body.room.frozenQuorum).toBe(3);
+
+    // Reusing the same operationId with different parameters must reject 409 OPERATION_CONFLICT
+    const conflictRetry = await retryRoomPost(
+      createSameOriginRequest("POST", `http://localhost:3000/api/rooms/${roomId}/retry`, {
+        cookieHeader: cookies[0],
+        body: { startRound: true, operationId: retryOpId, deckFilter: { with_genres: "28" } },
+      }),
+      { params: Promise.resolve({ roomId }) }
+    );
+    expect(conflictRetry.status).toBe(409);
+    expect((await conflictRetry.json()).error).toBe("OPERATION_ID_CONFLICT");
+
     // Exhaust Round 2 and test Path B: direct startRound=true with comedy filter
     const exhausted2 = await exhaustActiveRound(
       roomId,
@@ -604,8 +632,9 @@ describe("CINE-020 Finish States API Integration (Exhausted Retry, 90s Grace, Co
   });
 
   it("rejects expired capability sessions (401) and 24h expired rooms (410) across all endpoints, and idempotently purges DB rows", async () => {
-    // Start in the past relative to SQLite CURRENT_TIMESTAMP so physical retention trigger permits deletion after +24h
-    vi.useFakeTimers({ now: new Date("2026-11-17T00:00:00.000Z") });
+    // Start 25h in the past relative to real wall clock so SQLite CURRENT_TIMESTAMP permits deletion after +24h advance
+    const pastIso = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+    vi.useFakeTimers({ now: new Date(pastIso) });
     const { roomId, code, cookies, participantIds } = await setupRoomAndMembers(2, 840000);
 
     // 1. Expired capability session (> 7200s) fails closed 401 CAPABILITY_EXPIRED while 24h room is still valid

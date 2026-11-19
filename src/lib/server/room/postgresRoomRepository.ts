@@ -2498,7 +2498,7 @@ export class PostgresRoomRepository {
           prior.payload.deckFilter && typeof prior.payload.deckFilter === "object"
             ? canonicalSerializeDeckFilter(prior.payload.deckFilter as CanonicalRoomDeckFilter)
             : null;
-        if (priorStart !== startRound || (expectedFilterJson && priorFilterJson !== expectedFilterJson)) {
+        if (priorStart !== startRound || priorFilterJson !== expectedFilterJson) {
           throw new OperationConflictError(
             `operationId '${operationId}' was already used for a different retry configuration.`
           );
@@ -2509,7 +2509,7 @@ export class PostgresRoomRepository {
           [roomId]
         );
         const participants = partsRes.rows.map((row) => normalizeParticipant(row));
-        if (!priorStart || !room.current_round_id) {
+        if (!room.current_round_id) {
           return {
             room,
             participants,

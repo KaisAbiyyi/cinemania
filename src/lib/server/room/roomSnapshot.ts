@@ -535,7 +535,8 @@ function buildAtomicSnapshotResult(
   request: Request,
   result: AtomicRoomSessionResult,
   mintedToken: string,
-  evalNow: Date = new Date()
+  evalNow: Date = new Date(),
+  latestRoundStatus: RoundStatus | null = null
 ): RoomSnapshotResult {
   const role = resolveAuthoritativeRole(result.room, result.participant);
   const roundParticipants = result.roundParticipants ?? [];
@@ -546,7 +547,9 @@ function buildAtomicSnapshotResult(
     result.participant.participant_id,
     evalNow,
     roundParticipants,
-    candidates
+    candidates,
+    [],
+    { latestRoundStatus }
   );
   const isEligibleVoter = Boolean(
     safeRoom.frozenQuorum !== null &&
@@ -665,7 +668,18 @@ export async function joinRoomWithSession(
     }),
   });
 
-  return buildAtomicSnapshotResult(request, result, mintedToken, evalNow);
+  const latestRound =
+    result.rejoined && result.room.status === "LOBBY"
+      ? await store.getLatestRound(result.room.id)
+      : null;
+
+  return buildAtomicSnapshotResult(
+    request,
+    result,
+    mintedToken,
+    evalNow,
+    latestRound?.status ?? null
+  );
 }
 
 /**
@@ -1082,10 +1096,10 @@ export async function retryRoomRoundWithSession(
     beforeCommit: options?.beforeCommit,
   });
 
-  const viewerParticipant = retried.participants.find(
+  const initialViewerParticipant = retried.participants.find(
     (p) => p.participant_id.toLowerCase() === actor.participant.participant_id.toLowerCase()
   );
-  if (!viewerParticipant) {
+  if (!initialViewerParticipant) {
     throw new CapabilityAuthError(
       403,
       "PARTICIPANT_NOT_IN_ROOM",
@@ -1094,22 +1108,30 @@ export async function retryRoomRoundWithSession(
   }
 
   const consistent = await store.getConsistentRoomSnapshot(retried.room.id);
-  const role = resolveAuthoritativeRole(retried.room, viewerParticipant);
+  const snapshotRoom = consistent?.room ?? retried.room;
+  const snapshotParticipants = consistent?.participants ?? retried.participants;
+  const viewerParticipant =
+    snapshotParticipants.find(
+      (p) => p.participant_id.toLowerCase() === actor.participant.participant_id.toLowerCase()
+    ) ?? initialViewerParticipant;
+  const roundParticipants = consistent?.roundParticipants ?? retried.frozenParticipants;
+  const candidates = consistent?.candidates ?? retried.candidates;
   const votes = consistent?.votes ?? [];
   const latestRoundStatus = consistent?.latestRound?.status ?? retried.round?.status ?? null;
+  const role = resolveAuthoritativeRole(snapshotRoom, viewerParticipant);
   const safeRoom = buildSafeRoomSnapshot(
-    retried.room,
-    retried.participants,
+    snapshotRoom,
+    snapshotParticipants,
     viewerParticipant.participant_id,
     evalNow,
-    retried.frozenParticipants,
-    retried.candidates,
+    roundParticipants,
+    candidates,
     votes,
     { latestRoundStatus }
   );
   const isEligibleVoter = Boolean(
     safeRoom.frozenQuorum !== null &&
-      retried.frozenParticipants.some(
+      roundParticipants.some(
         (rp) => rp.participant_id.toLowerCase() === viewerParticipant.participant_id.toLowerCase()
       )
   );
