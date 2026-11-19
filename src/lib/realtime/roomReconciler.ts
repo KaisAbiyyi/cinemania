@@ -40,5 +40,20 @@ export function createRoomReconciler<T extends { stateVersion: number }>(options
   return {
     connected: () => refresh(true),
     notify: (version: number) => refresh(false, version),
+    /**
+     * Accepts a snapshot that is already authoritative, such as the body of a successful
+     * mutation response, without another round trip. It uses the same monotonic version gate
+     * as fetched snapshots so a later hint or a replayed response can never deliver it twice
+     * or move the view backwards.
+     */
+    accept: (snapshot: T): boolean => {
+      if (!Number.isSafeInteger(snapshot.stateVersion) || snapshot.stateVersion < 0) return false;
+      if (snapshot.stateVersion <= lastVersion) return false;
+      lastVersion = snapshot.stateVersion;
+      options.onSnapshot(snapshot);
+      return true;
+    },
+    /** Highest authoritative state version delivered so far, or -1 before the first snapshot. */
+    currentVersion: () => lastVersion,
   };
 }
