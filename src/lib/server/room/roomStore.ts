@@ -269,6 +269,17 @@ function isLoopbackHost(hostname: string): boolean {
   return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower === "[::1]";
 }
 
+function resolvePoolMax(host: string, port: number): number {
+  const configured = process.env.CINEMATCH_PG_POOL_MAX?.trim();
+  if (!configured) {
+    return host.toLowerCase().endsWith(".pooler.supabase.com") && port === 5432 ? 2 : 10;
+  }
+  if (!/^(?:[1-9]|10)$/.test(configured)) {
+    throw new CapabilityAuthError(500, "DATABASE_CONFIG_INVALID", "CINEMATCH_PG_POOL_MAX must be an integer from 1 to 10.");
+  }
+  return Number(configured);
+}
+
 /**
  * Resolves and validates PostgreSQL pool configuration from DATABASE_URL or SUPABASE_PG_*.
  * Returns null only when no PostgreSQL environment variables are configured.
@@ -304,9 +315,10 @@ export function resolvePostgresPoolConfig(): ResolvedPostgresConfig | null {
       sslMode !== "disable" &&
       (Boolean(caCert) || parsed.hostname.endsWith(".supabase.co") || parsed.hostname.endsWith(".supabase.com"));
 
+    const max = resolvePoolMax(parsed.hostname, Number(parsed.port || 5432));
     const poolConfig: PoolConfig = {
       connectionString: databaseUrl,
-      max: 10,
+      max,
       connectionTimeoutMillis: 10000,
       ...(shouldVerifyCa && caCert
         ? {
@@ -321,7 +333,7 @@ export function resolvePostgresPoolConfig(): ResolvedPostgresConfig | null {
           : {}),
     };
 
-    const fingerprint = crypto.createHash("sha256").update(`url:${databaseUrl}`).digest("hex");
+    const fingerprint = crypto.createHash("sha256").update(`url:${databaseUrl}:${max}`).digest("hex");
     return { poolConfig, source: "database_url", fingerprint };
   }
 
@@ -364,20 +376,21 @@ export function resolvePostgresPoolConfig(): ResolvedPostgresConfig | null {
         : { rejectUnauthorized: true, servername: pgHost };
     }
 
+    const max = resolvePoolMax(pgHost, pgPort);
     const poolConfig: PoolConfig = {
       host: pgHost,
       port: pgPort,
       user: pgUser,
       database: pgDatabase,
       password: pgPassword,
-      max: 10,
+      max,
       connectionTimeoutMillis: 10000,
       ...(ssl ? { ssl } : {}),
     };
 
     const fingerprint = crypto
       .createHash("sha256")
-      .update(`pg:${pgHost}:${pgPort}:${pgDatabase}:${pgUser}:${pgPassword}:${sslMode ?? ""}`)
+      .update(`pg:${pgHost}:${pgPort}:${pgDatabase}:${pgUser}:${pgPassword}:${sslMode ?? ""}:${max}`)
       .digest("hex");
 
     return { poolConfig, source: "supabase_pg_env", fingerprint };
@@ -853,6 +866,7 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
   private readonly pool: Pool;
   private readonly repo: PostgresRoomRepository;
   private readonly schema?: string;
+  private publisher?: { url: string; secret: string; send: ReturnType<typeof createSupabasePublisher> };
 
   async listRoomEventVersions(roomId: string, since: number): Promise<number[]> {
     return this.withClient(async (client) => {
@@ -865,8 +879,10 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     const url = process.env.SUPABASE_URL;
     const secret = process.env.SUPABASE_SECRET_KEY;
     if (!url || !secret) throw new Error("Realtime publisher configuration missing");
-    const sent = await dispatchPendingEvents(roomId, postgresOutboxStore(this.pool, this.schema), createSupabasePublisher(url, secret));
-    if (!sent) throw new Error("Realtime publication failed");
+    if (this.publisher?.url !== url || this.publisher.secret !== secret) {
+      this.publisher = { url, secret, send: createSupabasePublisher(url, secret) };
+    }
+    await dispatchPendingEvents(roomId, postgresOutboxStore(this.pool, this.schema), this.publisher.send);
   }
 
   constructor(pool: Pool, options?: { schema?: string; clock?: SyntheticClock }) {
@@ -1382,6 +1398,7 @@ export function getRoomAuthorityStore(): RoomAuthorityStore {
       void cachedPg.pool.end().catch(() => {});
     }
     const pool = new Pool(resolvedPg.poolConfig);
+    pool.on("error", () => console.warn("[CINEMATCH_DB_CONNECTION_ERROR] Check room database connectivity."));
     const store = new PostgresRoomAuthorityStore(pool);
     globalForStore.__cinematchPostgresConnection = {
       fingerprint: resolvedPg.fingerprint,
@@ -1428,6 +1445,11 @@ export function getRoomAuthorityStore(): RoomAuthorityStore {
   const store = new SqliteRoomAuthorityStore(db);
   globalForStore.__cinematchSqliteConnection = { path: sqlitePath, db, store };
   return store;
+}
+
+export function getRoomRateLimitPool(store: RoomAuthorityStore): Pool | undefined {
+  const connection = globalForStore.__cinematchPostgresConnection;
+  return connection?.store === store ? connection.pool : undefined;
 }
 
 export function resetRoomAuthorityStoreForTests(): void {

@@ -26,6 +26,12 @@ test.describe("CineMatch E2E Smoke Tests (100% Offline & Deterministic TMDB Mock
     await expect(navbar).toBeVisible();
     const searchInput = navbar.locator('input[placeholder*="Search" i], input[type="search"]');
     await expect(searchInput).toBeVisible();
+
+    const credits = page.locator("#credits");
+    await expect(credits).toContainText("This product uses the TMDB API but is not endorsed or certified by TMDB.");
+    const tmdbLogo = credits.getByRole("img", { name: "The Movie Database" });
+    await tmdbLogo.scrollIntoViewIfNeeded();
+    await expect.poll(() => tmdbLogo.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
   });
 
   test("movies page renders seeded movies with loaded images", async ({ page }) => {

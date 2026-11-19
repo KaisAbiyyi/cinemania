@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { assertSameOriginCsrf } from "@/lib/server/auth/csrfGuard";
+import { readBoundedJson } from "@/lib/server/auth/requestBody";
 import {
   buildGuestCookieAttributes,
   CapabilityAuthError,
@@ -26,15 +27,7 @@ export async function POST(request: Request) {
     getCapabilitySecret();
     const store = getRoomAuthorityStore();
 
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return privateJsonResponse(
-        { error: "INVALID_JSON", message: "Request body must be valid JSON." },
-        400
-      );
-    }
+    const body = await readBoundedJson(request);
 
     const parsed = RotateBodySchema.safeParse(body);
     if (!parsed.success) {

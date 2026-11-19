@@ -67,7 +67,7 @@ async function main() {
         throw new Error("Refusing destructive local volume reset without --yes");
       }
       if (!commit) {
-        throw new Error("reset requires --commit <40-hex-sha> for single-source migrations 001-005");
+        throw new Error("reset requires --commit <40-hex-sha> for canonical migrations");
       }
       validateCommit(commit);
       ensureStackEnv({ force: false });

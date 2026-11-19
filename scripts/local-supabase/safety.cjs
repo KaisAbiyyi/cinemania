@@ -27,11 +27,13 @@ function migrationPaths() {
     "src/db/migrations/003_round_roster_freeze.sql",
     "src/db/migrations/004_vote_operation_idempotency.sql",
     "src/db/migrations/005_realtime_authorization.sql",
+    "src/db/migrations/006_cinematch_security_hardening.sql",
   ];
 }
 
 function downMigrationPaths() {
   return [
+    "src/db/migrations/006_down_cinematch_security_hardening.sql",
     "src/db/migrations/005_down_realtime_authorization.sql",
     "src/db/migrations/004_down_vote_operation_idempotency.sql",
     "src/db/migrations/003_down_round_roster_freeze.sql",

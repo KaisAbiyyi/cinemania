@@ -22,8 +22,8 @@ async function main() {
   // Resolve every canonical file before creating anything; no shared-DB runners.
   const up = loadMigrationsFromCommit(commit);
   const down = loadMigrationsFromCommit(commit, downMigrationPaths());
-  assert.equal(up.length, 5);
-  assert.equal(down.length, 5);
+  assert.ok(up.length === 5 || up.length === 6);
+  assert.equal(up.length, down.length);
   const db = assertLocalStack().find(c => c.name === "cinematch-gh52d-db-1");
   assert(db, "Local database container missing");
   // Compare schema, rows and sequence state without logging developer content.

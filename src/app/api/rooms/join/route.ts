@@ -1,4 +1,5 @@
 import { assertSameOriginCsrf } from "@/lib/server/auth/csrfGuard";
+import { enforceRoomRateLimit } from "@/lib/server/auth/roomRateLimit";
 import { handleGuestApiError, privateJsonResponse } from "@/lib/server/auth/guestResponse";
 import { getRoomAuthorityStore } from "@/lib/server/room/roomStore";
 import { joinRoomWithSession, parseJsonBodySafe } from "@/lib/server/room/roomSnapshot";
@@ -12,6 +13,7 @@ import { notifyAfterCommit } from "@/lib/server/realtime/notifyAfterCommit";
 export async function POST(request: Request) {
   try {
     assertSameOriginCsrf(request);
+    await enforceRoomRateLimit(request, "join");
     const store = getRoomAuthorityStore();
     const body = await parseJsonBodySafe(request);
     const result = await joinRoomWithSession(request, body, store);

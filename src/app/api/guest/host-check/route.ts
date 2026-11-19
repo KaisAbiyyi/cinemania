@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { assertSameOriginCsrf } from "@/lib/server/auth/csrfGuard";
+import { readBoundedJson } from "@/lib/server/auth/requestBody";
 import { handleGuestApiError, privateJsonResponse } from "@/lib/server/auth/guestResponse";
 import { requireRoomActor } from "@/lib/server/auth/roomAuth";
 import { getRoomAuthorityStore } from "@/lib/server/room/roomStore";
@@ -16,15 +17,7 @@ export async function POST(request: Request) {
   try {
     assertSameOriginCsrf(request);
 
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return privateJsonResponse(
-        { error: "INVALID_JSON", message: "Request body must be valid JSON." },
-        400
-      );
-    }
+    const body = await readBoundedJson(request);
 
     const parsed = HostCheckSchema.safeParse(body);
     if (!parsed.success) {

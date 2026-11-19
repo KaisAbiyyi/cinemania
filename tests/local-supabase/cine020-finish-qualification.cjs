@@ -78,7 +78,8 @@ function writeCinemaniaTmdbPreload(filePath) {
       })),
     });
   const defaultPayload = mkMovies(910001);
-  const filteredPayload = mkMovies(920001);
+  const genre28Payload = mkMovies(920001);
+  const genre35Payload = mkMovies(930001);
 
   const script = `/* eslint-disable @typescript-eslint/no-require-imports */
 "use strict";
@@ -86,10 +87,15 @@ const https = require("node:https");
 const http = require("node:http");
 const { PassThrough } = require("node:stream");
 const DEFAULT_PAYLOAD = ${JSON.stringify(defaultPayload)};
-const FILTERED_PAYLOAD = ${JSON.stringify(filteredPayload)};
+const GENRE_28_PAYLOAD = ${JSON.stringify(genre28Payload)};
+const GENRE_35_PAYLOAD = ${JSON.stringify(genre35Payload)};
 function mockDiscover(opts, cb) {
   const rawUrl = typeof opts === "string" ? opts : opts instanceof URL ? opts.toString() : String(opts?.path || "");
-  const payload = rawUrl.includes("with_genres=28") || rawUrl.includes("with_genres=35") ? FILTERED_PAYLOAD : DEFAULT_PAYLOAD;
+  const payload = rawUrl.includes("with_genres=28")
+    ? GENRE_28_PAYLOAD
+    : rawUrl.includes("with_genres=35")
+      ? GENRE_35_PAYLOAD
+      : DEFAULT_PAYLOAD;
   const res = new PassThrough();
   res.statusCode = 200;
   res.headers = { "content-type": "application/json" };
@@ -424,7 +430,15 @@ async function main() {
     const winningGenre = raceRetry1.status === 200 ? "28" : "35";
     const winBody = await winnerRes.json();
     assert.equal(winBody.room.status, "ACTIVE");
-    assert.equal(winBody.room.deck[0].movieId, 920001);
+    const expectedMinMovieId = winningGenre === "28" ? 920001 : 930001;
+    const expectedMaxMovieId = expectedMinMovieId + 19;
+    assert.equal(winBody.room.deck.length, 20);
+    assert.equal(new Set(winBody.room.deck.map((c) => c.movieId)).size, 20);
+    assert.equal(
+      winBody.room.deck.every((c) => c.movieId >= expectedMinMovieId && c.movieId <= expectedMaxMovieId),
+      true,
+      `Expected filtered genre ${winningGenre} deck [${expectedMinMovieId}..${expectedMaxMovieId}], got first=${winBody.room.deck[0]?.movieId}`,
+    );
 
     // Idempotent replay across the OTHER instance
     const replayRetry = await post(origin2, roomK.members[0].cookie, `/api/rooms/${roomK.roomId}/retry`, {

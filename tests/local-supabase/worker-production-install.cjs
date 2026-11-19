@@ -32,7 +32,7 @@ async function main() {
     assert(!fs.existsSync(path.join(temp, "node_modules/vitest")), "Development test runtime must be absent");
     for (const pkg of ["pg", "tsx"]) assert(fs.existsSync(path.join(temp, "node_modules", pkg)), `${pkg} must survive production install`);
     await pool.query(`CREATE SCHEMA "${schema}"`); owned = true;
-    await pool.query(`CREATE TABLE "${schema}".room_events (room_id uuid, permanent_retry_count int, retry_count int, poison boolean, dispatched boolean)`);
+    await pool.query(`CREATE TABLE "${schema}".room_events (room_id uuid, version int, permanent_retry_count int, retry_count int, poison boolean, dispatched boolean, retry_not_before timestamptz)`);
     child = spawn(process.execPath, ["--import", "tsx", "--conditions=react-server", "scripts/realtime-worker.ts"], {
       cwd: temp, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ALLOW_DESTRUCTIVE_PG_TESTS: "false", NODE_ENV: "production", NODE_OPTIONS: "", DATABASE_URL: "", SUPABASE_PG_HOST: "127.0.0.1", SUPABASE_PG_PORT: "55432", SUPABASE_PG_USER: "supabase_admin", SUPABASE_PG_PASSWORD: env.POSTGRES_PASSWORD, SUPABASE_PG_DATABASE: "postgres", SUPABASE_PG_SSLMODE: "disable", SUPABASE_URL: "https://worker-package-control.supabase.co", SUPABASE_SECRET_KEY: "synthetic-never-used-no-pending-events", CINEMATCH_ALLOW_LOCAL_REALTIME: "false", CINEMATCH_OUTBOX_SCHEMA: schema, CINEMATCH_OUTBOX_POLL_MS: "100" },

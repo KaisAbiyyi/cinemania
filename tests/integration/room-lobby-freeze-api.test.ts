@@ -14,6 +14,7 @@ import { resetRoomAuthorityStoreForTests } from "@/lib/server/room/roomStore";
 import tmdbApi from "@/services/tmdbApi";
 
 const TEST_SECRET = "test-capability-signing-secret-cine-015-64-characters-long-abcdef02";
+let scenarioNetwork: number | undefined;
 
 function createSameOriginPost(
   url: string,
@@ -27,6 +28,7 @@ function createSameOriginPost(
   if (cookieHeader) {
     headers.cookie = cookieHeader;
   }
+  if (scenarioNetwork !== undefined) headers["x-vercel-forwarded-for"] = `203.0.113.${scenarioNetwork}`;
   return new NextRequest(url, {
     method: "POST",
     headers,
@@ -103,6 +105,8 @@ describe("CINE-015 Lobby Roster, Leave/Host Transfer, Start & Freeze API Integra
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    scenarioNetwork = undefined;
     resetRoomAuthorityStoreForTests();
     delete process.env.CINEMATCH_CAPABILITY_SECRET;
     delete process.env.CINEMATCH_SQLITE_PATH;
@@ -412,7 +416,10 @@ describe("CINE-015 Lobby Roster, Leave/Host Transfer, Start & Freeze API Integra
   });
 
   it("serializes race conditions between host start and concurrent join/leave consistently across rounds", async () => {
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("CINEMATCH_APP_ORIGIN", "http://localhost:3000");
     // Race A: host start vs concurrent join in 2-player LOBBY (8 rounds)
+    scenarioNetwork = 1;
     for (let round = 0; round < 8; round++) {
       const host = await createRoomHelper(`RaceHost-${round}`);
       const guest2 = await joinRoomHelper(host.body.room.code, "Guest2");
@@ -447,6 +454,7 @@ describe("CINE-015 Lobby Roster, Leave/Host Transfer, Start & Freeze API Integra
     }
 
     // Race B: host start vs concurrent leave in 2-player & 3-player LOBBY (8 rounds each)
+    scenarioNetwork = 2;
     for (let round = 0; round < 8; round++) {
       const host = await createRoomHelper(`RaceLeave2-${round}`);
       const guest2 = await joinRoomHelper(host.body.room.code, "Guest2");
@@ -480,6 +488,7 @@ describe("CINE-015 Lobby Roster, Leave/Host Transfer, Start & Freeze API Integra
       }
     }
 
+    scenarioNetwork = 3;
     for (let round = 0; round < 8; round++) {
       const host = await createRoomHelper(`RaceLeave3-${round}`);
       const guest2 = await joinRoomHelper(host.body.room.code, "Guest2");
