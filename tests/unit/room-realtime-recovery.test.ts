@@ -70,12 +70,14 @@ function jwt(issuedMs: number, ttlSeconds = 60) {
   return `${encode({ alg: "HS256" })}.${encode({ iat, exp: iat + ttlSeconds })}.sig`;
 }
 
+interface FakeClient { realtime: { setAuth: (t: string) => Promise<void>; disconnect: ReturnType<typeof vi.fn> }; auth: { dispose: ReturnType<typeof vi.fn> } }
+
 interface Rig {
   clock: FakeClock;
-  clients: Array<{ realtime: { setAuth: (t: string) => Promise<void>; disconnect: ReturnType<typeof vi.fn> } }>;
+  clients: FakeClient[];
   channels: FakeChannel[];
   authTokens: string[];
-  server: { version: number; snapshotFailures: number; tokenStatus: number; tokenFailures: number; snapshotStatus: number; behindOnce: number };
+  server: { tokenSkewMs: number; version: number; snapshotFailures: number; tokenStatus: number; tokenFailures: number; snapshotStatus: number; behindOnce: number };
   delivered: number[];
   errors: RoomRealtimeError[];
   statuses: RealtimeStatus[];
@@ -88,15 +90,16 @@ interface Rig {
 function makeRig(subscribeScript: string[][] = []): Rig {
   const clock = new FakeClock();
   const channels: FakeChannel[] = [];
-  const clients: Array<{ realtime: { setAuth: (t: string) => Promise<void>; disconnect: ReturnType<typeof vi.fn> } }> = [];
+  const clients: FakeClient[] = [];
   const authTokens: string[] = [];
-  const server = { version: 1, snapshotFailures: 0, tokenStatus: 200, tokenFailures: 0, snapshotStatus: 200, behindOnce: 0 };
+  const server = { version: 1, snapshotFailures: 0, tokenStatus: 200, tokenFailures: 0, snapshotStatus: 200, behindOnce: 0, tokenSkewMs: 0 };
   let tokens = 0;
   let snapshots = 0;
   const script = [...subscribeScript];
   vi.mocked(createClient).mockImplementation((() => {
     const fake = {
       realtime: { setAuth: async (token: string) => { authTokens.push(token); }, disconnect: vi.fn() },
+      auth: { dispose: vi.fn() },
       channel: (topic: string, config: unknown) => {
         expect(config).toEqual({ config: { private: true } });
         const ch = new FakeChannel(topic, script.shift() ?? ["SUBSCRIBED"]);
@@ -114,7 +117,7 @@ function makeRig(subscribeScript: string[][] = []): Rig {
       tokens++;
       if (server.tokenFailures > 0) { server.tokenFailures--; throw new TypeError("network down"); }
       if (server.tokenStatus !== 200) return new Response("{}", { status: server.tokenStatus });
-      return new Response(JSON.stringify({ token: jwt(clock.now()) }), { status: 200 });
+      return new Response(JSON.stringify({ token: jwt(clock.now() + server.tokenSkewMs) }), { status: 200 });
     }
     snapshots++;
     if (server.snapshotFailures > 0) { server.snapshotFailures--; throw new TypeError("network down"); }
@@ -344,6 +347,7 @@ describe("CINE-019 realtime recovery", () => {
     await rig.clock.advance(0);
     expect(rig.delivered).toEqual([1, 3]);
     rig.server.version = 5;
+    await rig.clock.advance(1000); // wake-ups closer than 1 s are coalesced
     rig.clock.wake("online");
     await rig.clock.advance(0);
     expect(rig.delivered).toEqual([1, 3, 5]);
@@ -360,6 +364,70 @@ describe("CINE-019 realtime recovery", () => {
     await rig.clock.advance(0);
     expect(rig.channels).toHaveLength(3);
     expect(handle.status()).toBe("live");
+    await handle();
+  });
+
+  it("coalesces bursts of wake-up events into one resync", async () => {
+    const rig = makeRig();
+    const handle = await start(rig);
+    await rig.clock.advance(1000);
+    const before = rig.snapshotRequests();
+    for (const reason of ["focus", "visible", "online", "visible", "focus"] as const) rig.clock.wake(reason);
+    await rig.clock.advance(0);
+    expect(rig.snapshotRequests() - before).toBe(1);
+    await rig.clock.advance(1000);
+    rig.clock.wake("focus");
+    await rig.clock.advance(0);
+    expect(rig.snapshotRequests() - before).toBe(2);
+    await handle();
+  });
+
+  it.each([-120000, 120000, 3_600_000])("never rotates in a loop when the client clock is skewed by %i ms", async (skew) => {
+    const rig = makeRig();
+    rig.server.tokenSkewMs = skew; // tokens look already expired (or far in the future) to the client clock
+    const handle = await start(rig);
+    const before = rig.tokenRequests();
+    await rig.clock.advance(65000);
+    expect(rig.tokenRequests() - before).toBeLessThanOrEqual(3); // about one rotation per 30 s, never per heartbeat
+    expect(rig.channels.length).toBeLessThanOrEqual(4);
+    expect(rig.statuses).toEqual(["live"]);
+    await handle();
+  });
+
+  it("disposes the auth client of every discarded client (no leaked window listeners)", async () => {
+    const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
+    const handle = await start(rig);
+    rig.channels[0].emit("CLOSED");
+    await rig.clock.advance(3000);
+    await rig.clock.advance(32000); // plus one rotation
+    await handle();
+    expect(rig.clients.length).toBeGreaterThanOrEqual(4);
+    for (const client of rig.clients) {
+      expect(client.auth.dispose).toHaveBeenCalledTimes(1);
+      expect(client.realtime.disconnect).toHaveBeenCalled();
+    }
+  });
+
+  it("close() during an in-flight rotation disposes the half-open client immediately", async () => {
+    const rig = makeRig([["SUBSCRIBED"], []]); // the rotation channel never answers
+    const handle = await start(rig);
+    await rig.clock.advance(31000);
+    expect(rig.channels).toHaveLength(2);
+    expect(rig.channels[1].removed).toBe(false);
+    await handle();
+    expect(rig.channels.every((c) => c.removed)).toBe(true);
+    expect(rig.clients.every((c) => c.realtime.disconnect.mock.calls.length > 0)).toBe(true);
+    expect(rig.clock.pendingTimers).toBe(0);
+    await rig.clock.advance(20000);
+    expect(rig.channels).toHaveLength(2);
+    expect(rig.errors.filter((e) => e.code === "SUBSCRIBE_FAILED").length).toBeLessThanOrEqual(1);
+  });
+
+  it("reports degraded when the ACTIVE channel's own token expires and every rotation fails to join", async () => {
+    const rig = makeRig([["SUBSCRIBED"], ...Array.from({ length: 30 }, () => ["CHANNEL_ERROR"])]);
+    const handle = await start(rig);
+    await rig.clock.advance(70000); // tokens keep being fetched, but no replacement ever joins
+    expect(handle.status()).toBe("degraded");
     await handle();
   });
 
@@ -403,7 +471,7 @@ describe("CINE-019 realtime recovery", () => {
     await handle();
   });
 
-  it("retries when the snapshot is briefly behind the announced version, then stops after a bound", async () => {
+  it("retries when the snapshot is briefly behind the announced version until it catches up", async () => {
     const rig = makeRig();
     const handle = await start(rig);
     rig.server.version = 9;

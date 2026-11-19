@@ -65,10 +65,21 @@ export function createRoomActions(options: RoomActionsOptions) {
   const inFlight = new Map<string, { signature: string; promise: Promise<RoomActionResult> }>();
   let filterQueue: Promise<unknown> = Promise.resolve();
 
-  async function send(method: string, path: string, body: unknown, headers: Record<string, string> = {}): Promise<RoomActionResult> {
+  /**
+   * `idempotent` actions (a vote with its operation id, a filter replacement) are retried automatically with
+   * the same payload. Others (start, leave) are NOT: after an ambiguous failure the outcome is unknown, so the
+   * layer resyncs the authoritative view and returns `transient` for the caller/user to decide.
+   * `acceptSnapshot` is false for responses whose viewer is not the full GET shape (filter edits).
+   */
+  async function send(
+    method: string, path: string, body: unknown, headers: Record<string, string> = {},
+    mode: { idempotent: boolean; acceptSnapshot: boolean; resyncOnSuccess?: boolean }
+  ): Promise<RoomActionResult> {
+    const attempts = mode.idempotent ? maxAttempts : 1;
     let last: RoomActionFailure | null = null;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
       let response: Response | null = null;
+      let retryAfterMs = 0;
       try {
         response = await get(base + path, {
           method,
@@ -81,25 +92,38 @@ export function createRoomActions(options: RoomActionsOptions) {
         last = { ok: false, status: 0, code: "NETWORK_ERROR", message: "Request failed before a response was received", stale: false, transient: true };
       }
       if (response) {
-        let parsed: Record<string, unknown> = {};
-        try { parsed = await response.json() as Record<string, unknown>; } catch { parsed = {}; }
+        let parsed: Record<string, unknown> | null = null;
+        try { parsed = await response.json() as Record<string, unknown>; } catch { parsed = null; }
         if (response.ok) {
-          const room = parsed.room as RoomSnapshot["room"] | undefined;
-          if (room && typeof room === "object" && parsed.viewer) options.accept({ room, viewer: parsed.viewer });
-          return { ok: true, replayed: parsed.idempotentReplay === true, data: parsed };
-        }
-        const code = typeof parsed.error === "string" ? parsed.error : "REQUEST_FAILED";
-        const message = typeof parsed.message === "string" ? parsed.message : "Request failed";
-        if (RETRYABLE_STATUS.has(response.status)) {
-          last = { ok: false, status: response.status, code, message, stale: false, transient: true };
+          if (parsed === null || typeof parsed !== "object") {
+            // The server answered 2xx but the body is unreadable: the outcome is known only to the server.
+            last = { ok: false, status: response.status, code: "INVALID_RESPONSE", message: "Response body was not readable", stale: false, transient: true };
+          } else {
+            const room = parsed.room as RoomSnapshot["room"] | undefined;
+            if (mode.acceptSnapshot && room && typeof room === "object" && parsed.viewer) options.accept({ room, viewer: parsed.viewer });
+            else if (mode.resyncOnSuccess) await options.resync().catch(() => undefined);
+            return { ok: true, replayed: parsed.idempotentReplay === true, data: parsed };
+          }
         } else {
-          const stale = response.status === 409 || STALE_CODES.has(code);
-          if (stale) await options.resync().catch(() => undefined);
-          return { ok: false, status: response.status, code, message, stale, transient: false };
+          const body2 = parsed ?? {};
+          const code = typeof body2.error === "string" ? body2.error : "REQUEST_FAILED";
+          const message = typeof body2.message === "string" ? body2.message : "Request failed";
+          if (RETRYABLE_STATUS.has(response.status)) {
+            last = { ok: false, status: response.status, code, message, stale: false, transient: true };
+            retryAfterMs = Number(response.headers.get("retry-after")) * 1000 || 0;
+          } else {
+            const stale = response.status === 409 || STALE_CODES.has(code);
+            if (stale) await options.resync().catch(() => undefined);
+            return { ok: false, status: response.status, code, message, stale, transient: false };
+          }
         }
       }
-      if (attempt < maxAttempts) await sleep(Math.round(retryBaseMs * 2 ** (attempt - 1) * (0.5 + random() / 2)));
+      // A server asking for a long pause (for example upstream 503 + Retry-After) is not hammered.
+      if (retryAfterMs > 5000) break;
+      if (attempt < attempts) await sleep(Math.round(retryBaseMs * 2 ** (attempt - 1) * (0.5 + random() / 2)));
     }
+    // Ambiguous failure of a call that may or may not have taken effect: converge on the authoritative view.
+    if (!mode.idempotent) await options.resync().catch(() => undefined);
     return last as RoomActionFailure;
   }
 
@@ -119,20 +143,28 @@ export function createRoomActions(options: RoomActionsOptions) {
     vote(input: { candidateId: string; movieId: number; vote: VoteChoice; roundId?: string | null }): Promise<RoomActionResult> {
       const operationId = voteOperationId(input.candidateId, input.roundId);
       const body = { candidateId: input.candidateId, movieId: input.movieId, vote: input.vote, operationId, ...(input.roundId ? { roundId: input.roundId } : {}) };
-      return singleFlight("vote:" + input.candidateId, input.vote, () => send("POST", "/votes", body, { "idempotency-key": operationId }));
+      return singleFlight("vote:" + input.candidateId, input.vote, () => send("POST", "/votes", body, { "idempotency-key": operationId }, { idempotent: true, acceptSnapshot: true }));
     },
-    /** Double clicks share one request; a retry after a lost response resolves as stale and resyncs. */
+    /**
+     * Double clicks share one request. Never retried automatically: if the response is lost the layer resyncs
+     * and returns `transient`; the round may already be ACTIVE, which the snapshot then shows. A deliberate
+     * second attempt that meets an ACTIVE room returns `stale` (409) and resyncs.
+     */
     startRound(body: Record<string, unknown> = {}): Promise<RoomActionResult> {
-      return singleFlight("start", "start", () => send("POST", "/start", body));
+      return singleFlight("start", "start", () => send("POST", "/start", body, {}, { idempotent: false, acceptSnapshot: true }));
     },
-    /** Filter edits are serialized so the server applies them in the order the host made them. */
+    /**
+     * Filter edits are serialized so the server applies them in the order the host made them. Replacement
+     * semantics make a retry safe. The response viewer is not the full snapshot shape, so success triggers a
+     * resync instead of accepting it.
+     */
     updateFilters(filter: Record<string, unknown>): Promise<RoomActionResult> {
-      const run = filterQueue.then(() => send("PATCH", "/filters", filter));
+      const run = filterQueue.then(() => send("PATCH", "/filters", filter, {}, { idempotent: true, acceptSnapshot: false, resyncOnSuccess: true }));
       filterQueue = run.catch(() => undefined);
       return run;
     },
     leave(): Promise<RoomActionResult> {
-      return singleFlight("leave", "leave", () => send("POST", "/leave", {}));
+      return singleFlight("leave", "leave", () => send("POST", "/leave", {}, {}, { idempotent: false, acceptSnapshot: false }));
     },
   };
 }

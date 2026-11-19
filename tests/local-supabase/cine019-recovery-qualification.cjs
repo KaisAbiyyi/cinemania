@@ -479,7 +479,53 @@ async function main() {
       return { counts: before };
     });
 
-    for (const id of ["A", "B", "I", "H", "C", "D", "E", "F", "G"]) await scenarios[id]();
+    // J. The product action layer (single flight, stable operation ids, stale handling, snapshot gate) over the
+    //    real HTTP API with duplicate tabs on two app instances.
+    scenarios.J = () => run("J", "action layer over real HTTP: duplicate tabs, double clicks, stale replay", async () => {
+      const room = await createRoom(3, "J");
+      const clients = await startClients(room, { label: "J" });
+      const hostTab2Member = { ...room.members[0], origin: origin2 };
+      const hostTab2 = makeClient(hostTab2Member, { label: "J-host-tab2" });
+      await hostTab2.start();
+      const everyone = [...clients, hostTab2];
+      const a = clients[0].actions();
+      const b = hostTab2.actions();
+      const [s1, s2, s3] = await Promise.all([a.startRound(), a.startRound(), b.startRound()]);
+      assert.equal(s1, s2, "double click on one tab shares one request");
+      const wins = [s1, s3].filter((r) => r.ok);
+      const losses = [s1, s3].filter((r) => !r.ok);
+      assert.equal(wins.length, 1, "exactly one tab starts the round");
+      assert.equal(losses[0].stale, true, "the other tab is told its view was stale");
+      await converge(room, everyone, 20000, "J after start");
+      const latest = clients[1].latest;
+      assert.equal(latest.room.status, "ACTIVE");
+      const round = { roundId: latest.room.currentRoundId, deck: latest.room.deck };
+      const card = round.deck[0];
+      const voteCalls = [];
+      for (const [i, c] of clients.entries()) {
+        const actions = c.actions();
+        const input = { candidateId: card.candidateId, movieId: card.movieId, vote: "LIKE", roundId: round.roundId };
+        voteCalls.push(actions.vote(input), actions.vote(input)); // double click
+        if (i === 0) voteCalls.push(b.vote(input)); // same participant, second tab, other instance
+      }
+      const voteResults = await Promise.all(voteCalls);
+      assert(voteResults.every((r) => r.ok), `every vote resolves ok (fresh or replay): ${JSON.stringify(voteResults.filter((r) => !r.ok))}`);
+      const truth = await converge(room, everyone, 25000, "J after votes");
+      const counts = await dbCounts(room.roomId);
+      assert.equal(counts.votes, 3); assert.equal(counts.matchEvents, 1);
+      for (const c of everyone) {
+        assert.equal(c.latest.room.status, "MATCHED");
+        assert.equal(c.versions.filter((v) => v === truth).length, 1, "terminal state delivered exactly once");
+      }
+      const stale = await clients[2].actions().vote({ candidateId: round.deck[1].candidateId, movieId: round.deck[1].movieId, vote: "LIKE", roundId: round.roundId });
+      assert.equal(stale.ok, false); assert.equal(stale.stale, true);
+      await sleep(1500);
+      for (const c of everyone) assertStrictlyIncreasing(c.versions, `J/${c.label}`);
+      await Promise.all(everyone.map((c) => c.stop()));
+      return { finalVersion: truth, replays: voteResults.filter((r) => r.replayed).length, staleCode: stale.code };
+    });
+
+    for (const id of ["A", "B", "I", "H", "C", "D", "E", "F", "G", "J"]) await scenarios[id]();
     evidence.finishedAt = new Date().toISOString();
     evidence.allPass = evidence.scenarios.length > 0 && evidence.scenarios.every((s) => s.result === "PASS");
     const out = flag("--evidence");

@@ -275,6 +275,7 @@ describe("CINE-019 reconnect, duplicate request and stale-tab resilience (API + 
     expect(view.body.room).toMatchObject({ status: "MATCHED", matchedMovieId: card0.movieId });
   });
 
+  // Documents the CURRENT leave policy (409 outside LOBBY). CINE-020 owns finish/disconnect policy and may change it.
   it("never shrinks the frozen quorum: leave in ACTIVE is rejected for guest and host, quorum is stable across reloads", async () => {
     const { roomId, cookies } = await setupStartedRoom(4);
     expect((await snapshot(roomId, cookies[0]!)).body.room.frozenQuorum).toBe(4);

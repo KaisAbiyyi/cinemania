@@ -125,7 +125,7 @@ describe("CINE-019 room action layer", () => {
     }
   });
 
-  it("collapses simultaneous host start clicks and resolves the loser as stale", async () => {
+  it("collapses simultaneous host start clicks into one request", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const { actions, requests } = setup(async () => { await gate; return ok(3); });
@@ -134,11 +134,44 @@ describe("CINE-019 room action layer", () => {
     release();
     expect(await a).toBe(await b);
     expect(requests).toHaveLength(1);
-    // A retry after a lost response finds the round already started: stale, and the view is resynced.
-    const retried = setup(async (_u, _i, call) => (call === 1 ? Promise.reject(new TypeError("lost")) : json({ error: "ROOM_ALREADY_ACTIVE" }, 409)));
-    const result = await retried.actions.startRound();
-    expect(result).toMatchObject({ ok: false, stale: true, code: "ROOM_ALREADY_ACTIVE" });
-    expect(retried.resync).toHaveBeenCalledTimes(1);
+  });
+
+  it("never retries start or leave automatically: an ambiguous failure resyncs and is reported transient", async () => {
+    for (const run of [(x: ReturnType<typeof setup>) => x.actions.startRound(), (x: ReturnType<typeof setup>) => x.actions.leave()]) {
+      for (const failure of ["network", 503, "garbled"] as const) {
+        const ctx = setup(async () => {
+          if (failure === "network") throw new TypeError("response lost after the server committed");
+          if (failure === "garbled") return new Response("<html>", { status: 200 });
+          return json({ error: "UPSTREAM" }, 503);
+        });
+        const result = await run(ctx);
+        expect(result).toMatchObject({ ok: false, transient: true, stale: false });
+        expect(ctx.requests).toHaveLength(1); // a retry could repeat a committed start or hit a removed participant
+        expect(ctx.resync).toHaveBeenCalledTimes(1);
+      }
+    }
+  });
+
+  it("a deliberate second start against an ACTIVE room is stale (409) and resyncs", async () => {
+    const ctx = setup(async () => json({ error: "ROOM_ALREADY_ACTIVE" }, 409));
+    expect(await ctx.actions.startRound()).toMatchObject({ ok: false, stale: true, code: "ROOM_ALREADY_ACTIVE" });
+    expect(ctx.resync).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not hammer a server that asks for a long pause (Retry-After) and treats an unreadable 2xx as ambiguous", async () => {
+    const paused = setup(async () => new Response(JSON.stringify({ error: "UPSTREAM_UNAVAILABLE" }), { status: 503, headers: { "retry-after": "30" } }));
+    expect(await paused.actions.vote({ candidateId: CANDIDATE, movieId: 7, vote: "LIKE" })).toMatchObject({ ok: false, transient: true });
+    expect(paused.requests).toHaveLength(1);
+    const garbled = setup(async (_u, _i, call) => (call < 3 ? new Response("not json", { status: 200 }) : ok(9)));
+    expect(await garbled.actions.vote({ candidateId: CANDIDATE, movieId: 7, vote: "LIKE" })).toMatchObject({ ok: true });
+    expect(garbled.requests).toHaveLength(3); // an idempotent vote is safely retried with the same operation id
+  });
+
+  it("does not accept a filter response as the authoritative snapshot; it resyncs instead", async () => {
+    const ctx = setup(async () => ok(4));
+    expect(await ctx.actions.updateFilters({ sort_by: "popularity.desc" })).toMatchObject({ ok: true });
+    expect(ctx.accepted).toEqual([]);
+    expect(ctx.resync).toHaveBeenCalledTimes(1);
   });
 
   it("serializes filter edits in the order the host made them", async () => {

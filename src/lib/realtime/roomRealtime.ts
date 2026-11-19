@@ -58,6 +58,8 @@ export interface RealtimeTuning {
   degradedAfterAttempts: number;
   /** Consecutive "hint ahead of snapshot" retries before leaving it to the poll. */
   behindRetryMax: number;
+  /** Minimum gap between wake-triggered resyncs (focus/visibility/online can fire in bursts). */
+  wakeMinIntervalMs: number;
 }
 
 export const DEFAULT_REALTIME_TUNING: RealtimeTuning = {
@@ -69,6 +71,7 @@ export const DEFAULT_REALTIME_TUNING: RealtimeTuning = {
   backoffMaxMs: 10000,
   degradedAfterAttempts: 3,
   behindRetryMax: 5,
+  wakeMinIntervalMs: 1000,
 };
 
 export interface RoomRealtimeHandle {
@@ -109,23 +112,28 @@ function defaultEnvironment(): RealtimeEnvironment {
   };
 }
 
-/** Decodes only the `iat`/`exp` timing claims for scheduling. It is never trusted for authorization. */
-function readTokenTiming(token: string, now: number): { expiresAt: number; renewAt: number } {
-  const fallback = { expiresAt: now + 60000, renewAt: now + 30000 };
+/** Smallest gap between two scheduled rotations, so no token can ever cause a rotation storm. */
+const MIN_ROTATION_INTERVAL_MS = 5000;
+const FALLBACK_LIFETIME_MS = 60000;
+
+/**
+ * Decodes only the token's LIFETIME (`exp - iat`) for scheduling. It is never trusted for authorization and
+ * deliberately never compares `exp` with the client clock: a client whose clock is far ahead of the server
+ * would otherwise see every fresh token as already expired and rotate in a tight loop.
+ * Deadlines are measured from the local time the token was fetched.
+ */
+function readTokenLifetimeMs(token: string): number {
   try {
     const part = token.split(".")[1];
-    if (!part) return fallback;
+    if (!part) return FALLBACK_LIFETIME_MS;
     const normalized = part.replace(/-/g, "+").replace(/_/g, "/");
     const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
     const claims = JSON.parse(atob(padded)) as { exp?: unknown; iat?: unknown };
-    if (typeof claims.exp !== "number" || !Number.isFinite(claims.exp)) return fallback;
-    const expiresAt = claims.exp * 1000;
-    if (expiresAt <= now) return { expiresAt, renewAt: now };
-    const lifetime = typeof claims.iat === "number" && claims.exp > claims.iat ? (claims.exp - claims.iat) * 1000 : expiresAt - now;
-    // Renew at about half the lifetime (L-005): a hosted private channel closes when its JWT expires.
-    return { expiresAt, renewAt: Math.min(expiresAt - 1000, now + Math.max(1000, lifetime / 2)) };
+    if (typeof claims.exp !== "number" || typeof claims.iat !== "number") return FALLBACK_LIFETIME_MS;
+    const lifetime = (claims.exp - claims.iat) * 1000;
+    return Number.isFinite(lifetime) && lifetime > 0 ? lifetime : FALLBACK_LIFETIME_MS;
   } catch {
-    return fallback;
+    return FALLBACK_LIFETIME_MS;
   }
 }
 
@@ -161,10 +169,22 @@ export async function startRoomRealtime(options: {
   //   stale leave closes the newest channel (observed as a tight live/reconnecting flap, CINE-019 scenario D);
   // - pushing a renewed token to a joined private channel (setAuth) made the local Realtime server close it
   //   EARLY (renewal at 30 s closed the channel at 50 s; at 20 s, at 30 s), so renewal is make-before-break.
+  // The auth client is never used (the capability is set directly on the realtime socket). It would still
+  // register a window visibilitychange listener per client, so it is not initialised and is disposed.
   const makeClient = () => createClient(options.supabaseUrl, options.publishableKey, {
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, skipAutoInitialize: true },
   });
-  interface Slot { client: ReturnType<typeof makeClient>; channel: ReturnType<ReturnType<typeof makeClient>["channel"]>; joined: boolean; dead: boolean }
+  interface Slot {
+    client: ReturnType<typeof makeClient>;
+    channel: ReturnType<ReturnType<typeof makeClient>["channel"]>;
+    joined: boolean;
+    dead: boolean;
+    /** Local deadline of the capability this slot joined with (never derived from the server clock). */
+    expiresAt: number;
+    /** Rejects an in-flight join when the slot is disposed. */
+    abort?: (error: Error) => void;
+  }
+  const slots = new Set<Slot>();
   const base = "/api/rooms/" + encodeURIComponent(options.roomId);
   const topic = "room:" + options.roomId;
 
@@ -180,6 +200,8 @@ export async function startRoomRealtime(options: {
   let tokenRenewAt = 0;
   let renewFailures = 0;
   let syncFailures = 0;
+  let behindFailures = 0;
+  let lastWake = -Infinity;
   let syncRetryTimer: unknown = null;
   let tickTimer: unknown = null;
   let lastTick = env.now();
@@ -230,9 +252,11 @@ export async function startRoomRealtime(options: {
     fetching = (async () => {
       const token = await fetchToken();
       currentToken = token;
-      const timing = readTokenTiming(token, env.now());
-      tokenExpiresAt = timing.expiresAt;
-      tokenRenewAt = timing.renewAt;
+      const fetchedAt = env.now();
+      const lifetime = readTokenLifetimeMs(token);
+      tokenExpiresAt = fetchedAt + lifetime;
+      // Rotate at about half the lifetime (L-005), never more often than MIN_ROTATION_INTERVAL_MS.
+      tokenRenewAt = fetchedAt + Math.max(MIN_ROTATION_INTERVAL_MS, lifetime / 2);
     })().finally(() => { fetching = null; });
     return fetching;
   }
@@ -261,8 +285,17 @@ export async function startRoomRealtime(options: {
     if (!slot || slot.dead) return;
     slot.dead = true;
     slot.joined = false;
+    slots.delete(slot);
+    slot.abort?.(new RoomRealtimeError("SUBSCRIBE_FAILED", "Private realtime subscription was cancelled"));
     try { void Promise.resolve(slot.client.removeChannel(slot.channel)).catch(() => undefined); } catch { /* socket may already be gone */ }
     try { void Promise.resolve(slot.client.realtime?.disconnect?.()).catch(() => undefined); } catch { /* best effort */ }
+    try { void Promise.resolve(slot.client.auth?.dispose?.()).catch(() => undefined); } catch { /* best effort */ }
+  }
+
+  /** Disposes the active slot AND any join still in flight (rotation or recovery). */
+  function disposeAllSlots() {
+    for (const slot of [...slots]) disposeSlot(slot);
+    active = null;
   }
 
   function stopBackground() {
@@ -279,8 +312,7 @@ export async function startRoomRealtime(options: {
     report(error);
     stopBackground();
     setStatus("closed");
-    disposeSlot(active);
-    active = null;
+    disposeAllSlots();
   }
 
   /** Forced authoritative snapshot read with retry. Never throws; failures are reported and retried. */
@@ -292,15 +324,21 @@ export async function startRoomRealtime(options: {
         throw new RoomRealtimeError("SNAPSHOT_BEHIND", "Snapshot is older than the announced version");
       }
       syncFailures = 0;
+      behindFailures = 0;
     } catch (error) {
       if (closed || terminal) return;
       if (isPermanent(error)) { terminate(error); return; }
-      syncFailures++;
-      report(error);
       const behind = error instanceof RoomRealtimeError && error.code === "SNAPSHOT_BEHIND";
-      if (behind && syncFailures > tuning.behindRetryMax) return;
+      // "Behind" retries have their own bounded budget; beyond it the poll takes over, silently.
+      if (behind) {
+        behindFailures++;
+        if (behindFailures > tuning.behindRetryMax) return;
+      } else {
+        syncFailures++;
+      }
+      report(error);
       if (syncRetryTimer === null) {
-        syncRetryTimer = env.setTimeout(() => { syncRetryTimer = null; void syncNow(requireVersion); }, backoff(syncFailures));
+        syncRetryTimer = env.setTimeout(() => { syncRetryTimer = null; void syncNow(requireVersion); }, backoff(behind ? behindFailures : syncFailures));
       }
     }
   }
@@ -326,10 +364,20 @@ export async function startRoomRealtime(options: {
 
   /** Opens a new client + private channel with the current token. Resolves once SUBSCRIBED. */
   async function joinNewSlot(): Promise<Slot> {
+    const expiresAt = tokenExpiresAt;
     const client = makeClient();
-    await client.realtime.setAuth(currentToken);
-    const channel = client.channel(topic, { config: { private: true } });
-    const slot: Slot = { client, channel, joined: false, dead: false };
+    let channel: Slot["channel"];
+    try {
+      await client.realtime.setAuth(currentToken);
+      if (closed || terminal) throw new RoomRealtimeError("SUBSCRIBE_FAILED", "Realtime client was closed");
+      channel = client.channel(topic, { config: { private: true } });
+    } catch (error) {
+      try { void Promise.resolve(client.realtime?.disconnect?.()).catch(() => undefined); } catch { /* best effort */ }
+      try { void Promise.resolve(client.auth?.dispose?.()).catch(() => undefined); } catch { /* best effort */ }
+      throw error;
+    }
+    const slot: Slot = { client, channel, joined: false, dead: false, expiresAt };
+    slots.add(slot);
     let joinedOnce = false;
     channel.on("broadcast", { event: "room_changed" }, (message: { payload?: unknown }) => {
       if (!slot.dead) onHint(message.payload);
@@ -344,6 +392,7 @@ export async function startRoomRealtime(options: {
           env.clearTimeout(timer);
           if (error) reject(error); else resolve();
         };
+        slot.abort = settle;
         channel.subscribe((state: string) => {
           if (slot.dead || closed || terminal) return;
           if (state === "SUBSCRIBED") {
@@ -420,6 +469,11 @@ export async function startRoomRealtime(options: {
   async function tick(reason: "timer" | WakeReason) {
     if (closed || terminal) return;
     const now = env.now();
+    if (reason !== "timer") {
+      // focus / visibilitychange / pageshow / online can fire in bursts: coalesce wake-ups.
+      if (now - lastWake < tuning.wakeMinIntervalMs) return;
+      lastWake = now;
+    }
     const gap = now - lastTick;
     lastTick = now;
     const throttled = reason !== "timer" || gap > tuning.throttleGapMs;
@@ -431,7 +485,8 @@ export async function startRoomRealtime(options: {
         renewFailures++;
         tokenRenewAt = env.now() + backoff(renewFailures);
         report(error);
-        if (env.now() >= tokenExpiresAt) setStatus("degraded");
+        // The ACTIVE channel dies at ITS token's deadline, not at the (newer) token that failed to join.
+        if (env.now() >= (active?.expiresAt ?? tokenExpiresAt)) setStatus("degraded");
       });
     }
     if (throttled) wakeSleepers();
@@ -448,8 +503,7 @@ export async function startRoomRealtime(options: {
   async function shutdown() {
     closed = true;
     stopBackground();
-    disposeSlot(active);
-    active = null;
+    disposeAllSlots();
     setStatus("closed");
   }
 
