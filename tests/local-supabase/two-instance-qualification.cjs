@@ -812,6 +812,18 @@ async function main() {
   } catch (err) {
     console.error("--- INSTANCE 1 LOGS ---\n" + (proc1?.getLogs() || ""));
     console.error("--- INSTANCE 2 LOGS ---\n" + (proc2?.getLogs() || ""));
+    // Read-only failure diagnostics: separate "never published" from "published but not
+    // delivered" (outbox row state + worker logs). Adds output only; asserts nothing.
+    console.error("--- WORKER 1 LOGS ---\n" + (worker1?.getLogs() || "") + "\n--- WORKER 2 LOGS ---\n" + (worker2?.getLogs() || ""));
+    try {
+      if (createdRoomIds.length) {
+        const rows = (await db.query(
+          "SELECT room_id, version, dispatched, retry_count, permanent_retry_count, poison, created_at, dispatched_at, " +
+          "ROUND(EXTRACT(EPOCH FROM (dispatched_at - created_at))::numeric, 2) AS dispatch_lag_s " +
+          "FROM public.room_events WHERE room_id = ANY($1::uuid[]) ORDER BY created_at DESC, version DESC LIMIT 12", [createdRoomIds])).rows;
+        console.error("--- OUTBOX ROW STATE (newest 12, read-only) ---\n" + JSON.stringify(rows, null, 1) + "\nFAILURE_UTC " + new Date().toISOString());
+      }
+    } catch (diagError) { console.error("Outbox diagnostics unavailable:", diagError.message); }
     throw err;
   } finally {
     if (browser) await browser.close();
