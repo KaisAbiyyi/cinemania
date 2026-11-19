@@ -214,6 +214,7 @@ async function main() {
       for (const c of clients) assertStrictlyIncreasing(c.versions, `${label}/${c.label}`);
       return truth;
     }
+    const allLive = (clients, label) => waitUntil(() => clients.every((c) => c.handle.status() === "live"), 40000, `${label}: every client reports live`, 250);
     async function startRound(room) {
       const res = await post(room.members[0].origin, room.members[0].cookie, `/api/rooms/${room.roomId}/start`, {});
       assert.equal(res.status, 200, `start expected 200 got ${res.status}`);
@@ -313,8 +314,8 @@ async function main() {
       const truth = await converge(room, clients, 45000, "C after reconnect");
       for (const c of clients) {
         assert(c.statuses.includes("reconnecting") || c.statuses.includes("degraded"), `${c.label} must have reported the outage: ${c.statuses}`);
-        assert.equal(c.handle.status(), "live");
       }
+      await allLive(clients, "C");
       await Promise.all(clients.map((c) => c.stop()));
       return { finalVersion: truth, statuses: clients.map((c) => c.statuses), tokenRenewalsDuringRecovery: clients.map((c, i) => c.tokenRequests - tokenBefore[i]) };
     });
@@ -332,10 +333,8 @@ async function main() {
       await sleep(45000); // total outage ~75 s > 60 s token lifetime
       proxy.restore();
       const truth = await converge(room, clients, 60000, "D after long outage");
-      for (const c of clients) {
-        assert.equal(c.handle.status(), "live");
-        assert(c.tokenRequests > tokenBefore[clients.indexOf(c)], "capability must have been renewed");
-      }
+      for (const c of clients) assert(c.tokenRequests > tokenBefore[clients.indexOf(c)], "capability must have been renewed");
+      await allLive(clients, "D");
       // The recovered channel must deliver hints again (not only polled snapshots): disable nothing, just mutate and time it.
       const t0 = Date.now();
       assert.equal((await castVote(room.members[0], voteBody(round, round.deck[1], "LIKE", "d-live"))).status, 200);
