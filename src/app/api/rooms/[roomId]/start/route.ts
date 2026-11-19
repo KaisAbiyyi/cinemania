@@ -3,6 +3,7 @@ import { assertSameOriginCsrf } from "@/lib/server/auth/csrfGuard";
 import { handleGuestApiError, privateJsonResponse } from "@/lib/server/auth/guestResponse";
 import { getRoomAuthorityStore } from "@/lib/server/room/roomStore";
 import { parseJsonBodySafe, startRoomRoundWithSession } from "@/lib/server/room/roomSnapshot";
+import { notifyAfterCommit } from "@/lib/server/realtime/notifyAfterCommit";
 
 /**
  * POST /api/rooms/[roomId]/start
@@ -19,6 +20,7 @@ export async function POST(
     const { roomId } = await context.params;
     const store = getRoomAuthorityStore();
     const result = await startRoomRoundWithSession(request, roomId, store, { body });
+    await notifyAfterCommit(store, result.room.roomId);
 
     return privateJsonResponse(
       {

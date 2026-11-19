@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { handleGuestApiError, privateJsonResponse } from "@/lib/server/auth/guestResponse";
 import { getRoomAuthorityStore } from "@/lib/server/room/roomStore";
 import { getAuthenticatedRoomSnapshot } from "@/lib/server/room/roomSnapshot";
+import { notifyAfterCommit } from "@/lib/server/realtime/notifyAfterCommit";
 
 /**
  * GET /api/rooms/[roomId]
@@ -15,6 +16,7 @@ export async function GET(
     const { roomId } = await context.params;
     const store = getRoomAuthorityStore();
     const result = await getAuthenticatedRoomSnapshot(request, roomId, store);
+    await notifyAfterCommit(store, result.room.roomId);
 
     return privateJsonResponse(
       {

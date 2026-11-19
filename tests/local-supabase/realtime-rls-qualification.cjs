@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 "use strict";
 // Real local Docker Supabase Realtime + Postgres RLS + JWT qualification suite.
-// Uses only loopback 127.0.0.1:54321 and 127.0.0.1:55432; never touches hosted Supabase.
+// Default loopback-only. --hosted-staging requires a separate exact-project consent fence.
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const path = require("node:path");
@@ -10,13 +10,16 @@ const { createClient } = require(path.resolve(__dirname, "../../scripts/local-su
 const { assertLocalStack } = require("../../scripts/local-supabase/runtime.cjs");
 const { parseEnvFile, STACK_ENV_PATH } = require("../../scripts/local-supabase/generate-env.cjs");
 
-assertLocalStack();
-const stackEnv = parseEnvFile(STACK_ENV_PATH);
+const { loadHostedStaging, assertEmptyHostedApplication } = require("../hosted-supabase/environment.cjs");
+const hosted = process.argv.includes("--hosted-staging") ? loadHostedStaging() : null;
+if (!hosted) assertLocalStack();
+const stackEnv = hosted ? hosted.stackEnv : parseEnvFile(STACK_ENV_PATH);
+const supabaseUrl = hosted ? hosted.url : "http://127.0.0.1:54321";
 const jwtSecret = stackEnv.JWT_SECRET;
 const anonKey = stackEnv.ANON_KEY;
 const serviceKey = stackEnv.SERVICE_ROLE_KEY;
 const pgPassword = stackEnv.POSTGRES_PASSWORD;
-if (!jwtSecret || !anonKey || !serviceKey || !pgPassword) {
+if (!jwtSecret || !anonKey || !serviceKey || (!hosted && !pgPassword)) {
   throw new Error("Local synthetic credentials missing in supabase/.env.local");
 }
 
@@ -39,28 +42,30 @@ function signJwt({ room, participant, secret = jwtSecret, ttlSeconds = 60, role 
 }
 
 async function subscribeChannel(clients, jwt, topic, { privateChannel = true, timeoutMs = 6000 } = {}) {
-  const client = createClient("http://127.0.0.1:54321", anonKey, {
+  const client = createClient(supabaseUrl, anonKey, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
   clients.push(client);
   await client.realtime.setAuth(jwt);
   const messages = [];
   const channel = client.channel(topic, { config: { private: privateChannel, broadcast: { ack: true } } });
+  let diagnostic = "";
   channel.on("broadcast", { event: "room_changed" }, (msg) => messages.push(msg.payload));
   const status = await new Promise((resolve) => {
     const timer = setTimeout(() => resolve("TIMEOUT"), timeoutMs);
-    channel.subscribe((state) => {
+    channel.subscribe((state, error) => {
+      if (error) diagnostic = String(error.message || error).replace(/eyJ[A-Za-z0-9_.-]+/g, "[JWT redacted]").replace(/sb_(?:secret|publishable)_[A-Za-z0-9_-]+/g, "[API key redacted]");
       if (state === "SUBSCRIBED" || state === "CHANNEL_ERROR" || state === "TIMED_OUT" || state === "CLOSED") {
         clearTimeout(timer);
         resolve(state);
       }
     });
   });
-  return { client, channel, messages, status };
+  return { client, channel, messages, status, diagnostic };
 }
 
 async function main() {
-  const db = new Client({
+  const db = new Client(hosted ? hosted.pgConfig : {
     host: "127.0.0.1",
     port: 55432,
     user: "supabase_admin",
@@ -71,6 +76,9 @@ async function main() {
   await db.connect();
 
   const clients = [];
+  const policyPrefix = `cine018_qual_${crypto.randomBytes(8).toString("hex")}`;
+  let selectPolicyCreated = false, insertPolicyCreated = false;
+  const createdRooms = [];
   const roomA = crypto.randomUUID();
   const roomB = crypto.randomUUID();
   const alice = crypto.randomUUID();
@@ -84,6 +92,8 @@ async function main() {
 
   try {
     // 1. Verify private-only tenant + gateway 403 hardening
+    if (hosted) await assertEmptyHostedApplication(db);
+    if (!hosted) {
     const tenantRes = await db.query("SELECT private_only FROM _realtime.tenants WHERE external_id = 'realtime-dev'");
     assert.equal(tenantRes.rows.length, 1);
     assert.equal(tenantRes.rows[0].private_only, true, "Realtime tenant must be private_only=true");
@@ -92,9 +102,11 @@ async function main() {
     assert.equal(tenantsRes.status, 403, "Nginx gateway must block /realtime/v1/api/tenants");
     const openapiRes = await fetch("http://127.0.0.1:54321/realtime/v1/api/openapi");
     assert.equal(openapiRes.status, 403, "Nginx gateway must block /realtime/v1/api/openapi");
+    }
 
     // Seed two synthetic rooms
     await db.query("INSERT INTO public.rooms (id, code) VALUES ($1, $2), ($3, $4)", [roomA, codeA, roomB, codeB]);
+    createdRooms.push(roomA, roomB);
     await db.query(
       `INSERT INTO public.room_participants (room_id, participant_id, display_name, role)
        VALUES ($1, $2, 'Alice Host', 'HOST'),
@@ -107,9 +119,11 @@ async function main() {
 
     // 2. Authorized private channel subscribe (Room A & Room B)
     const aliceSub = await subscribeChannel(clients, signJwt({ room: roomA, participant: alice }), `room:${roomA}`);
-    assert.equal(aliceSub.status, "SUBSCRIBED", "Authorized member must subscribe to private room:<uuid>");
+    assert.equal(aliceSub.status, "SUBSCRIBED", `Authorized member must subscribe to private room:<uuid>: ${aliceSub.diagnostic}`);
 
     const bobSub = await subscribeChannel(clients, signJwt({ room: roomB, participant: bob }), `room:${roomB}`);
+    const anonymousAttempt = await subscribeChannel(clients, null, `room:${roomA}`);
+    assert.notEqual(anonymousAttempt.status, "SUBSCRIBED", "Anonymous private subscription must be denied");
     assert.equal(bobSub.status, "SUBSCRIBED", "Authorized Room B member must subscribe to private room:<uuid>");
 
     // 3. Public channel join rejected
@@ -159,13 +173,18 @@ async function main() {
     assert.notEqual(outsiderAttempt.status, "SUBSCRIBED", "Non-member participant UUID must be rejected");
 
     // 7. Competing permissive SELECT & INSERT policies on realtime.messages cannot bypass AS RESTRICTIVE fences (L-033)
-    await db.query("CREATE POLICY gh52_competing_select ON realtime.messages FOR SELECT TO authenticated USING (true)");
-    await db.query("CREATE POLICY gh52_competing_insert ON realtime.messages FOR INSERT TO authenticated WITH CHECK (true)");
+    await db.query(`CREATE POLICY "${policyPrefix}_select" ON realtime.messages FOR SELECT TO authenticated USING (true)`);
+    selectPolicyCreated = true;
+    await db.query(`CREATE POLICY "${policyPrefix}_insert" ON realtime.messages FOR INSERT TO authenticated WITH CHECK (true)`);
+    insertPolicyCreated = true;
 
     const crossCompeting = await subscribeChannel(clients, signJwt({ room: roomA, participant: alice }), `room:${roomB}`);
     assert.notEqual(crossCompeting.status, "SUBSCRIBED", "AS RESTRICTIVE select fence must hold under competing permissive SELECT");
 
-    const forgedResult = await aliceSub.channel.send({
+    // A fresh channel forces authorization evaluation AFTER competing policies exist.
+    const competingAlice = await subscribeChannel(clients, signJwt({ room: roomA, participant: alice }), `room:${roomA}`);
+    assert.equal(competingAlice.status, "SUBSCRIBED");
+    const forgedResult = await competingAlice.channel.send({
       type: "broadcast",
       event: "room_changed",
       payload: { roomId: roomA, version: 999 },
@@ -174,7 +193,7 @@ async function main() {
 
     // 8. Server-only REST broadcast delivers ONLY to authorized Room A private WebSocket
     const broadcastRes = await fetch(
-      `http://127.0.0.1:54321/realtime/v1/api/broadcast/${encodeURIComponent(`room:${roomA}`)}/events/room_changed?private=true`,
+      `${supabaseUrl}/realtime/v1/api/broadcast/${encodeURIComponent(`room:${roomA}`)}/events/room_changed?private=true`,
       {
         method: "POST",
         headers: { "content-type": "application/json", apikey: serviceKey },
@@ -231,6 +250,7 @@ async function main() {
     await expectDeniedAsRole("authenticated", "SELECT * FROM public.room_events", "authenticated role must be denied SELECT on room_events");
     await expectDeniedAsRole("anon", "SELECT * FROM public.rooms", "anon role must be denied SELECT on rooms");
     await expectDeniedAsRole("anon", "SELECT * FROM public.room_participants", "anon role must be denied SELECT on room_participants");
+    await expectDeniedAsRole("anon", `SELECT public.is_current_user_room_participant('${roomA}')`, "anon helper RPC must be denied despite hosted default EXECUTE grants");
 
     // 10. Direct Postgres RLS check on realtime.messages for anon & authenticated under competing permissive policies
     await db.query("BEGIN");
@@ -270,10 +290,11 @@ async function main() {
     console.log(
       JSON.stringify({
         ok: true,
+        environment: hosted ? `hosted:${hosted.project}` : "local Docker",
         checks: [
-          "private_only_tenant",
-          "gateway_403_tenants_and_openapi",
+          ...(hosted ? ["private_only_config_dashboard_plus_public_channel_negative"] : ["private_only_tenant", "gateway_403_tenants_and_openapi"]),
           "private_ws_subscribe",
+          "anonymous_private_subscription_denied",
           "public_channel_denied",
           "cross_room_denied",
           "room_code_topic_denied",
@@ -289,10 +310,10 @@ async function main() {
     await Promise.allSettled(
       clients.map((client) => Promise.race([client.realtime.disconnect(), new Promise((r) => setTimeout(r, 250))]))
     );
-    await db.query("DROP POLICY IF EXISTS gh52_competing_select ON realtime.messages");
-    await db.query("DROP POLICY IF EXISTS gh52_competing_insert ON realtime.messages");
-    await db.query("UPDATE public.rooms SET status = 'EXPIRED', expires_at = NOW() - INTERVAL '1 second' WHERE id IN ($1, $2)", [roomA, roomB]);
-    await db.query("DELETE FROM public.rooms WHERE id IN ($1, $2)", [roomA, roomB]);
+    if (selectPolicyCreated) await db.query(`DROP POLICY "${policyPrefix}_select" ON realtime.messages`);
+    if (insertPolicyCreated) await db.query(`DROP POLICY "${policyPrefix}_insert" ON realtime.messages`);
+    await db.query("UPDATE public.rooms SET status = 'EXPIRED', expires_at = NOW() - INTERVAL '1 second' WHERE id = ANY($1::uuid[])", [createdRooms]);
+    await db.query("DELETE FROM public.rooms WHERE id = ANY($1::uuid[])", [createdRooms]);
     const leftover = await db.query("SELECT count(*)::int AS cnt FROM public.rooms WHERE id IN ($1, $2)", [roomA, roomB]);
     assert.equal(leftover.rows[0].cnt, 0, "Teardown must remove temporary qualification rooms");
     await db.end();

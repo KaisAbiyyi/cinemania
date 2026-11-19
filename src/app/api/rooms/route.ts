@@ -2,6 +2,7 @@ import { assertSameOriginCsrf } from "@/lib/server/auth/csrfGuard";
 import { handleGuestApiError, privateJsonResponse } from "@/lib/server/auth/guestResponse";
 import { getRoomAuthorityStore } from "@/lib/server/room/roomStore";
 import { createRoomWithSession, parseJsonBodySafe } from "@/lib/server/room/roomSnapshot";
+import { notifyAfterCommit } from "@/lib/server/realtime/notifyAfterCommit";
 
 /**
  * POST /api/rooms
@@ -14,6 +15,7 @@ export async function POST(request: Request) {
     const store = getRoomAuthorityStore();
     const body = await parseJsonBodySafe(request);
     const result = await createRoomWithSession(request, body, store);
+    await notifyAfterCommit(store, result.room.roomId);
 
     return privateJsonResponse(
       {

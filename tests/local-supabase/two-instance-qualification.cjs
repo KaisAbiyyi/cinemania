@@ -3,9 +3,8 @@
 /**
  * Real Two-Instance Next.js + Local Docker Supabase Realtime Qualification Suite.
  *
- * Uses PR #51 HEAD d82fa1629b7afa89c61badfe1ed9c4163eea22ab (containing the
- * guarded loopback fix in src/lib/server/realtime/supabasePublisher.ts) without
- * reimplementing or modifying any CINE-018 files inside GH-52.
+ * Tests an explicit exact app commit (default current HEAD). CINE-018 extends
+ * the merged GH-52 controls with real browsers and independent outbox workers.
  */
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
@@ -20,8 +19,9 @@ const { createClient } = require(path.resolve(__dirname, "../../scripts/local-su
 const { assertLocalStack } = require("../../scripts/local-supabase/runtime.cjs");
 const { validateCommit, assertNoCloudTargetEnv } = require("../../scripts/local-supabase/safety.cjs");
 const { parseEnvFile, STACK_ENV_PATH } = require("../../scripts/local-supabase/generate-env.cjs");
+const { loadHostedStaging, assertEmptyHostedApplication } = require("../hosted-supabase/environment.cjs");
 
-const DEFAULT_APP_COMMIT = "d82fa1629b7afa89c61badfe1ed9c4163eea22ab";
+const DEFAULT_APP_COMMIT = execFileSync("git", ["-C", REPO_ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const PORT_1 = 3101;
 const PORT_2 = 3102;
 
@@ -39,7 +39,7 @@ function extractCookieHeader(response) {
   return raw.map((entry) => entry.split(";")[0]).join("; ");
 }
 
-function writeHermeticTmdbPreload(filePath) {
+function writeHermeticTmdbPreload(filePath, hostedHostname = "") {
   const movies = Array.from({ length: 20 }, (_, i) => ({
     id: 910001 + i,
     title: `GH52 Local Film ${i + 1}`,
@@ -58,6 +58,7 @@ const https = require("node:https");
 const http = require("node:http");
 const { PassThrough } = require("node:stream");
 const PAYLOAD = ${JSON.stringify(payload)};
+const HOSTED_STAGING = ${JSON.stringify(hostedHostname)};
 function mockDiscover(cb) {
   const res = new PassThrough();
   res.statusCode = 200;
@@ -100,7 +101,7 @@ https.request = function(urlOrOpts, optsOrCb, maybeCb) {
   const opts = typeof urlOrOpts === "string" || urlOrOpts instanceof URL ? urlOrOpts : urlOrOpts;
   const cb = typeof optsOrCb === "function" ? optsOrCb : maybeCb;
   if (isTmdbTarget(opts)) return mockDiscover(cb);
-  if (!isLoopbackOrSocket(opts)) throw new Error("FAIL_CLOSED outbound https blocked: " + getTargetHost(opts));
+  if (!isLoopbackOrSocket(opts) && (!HOSTED_STAGING || getTargetHost(opts) !== HOSTED_STAGING)) throw new Error("FAIL_CLOSED outbound https blocked: " + getTargetHost(opts));
   return origHttpsReq.apply(this, arguments);
 };
 https.get = function(urlOrOpts, optsOrCb, maybeCb) {
@@ -156,7 +157,150 @@ async function stopChild(proc) {
   });
 }
 
+function spawnWorker({ cwd, env }) {
+  const child = spawn(process.execPath, ["--conditions=react-server", "--import", "tsx", "scripts/realtime-worker.ts"], {
+    cwd, env: { ...env, CINEMATCH_OUTBOX_POLL_MS: "100" }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let logs = "";
+  child.stdout.on("data", d => { logs = (logs + d.toString()).slice(-2000); });
+  child.stderr.on("data", d => { logs = (logs + d.toString()).slice(-2000); });
+  return { child, getLogs: () => logs };
+}
+
+async function waitForWorker(proc) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    if (proc.getLogs().includes("Realtime outbox worker ready")) return;
+    assert.equal(proc.child.exitCode, null, "Worker exited before readiness");
+    await new Promise(r => setTimeout(r, 50));
+  }
+  throw new Error("Worker readiness timed out");
+}
+
+async function waitForAcknowledgement(db, roomId, version) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const check = await db.query("SELECT dispatched FROM public.room_events WHERE room_id=$1 AND version=$2", [roomId, version]);
+    if (check.rows[0]?.dispatched) return;
+    await new Promise(r => setTimeout(r, 20));
+  }
+  throw new Error("Worker database acknowledgement timed out");
+}
+
+async function crashAfterAuthorityCommit({ cwd, env, roomId, actorParticipantId, sortBy }) {
+  // This child runs the actual authority transaction, reports COMMIT, then is
+  // killed before it can invoke any publication path. No synthetic event INSERT.
+  const faultPath = path.join(cwd, "cine018-commit-fault.ts");
+  fs.writeFileSync(faultPath, `
+    import { Pool } from "pg";
+    import { PostgresRoomAuthorityStore, resolvePostgresPoolConfig } from "./src/lib/server/room/roomStore";
+    (async () => {
+      const pool = new Pool(resolvePostgresPoolConfig()!.poolConfig);
+      const store = new PostgresRoomAuthorityStore(pool);
+      const result = await store.updateRoomDeckFilterWithSession({
+        roomId: process.env.CINE018_FAULT_ROOM!, actorParticipantId: process.env.CINE018_FAULT_ACTOR!,
+        deckFilter: { sort_by: process.env.CINE018_FAULT_SORT! } as never,
+      });
+      process.send?.({ committedVersion: result.room.state_version });
+      setInterval(() => {}, 1000);
+    })().catch(() => process.exit(1));`, "utf8");
+  const child = spawn(process.execPath, ["--conditions=react-server", "--import", "tsx", faultPath], {
+    cwd, env: { ...env, CINE018_FAULT_ROOM: roomId, CINE018_FAULT_ACTOR: actorParticipantId, CINE018_FAULT_SORT: sortBy },
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Authority commit fault timed out")), 15000);
+      child.once("message", msg => { clearTimeout(timer); resolve(msg.committedVersion); });
+      child.once("exit", () => { clearTimeout(timer); reject(new Error("Authority committer exited before COMMIT receipt")); });
+    });
+  } finally { await stopChild({ child }); }
+}
+
+async function attachBrowserProbe(browser, { origin, cookie, roomId, supabaseUrl, anonKey, bundlePath }) {
+  const context = await browser.newContext();
+  await context.route("**/*", route => {
+    const url = new URL(route.request().url());
+    return url.hostname === "127.0.0.1" || (url.protocol === "https:" && url.origin === supabaseUrl) ? route.continue() : route.abort();
+  });
+  await context.addCookies(cookie.split("; ").map(item => {
+    const split = item.indexOf("=");
+    return { name: item.slice(0, split), value: item.slice(split + 1), url: origin };
+  }));
+  const page = await context.newPage();
+  await page.goto(origin + "/__cine018_browser_probe__");
+  await page.addScriptTag({ path: bundlePath });
+  await page.evaluate(async config => {
+    globalThis.cineSnapshots = [];
+    globalThis.cineSnapshotLoads = 0;
+    globalThis.stopCineProbe = await globalThis.CineRealtime.startRoomRealtime({
+      ...config, fetcher: async (input, init) => {
+        const result = await fetch(input, init);
+        if (String(input).endsWith(config.roomId)) globalThis.cineSnapshotLoads++;
+        return result;
+      }, onSnapshot: snapshot => {
+        globalThis.cineSnapshots.push(snapshot);
+        document.body.textContent = snapshot.room.status;
+      },
+    });
+  }, { roomId, supabaseUrl, publishableKey: anonKey });
+  return { page, async stop() { await page.evaluate(() => globalThis.stopCineProbe()); await context.close(); } };
+}
+
+async function qualifyGroup(size, { origin1, origin2, supabaseUrl, anonKey, createdRoomIds, wsClients }) {
+  const create = await fetch(`${origin1}/api/rooms`, { method: "POST", headers: { origin: origin1, "content-type": "application/json" },
+    body: JSON.stringify({ displayName: `Synthetic group ${size} host` }) });
+  assert.equal(create.status, 201);
+  const room = (await create.json()).room;
+  createdRoomIds.push(room.roomId);
+  const members = [{ cookie: extractCookieHeader(create), origin: origin1 }];
+  for (let i = 1; i < size; i++) {
+    const origin = i % 2 ? origin2 : origin1;
+    const join = await fetch(`${origin}/api/rooms/join`, { method: "POST", headers: { origin, "content-type": "application/json" },
+      body: JSON.stringify({ code: room.code, displayName: `Synthetic member ${i}` }) });
+    assert.equal(join.status, 200);
+    members.push({ cookie: extractCookieHeader(join), origin });
+  }
+  const channels = [];
+  for (const member of members) {
+    const ws = await connectRoomWs({ supabaseUrl, anonKey, origin: member.origin, cookie: member.cookie, roomId: room.roomId });
+    channels.push(ws); wsClients.push(ws.client);
+  }
+  const start = await fetch(`${origin1}/api/rooms/${room.roomId}/start`, { method: "POST",
+    headers: { origin: origin1, cookie: members[0].cookie, "content-type": "application/json" }, body: "{}" });
+  assert.equal(start.status, 200);
+  const last = members[size - 1];
+  const snapshot = await (await fetch(`${last.origin}/api/rooms/${room.roomId}`, { headers: { cookie: last.cookie } })).json();
+  assert.equal(snapshot.room.deck.length, 20);
+  const candidate = snapshot.room.deck[0];
+  let finalVersion;
+  for (const [i, member] of members.entries()) {
+    const vote = await fetch(`${member.origin}/api/rooms/${room.roomId}/votes`, { method: "POST",
+      headers: { origin: member.origin, cookie: member.cookie, "content-type": "application/json" },
+      body: JSON.stringify({ roundId: snapshot.room.currentRoundId, candidateId: candidate.candidateId,
+        movieId: candidate.movieId, vote: "LIKE", operationId: crypto.randomUUID() }) });
+    assert.equal(vote.status, 200);
+    finalVersion = (await vote.json()).room.stateVersion;
+    await Promise.all(channels.map(ws => ws.waitForVersion(finalVersion)));
+    if (i < size - 1) {
+      const hidden = await (await fetch(`${last.origin}/api/rooms/${room.roomId}`, { headers: { cookie: last.cookie } })).json();
+      assert.equal(hidden.room.status, "ACTIVE", "Partial quorum must not match");
+      assert.equal(JSON.stringify(hidden).includes('"LIKE"'), false, "Another member's vote leaked");
+    }
+  }
+  for (const [i, member] of members.entries()) {
+    const final = await (await fetch(`${member.origin}/api/rooms/${room.roomId}`, { headers: { cookie: member.cookie } })).json();
+    assert.equal(final.room.status, "MATCHED");
+    assert.equal(final.room.stateVersion, finalVersion);
+    assert.equal(final.room.matchedMovieId, candidate.movieId);
+    for (const hint of channels[i].hints) assert.deepEqual(Object.keys(hint.payload).sort(), ["roomId", "version"]);
+    await channels[i].client.removeAllChannels();
+    await channels[i].client.realtime.disconnect();
+  }
+}
+
 async function connectRoomWs({ supabaseUrl, anonKey, origin, roomId, cookie }) {
+  async function requestToken() {
   const tokenRes = await fetch(`${origin}/api/rooms/${roomId}/realtime-token`, {
     method: "POST",
     headers: { origin, cookie, "content-type": "application/json" },
@@ -165,11 +309,13 @@ async function connectRoomWs({ supabaseUrl, anonKey, origin, roomId, cookie }) {
   assert.equal(tokenRes.status, 200, `realtime-token expected 200, got ${tokenRes.status}`);
   const { token } = await tokenRes.json();
   assert.equal(typeof token, "string");
+  return token;
+  }
 
   const client = createClient(supabaseUrl, anonKey, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
-  await client.realtime.setAuth(token);
+  await client.realtime.setAuth(await requestToken());
   const hints = [];
   const listeners = new Set();
   const channel = client.channel(`room:${roomId}`, { config: { private: true } });
@@ -209,7 +355,23 @@ async function connectRoomWs({ supabaseUrl, anonKey, origin, roomId, cookie }) {
     });
   }
 
-  return { client, channel, hints, waitForVersion };
+  const refreshAuth = async () => client.realtime.setAuth(await requestToken());
+  // Mirror the product client (src/lib/realtime/roomRealtime.ts): the 60s room JWT is
+  // renewed every 30s. Hosted Realtime CLOSES a private channel when its JWT expires
+  // (observed at ~59.7s), so a non-renewing test client silently loses later hints.
+  // TTL, subscription and wait deadlines are unchanged.
+  let renewTimer = null;
+  const pauseRenewal = () => { if (renewTimer) { clearInterval(renewTimer); renewTimer = null; } };
+  const resumeRenewal = () => {
+    pauseRenewal();
+    renewTimer = setInterval(() => {
+      if (client.getChannels().length === 0) return pauseRenewal();
+      void refreshAuth().catch(() => {});
+    }, 30000);
+    renewTimer.unref();
+  };
+  resumeRenewal();
+  return { client, channel, hints, waitForVersion, refreshAuth, pauseRenewal, resumeRenewal };
 }
 
 function percentile(sorted, p) {
@@ -218,15 +380,15 @@ function percentile(sorted, p) {
 }
 
 async function main() {
-  assertNoCloudTargetEnv();
-  assertLocalStack();
+  const hosted = process.argv.includes("--hosted-staging") ? loadHostedStaging() : null;
+  if (!hosted) { assertNoCloudTargetEnv(); assertLocalStack(); }
   const appCommit = getFlagValue(process.argv.slice(2), "--app-commit") || DEFAULT_APP_COMMIT;
   validateCommit(appCommit);
   execFileSync("git", ["-C", REPO_ROOT, "cat-file", "-e", `${appCommit}^{commit}`]);
 
-  const stackEnv = parseEnvFile(STACK_ENV_PATH);
-  const databaseUrl = `postgresql://supabase_admin:${stackEnv.POSTGRES_PASSWORD}@127.0.0.1:55432/postgres`;
-  const supabaseUrl = "http://127.0.0.1:54321";
+  const stackEnv = hosted ? hosted.stackEnv : parseEnvFile(STACK_ENV_PATH);
+  const databaseUrl = hosted ? "" : `postgresql://supabase_admin:${stackEnv.POSTGRES_PASSWORD}@127.0.0.1:55432/postgres`;
+  const supabaseUrl = hosted ? hosted.url : "http://127.0.0.1:54321";
   const capabilitySecret = crypto.randomBytes(32).toString("hex");
 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cinematch-gh52-2inst-"));
@@ -238,9 +400,10 @@ async function main() {
 
   let proc1 = null;
   let proc2 = null;
+  let worker1 = null, worker2 = null, browser = null;
   const wsClients = [];
   const createdRoomIds = [];
-  const db = new Client({
+  const db = new Client(hosted ? hosted.pgConfig : {
     host: "127.0.0.1",
     port: 55432,
     user: "supabase_admin",
@@ -290,7 +453,7 @@ async function main() {
     assert.equal(negRes, "NEG_PROD_LOOPBACK_REJECTED");
 
     // 3. Prepare two completely independent runtime directories (real src + real node_modules, zero junctions/env files)
-    writeHermeticTmdbPreload(preloadPath);
+    writeHermeticTmdbPreload(preloadPath, hosted ? new URL(hosted.url).hostname : "");
     fs.renameSync(buildDir, inst1Dir);
     fs.cpSync(inst1Dir, inst2Dir, { recursive: true });
 
@@ -309,6 +472,8 @@ async function main() {
       NEXT_PUBLIC_TMDB_POSTER_URL: "https://image.tmdb.org/t/p",
       NEXT_PUBLIC_IMAGE_BASE_URL: "https://image.tmdb.org/t/p",
       NODE_OPTIONS: `--require ${preloadPath}`,
+      ALLOW_DESTRUCTIVE_PG_TESTS: "false",
+      ...(hosted ? hosted.appEnv : {}),
     };
 
     const origin1 = `http://127.0.0.1:${PORT_1}`;
@@ -318,6 +483,17 @@ async function main() {
     await Promise.all([waitForServer(origin1, 90000), waitForServer(origin2, 90000)]);
 
     await db.connect();
+    // New autonomous workers scan all public pending rows; refuse a developer
+    // database containing rooms beyond the two explicit GH-52 synthetic seeds.
+    if (hosted) await assertEmptyHostedApplication(db);
+    const unknownRooms = await db.query("SELECT count(*)::int AS n FROM public.rooms WHERE id NOT IN ($1,$2)",
+      ["00000000-0000-4000-8000-000000005201", "00000000-0000-4000-8000-000000005202"]);
+    assert.equal(unknownRooms.rows[0].n, 0, "Synthetic-only qualification refused: unknown existing rooms");
+    // The deployment contract requires autonomous workers during normal traffic,
+    // too: a transient HTTP fast-path publish failure must be retried without GET.
+    worker1 = spawnWorker({ cwd: inst1Dir, env: baseAppEnv });
+    worker2 = spawnWorker({ cwd: inst2Dir, env: baseAppEnv });
+    await Promise.all([waitForWorker(worker1), waitForWorker(worker2)]);
 
     // 4. Test A: Host creates room on Instance 1, Guest joins on Instance 2
     const createRes = await fetch(`${origin1}/api/rooms`, {
@@ -337,13 +513,31 @@ async function main() {
       headers: { origin: origin2, "content-type": "application/json" },
       body: JSON.stringify({ code: roomCode, displayName: "Guest Inst2" }),
     });
-    assert.equal(joinRes.status, 200, `Join room expected 200, got ${joinRes.status}`);
+    let joinDiagnostic = "";
+    if (joinRes.status !== 200) {
+      joinDiagnostic = (await joinRes.clone().text()).slice(0, 3000);
+      for (const value of [stackEnv.SERVICE_ROLE_KEY, stackEnv.JWT_SECRET, hosted?.pgConfig.password].filter(Boolean)) {
+        joinDiagnostic = joinDiagnostic.split(value).join("[server credential redacted]");
+      }
+      joinDiagnostic = joinDiagnostic.replace(/eyJ[A-Za-z0-9_.-]+/g, "[JWT redacted]");
+    }
+    assert.equal(joinRes.status, 200, `Join room expected 200, got ${joinRes.status}; ${joinDiagnostic}`);
     const guestCookie = extractCookieHeader(joinRes);
 
     const hostWs = await connectRoomWs({ supabaseUrl, anonKey: stackEnv.ANON_KEY, origin: origin1, roomId, cookie: hostCookie });
     wsClients.push(hostWs.client);
     const guestWs = await connectRoomWs({ supabaseUrl, anonKey: stackEnv.ANON_KEY, origin: origin2, roomId, cookie: guestCookie });
     wsClients.push(guestWs.client);
+
+    // Two real browser contexts run the actual client subscribe/reconcile module.
+    const bundlePath = path.join(tempRoot, "browser-realtime.js");
+    require(path.join(REPO_ROOT, "node_modules/esbuild")).buildSync({
+      entryPoints: [path.join(inst1Dir, "src/lib/realtime/roomRealtime.ts")], bundle: true,
+      format: "iife", globalName: "CineRealtime", platform: "browser", outfile: bundlePath,
+    });
+    browser = await require(path.join(REPO_ROOT, "node_modules/@playwright/test")).chromium.launch({ headless: true });
+    const browserHost = await attachBrowserProbe(browser, { origin: origin1, cookie: hostCookie, roomId, supabaseUrl, anonKey: stackEnv.ANON_KEY, bundlePath });
+    const browserGuest = await attachBrowserProbe(browser, { origin: origin2, cookie: guestCookie, roomId, supabaseUrl, anonKey: stackEnv.ANON_KEY, bundlePath });
 
     // 5. Test B: Cross-instance filter -> start -> confidential LIKE vote -> unanimous MATCHED
     const filterRes = await fetch(`${origin1}/api/rooms/${roomId}/filters`, {
@@ -414,6 +608,30 @@ async function main() {
     const hostFinalSnap = await (await fetch(`${origin1}/api/rooms/${roomId}`, { headers: { cookie: hostCookie } })).json();
     assert.equal(hostFinalSnap.room.status, "MATCHED");
     assert.equal(hostFinalSnap.room.matchedMovieId, cand0.movieId);
+    // Deliver real duplicate, stale and future invalidation hints over Supabase.
+    // Unchanged DB snapshots must not emit a second MATCHED callback/animation.
+    const probeLoads = await Promise.all([browserHost, browserGuest].map(p => p.page.evaluate(() => globalThis.cineSnapshotLoads)));
+    for (const version of [hostFinalSnap.room.stateVersion, hostFinalSnap.room.stateVersion - 1, hostFinalSnap.room.stateVersion + 2]) {
+      const sent = await fetch(`${supabaseUrl}/realtime/v1/api/broadcast/${encodeURIComponent(`room:${roomId}`)}/events/room_changed?private=true`, {
+        method: "POST", headers: { apikey: stackEnv.SERVICE_ROLE_KEY, "content-type": "application/json" },
+        body: JSON.stringify({ roomId, version }),
+      });
+      assert.equal(sent.ok, true);
+    }
+    await guestWs.waitForVersion(hostFinalSnap.room.stateVersion + 2);
+    await Promise.all([browserHost, browserGuest].map((probe, i) => probe.page.waitForFunction(
+      previous => globalThis.cineSnapshotLoads > previous, probeLoads[i])));
+    await Promise.all([browserHost, browserGuest].map(async probe => {
+      await probe.page.waitForFunction(() => document.body.textContent === "MATCHED");
+      const latest = await probe.page.evaluate(() => globalThis.cineSnapshots.at(-1));
+      assert.equal(latest.room.matchedMovieId, cand0.movieId);
+      assert.equal(await probe.page.evaluate(() => globalThis.cineSnapshots.filter(s => s.room.status === "MATCHED").length), 1);
+      await probe.stop();
+    }));
+    // Browser polling is stopped BEFORE the no-request crash recovery window.
+    await browser.close(); browser = null;
+    for (const size of [3, 4, 5]) await qualifyGroup(size, { origin1, origin2, supabaseUrl,
+      anonKey: stackEnv.ANON_KEY, createdRoomIds, wsClients });
 
     // 6. Test C: Reconnect + gap replay + out-of-order / duplicate reconciler resilience
     const create2 = await fetch(`${origin1}/api/rooms`, {
@@ -484,34 +702,62 @@ async function main() {
     ).trim();
     assert.equal(reconOut, "RECONCILER_OK");
 
-    // 7. Crash/restart + request-assisted recovery of a synthetic stranded outbox row.
-    // The authorized GET below triggers dispatch; this does not test an autonomous worker.
+    // 7. Actual authority COMMIT -> committer SIGKILL -> independent worker recovery.
+    // No app HTTP requests, browser polling, or request-assisted trigger in this window.
+    // Renew the WS capability immediately BEFORE the window (full 60s TTL), then pause
+    // renewal so no app HTTP request occurs inside it. Resumed after WS recovery below.
+    await guest2WsB.refreshAuth();
+    guest2WsB.pauseRenewal();
+    // Earlier room-1 clients stay subscribed but must issue no app HTTP in the window.
+    hostWs.pauseRenewal(); guestWs.pauseRenewal();
+    await Promise.all([stopChild(worker1), stopChild(worker2)]);
+    worker1 = null; worker2 = null;
     await stopChild(proc1);
     const inst2Health = await fetch(`${origin2}/api/rooms/${room2.roomId}`, { headers: { cookie: guest2Cookie } });
     assert.equal(inst2Health.status, 200, "Instance 2 must stay available while Instance 1 is down");
 
-    // Simulate committed outbox row stranded before publish (version 6)
-    await db.query("BEGIN");
-    await db.query("UPDATE public.rooms SET state_version = 6 WHERE id = $1", [room2.roomId]);
-    await db.query(
-      "INSERT INTO public.room_events (room_id, version, event_type, payload, dispatched) VALUES ($1, 6, 'FILTERS_UPDATED', '{\"synthetic\":true}'::jsonb, false)",
-      [room2.roomId]
-    );
-    await db.query("COMMIT");
+    const actor = (await db.query("SELECT host_participant_id FROM public.rooms WHERE id=$1", [room2.roomId])).rows[0].host_participant_id;
+    assert.equal(await crashAfterAuthorityCommit({ cwd: inst1Dir, env: baseAppEnv, roomId: room2.roomId, actorParticipantId: actor, sortBy: "vote_average.desc" }), 6);
+    assert.equal((await db.query("SELECT dispatched FROM public.room_events WHERE room_id=$1 AND version=6", [room2.roomId])).rows[0].dispatched, false);
+    worker1 = spawnWorker({ cwd: inst1Dir, env: baseAppEnv });
+    worker2 = spawnWorker({ cwd: inst2Dir, env: baseAppEnv });
+    await Promise.all([waitForWorker(worker1), waitForWorker(worker2)]);
+    await guest2WsB.waitForVersion(6);
+    await waitForAcknowledgement(db, room2.roomId, 6);
+    const outboxCheck = await db.query("SELECT dispatched FROM public.room_events WHERE room_id = $1 AND version = 6", [room2.roomId]);
+    assert.equal(outboxCheck.rows[0].dispatched, true, "Recovered outbox row must be marked dispatched=true");
+    assert.equal(guest2WsB.hints.filter(h => h.payload.version === 6).length, 1, "Concurrent workers must serialize the ordinary send/ack path");
 
+    // Stop BOTH dispatchers, commit another real mutation, restart only worker2.
+    await Promise.all([stopChild(worker1), stopChild(worker2)]);
+    assert.equal(await crashAfterAuthorityCommit({ cwd: inst1Dir, env: baseAppEnv, roomId: room2.roomId, actorParticipantId: actor, sortBy: "popularity.desc" }), 7);
+    assert.equal((await db.query("SELECT dispatched FROM public.room_events WHERE room_id=$1 AND version=7", [room2.roomId])).rows[0].dispatched, false);
+    worker2 = spawnWorker({ cwd: inst2Dir, env: baseAppEnv });
+    await waitForWorker(worker2);
+    await guest2WsB.waitForVersion(7);
+    await waitForAcknowledgement(db, room2.roomId, 7);
+    // HTTP resumes only AFTER autonomous recovery has been observed over WS.
+    guest2WsB.resumeRenewal();
     proc1 = spawnNextInstance({ cwd: inst1Dir, port: PORT_1, env: { ...baseAppEnv, PORT: String(PORT_1) } });
     await waitForServer(origin1, 90000);
 
-    const recoverRes = await fetch(`${origin1}/api/rooms/${room2.roomId}/events?since=5`, { headers: { cookie: host2Cookie } });
-    assert.equal(recoverRes.status, 200);
-    await guest2WsB.waitForVersion(6);
-    const outboxCheck = await db.query("SELECT dispatched FROM public.room_events WHERE room_id = $1 AND version = 6", [room2.roomId]);
-    assert.equal(outboxCheck.rows[0].dispatched, true, "Recovered outbox row must be marked dispatched=true");
-
     // 8. Test E: Measured request-to-WebSocket latency over 30 real mutations (Instance 1 -> Postgres -> Realtime -> Guest WS)
+    // Refresh outside the no-HTTP recovery window; hosted runs can exceed the
+    // original signed token's 60-second lifetime before the latency section.
+    const latencyGuest = await connectRoomWs({ supabaseUrl, anonKey: stackEnv.ANON_KEY, origin: origin2, roomId: room2.roomId, cookie: guest2Cookie });
+    wsClients.push(latencyGuest.client);
+    latencyGuest.pauseRenewal(); // this section renews manually, outside measured operations
     const latenciesMs = [];
-    let currentVersion = 6;
+    let latencyAuthRenewals = 0, lastRenewedAt = performance.now();
+    let currentVersion = 7;
     for (let i = 0; i < 30; i++) {
+      // Match the application's short-lived JWT renewal; never lengthen TTL or
+      // start a refresh timer in the preceding autonomous/no-HTTP fault window.
+      if (performance.now() - lastRenewedAt >= 25000) {
+        await latencyGuest.refreshAuth();
+        lastRenewedAt = performance.now();
+        latencyAuthRenewals++;
+      }
       currentVersion += 1;
       const sort_by = i % 2 === 0 ? "vote_average.desc" : "popularity.desc";
       const t0 = performance.now();
@@ -521,7 +767,7 @@ async function main() {
           headers: { origin: origin1, cookie: host2Cookie, "content-type": "application/json" },
           body: JSON.stringify({ sort_by }),
         }),
-        guest2WsB.waitForVersion(currentVersion, 5000),
+        latencyGuest.waitForVersion(currentVersion, 5000),
       ]);
       assert.equal(res.status, 200);
       latenciesMs.push(wsEvent.receivedAtMs - t0);
@@ -533,15 +779,23 @@ async function main() {
         {
           ok: true,
           appCommit,
+          environment: hosted ? `hosted:${hosted.project}` : "local Docker",
           negativeProdControl: "PASS",
           twoInstances: { port1: PORT_1, port2: PORT_2 },
           unanimousMatchConverged: true,
           votePrivacyVerified: true,
           reconnectGapReplayVerified: true,
           outOfOrderDuplicateIgnored: true,
-          processCrashRestartRequestAssistedOutboxRecovered: true,
-          recoveryTrigger: "authorized GET /api/rooms/<id>/events?since=5",
-          autonomousNoTrafficRecovery: "NOT RUN — CINE-018 dispatcher remains a separate gate",
+          realBrowserTabsConverged: true,
+          realDuplicateStaleHintsDidNotRepeatMatch: true,
+          multiClientGroupSizes: [2, 3, 4, 5],
+          processCrashAfterAuthorityCommitRecovered: true,
+          recoveryTrigger: "independent worker timer; no app HTTP after commit until WS receipt",
+          autonomousNoTrafficRecovery: true,
+          dispatcherRestartRecovered: true,
+          concurrentDispatcherProcesses: 2,
+          latencySamplesMs: latenciesMs.map(value => Number(value.toFixed(3))),
+          latencyAuthRenewals,
           latencyMs: {
             samples: sorted.length,
             min: Number(sorted[0].toFixed(2)),
@@ -558,8 +812,22 @@ async function main() {
   } catch (err) {
     console.error("--- INSTANCE 1 LOGS ---\n" + (proc1?.getLogs() || ""));
     console.error("--- INSTANCE 2 LOGS ---\n" + (proc2?.getLogs() || ""));
+    // Read-only failure diagnostics: separate "never published" from "published but not
+    // delivered" (outbox row state + worker logs). Adds output only; asserts nothing.
+    console.error("--- WORKER 1 LOGS ---\n" + (worker1?.getLogs() || "") + "\n--- WORKER 2 LOGS ---\n" + (worker2?.getLogs() || ""));
+    try {
+      if (createdRoomIds.length) {
+        const rows = (await db.query(
+          "SELECT room_id, version, dispatched, retry_count, permanent_retry_count, poison, created_at, dispatched_at, " +
+          "ROUND(EXTRACT(EPOCH FROM (dispatched_at - created_at))::numeric, 2) AS dispatch_lag_s " +
+          "FROM public.room_events WHERE room_id = ANY($1::uuid[]) ORDER BY created_at DESC, version DESC LIMIT 12", [createdRoomIds])).rows;
+        console.error("--- OUTBOX ROW STATE (newest 12, read-only) ---\n" + JSON.stringify(rows, null, 1) + "\nFAILURE_UTC " + new Date().toISOString());
+      }
+    } catch (diagError) { console.error("Outbox diagnostics unavailable:", diagError.message); }
     throw err;
   } finally {
+    if (browser) await browser.close();
+    await Promise.all([stopChild(worker1), stopChild(worker2)]);
     await Promise.allSettled(wsClients.map((c) => c.removeAllChannels()));
     await Promise.allSettled(
       wsClients.map((c) => Promise.race([c.realtime.disconnect(), new Promise((r) => setTimeout(r, 250))]))
@@ -571,6 +839,7 @@ async function main() {
       await db.query("DELETE FROM public.rooms WHERE id = ANY($1::uuid[])", [createdRoomIds]);
       const leftover = await db.query("SELECT count(*)::int AS cnt FROM public.rooms WHERE id = ANY($1::uuid[])", [createdRoomIds]);
       assert.equal(leftover.rows[0].cnt, 0, "Teardown must remove temporary qualification rooms");
+      console.log(JSON.stringify({ fixtureCleanup: "PASS", ownedRoomIds: createdRoomIds, remainingOwnedRooms: leftover.rows[0].cnt }));
     }
     await db.end().catch(() => {});
     fs.rmSync(tempRoot, { recursive: true, force: true });
