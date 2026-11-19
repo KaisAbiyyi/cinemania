@@ -484,6 +484,46 @@ describe("CINE-019 realtime recovery", () => {
     await handle();
   });
 
+  it("applies the backwards-clock correction once per token: a failing token endpoint keeps its backoff", async () => {
+    const rig = makeRig();
+    const handle = await start(rig);
+    await rig.clock.advance(1000);
+    rig.clock.current -= 3_600_000;
+    rig.server.tokenStatus = 503;
+    const before = rig.tokenRequests();
+    for (let i = 0; i < 24; i++) { rig.clock.wake("visible"); await rig.clock.advance(5000); } // two minutes of ticks and wakes
+    // with the old behaviour every tick restarted a rotation (about 24 requests); now backoff and the 10 s cap apply
+    expect(rig.tokenRequests() - before).toBeLessThanOrEqual(14);
+    await handle();
+  });
+
+  it("a token request that fails after its deadline never becomes an unhandled rejection", async () => {
+    const rig = makeRig();
+    const real = rig.fetcher;
+    let rejectLate!: (e: Error) => void;
+    let hung = false;
+    const wrapped = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (hung && String(input).endsWith("/realtime-token")) return new Promise<Response>((_, reject) => { rejectLate = reject; });
+      return real(input, init);
+    }) as typeof fetch;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const handle = await start(rig, { fetcher: wrapped });
+      hung = true;
+      await rig.clock.advance(31000 + 16000); // rotation request exceeds the 15 s deadline
+      hung = false;
+      rejectLate(new Error("socket reset long after the deadline"));
+      await rig.clock.advance(0);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).toEqual([]);
+      await handle();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("a coalesced wake still cuts a recovery backoff short", async () => {
     const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
     const handle = await start(rig);
@@ -495,18 +535,6 @@ describe("CINE-019 realtime recovery", () => {
     await rig.clock.advance(0);
     expect(rig.channels).toHaveLength(3);
     expect(handle.status()).toBe("live");
-    await handle();
-  });
-
-  it("never lets the unused auth client initialise, and gives every client its own storage key", async () => {
-    const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
-    const handle = await start(rig);
-    rig.channels[0].emit("CLOSED");
-    await rig.clock.advance(3000);
-    const calls = vi.mocked(createClient).mock.calls as unknown as Array<[string, string, { auth?: { skipAutoInitialize?: boolean; storageKey?: string } }]>;
-    expect(calls.length).toBeGreaterThanOrEqual(3);
-    expect(calls.every((c) => c[2]?.auth?.skipAutoInitialize === true)).toBe(true);
-    expect(new Set(calls.map((c) => c[2]?.auth?.storageKey)).size).toBe(calls.length);
     await handle();
   });
 

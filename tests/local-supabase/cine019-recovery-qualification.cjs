@@ -167,7 +167,12 @@ async function main() {
   const db = new Client(hosted ? hosted.pgConfig : { host: "127.0.0.1", port: 55432, user: "supabase_admin", password: stackEnv.POSTGRES_PASSWORD, database: "postgres", connectionTimeoutMillis: 5000 });
   const evidence = { skipped: [], appCommit, environment: hosted ? `hosted staging ${hosted.project} (synthetic data)` : "local Docker (GH-52 stack, synthetic data)", startedAt: new Date().toISOString(), scenarios: [] };
   const createdRoomIds = [];
-  const writeEvidence = () => { const out = flag("--evidence"); if (out) fs.writeFileSync(out, JSON.stringify(evidence, null, 2)); };
+  const writeEvidence = () => {
+    // A cleanup failure invalidates a PASS: the file must never say allPass while staging/local rooms remain.
+    if (evidence.cleanup && evidence.cleanup.result === "FAIL") evidence.allPass = false;
+    const out = flag("--evidence");
+    if (out) fs.writeFileSync(out, JSON.stringify(evidence, null, 2));
+  };
   const liveMembers = new Set();
   let proc1 = null, proc2 = null, worker1 = null, worker2 = null, proxy = null, browser = null;
   let baseAppEnv, origin1, origin2;
@@ -197,7 +202,7 @@ async function main() {
     } else { log("reusing prepared copy", tempRoot); evidence.nonQualifying = "prepared copy reused via --keep-dir; not verified against --app-commit"; }
     base.writeHermeticTmdbPreload(preloadPath, hostedHostname);
     const poolClampPath = path.join(tempRoot, "pg-pool-clamp-preload.cjs");
-    if (hosted) { writePoolClampPreload(poolClampPath); evidence.hostedTopology = { sessionPoolerLimit: 15, appPoolMax: 3, appPoolIdleMs: 2000, workers: 1, maxRequestsInFlight: 4, appInstances: 2 }; }
+    if (hosted) { writePoolClampPreload(poolClampPath); evidence.hostedTopology = { sessionPoolerLimit: 15, appPoolMax: 3, appPoolIdleMs: 2000, workers: 1, maxRequestsInFlightScenarioA: 4, otherBurstsUnbounded: true, appInstances: 2 }; }
     const bundleRoot = debugClientFromWorktree ? REPO_ROOT : inst1Dir;
     const clientCjs = bundleClient(bundleRoot, tempRoot, "cjs", "node", "node");
     const clientIife = bundleClient(bundleRoot, tempRoot, "iife", "browser", "browser");

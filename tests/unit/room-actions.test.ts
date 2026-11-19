@@ -167,6 +167,12 @@ describe("CINE-019 room action layer", () => {
     expect(garbled.requests).toHaveLength(3); // an idempotent vote is safely retried with the same operation id
   });
 
+  it("treats a 2xx JSON array body as unreadable (ambiguous), not as success", async () => {
+    const ctx = setup(async () => new Response("[]", { status: 200 }));
+    expect(await ctx.actions.startRound()).toMatchObject({ ok: false, code: "INVALID_RESPONSE", transient: true });
+    expect(ctx.accepted).toEqual([]);
+  });
+
   it("does not accept a filter response as the authoritative snapshot; it resyncs instead", async () => {
     const ctx = setup(async () => ok(4));
     expect(await ctx.actions.updateFilters({ sort_by: "popularity.desc" })).toMatchObject({ ok: true });

@@ -217,6 +217,7 @@ export async function startRoomRealtime(options: {
   let behindFailures = 0;
   let lastWake = -Infinity;
   let lastRecoveryAt = -Infinity;
+  let clockStepHandledFor = -1;
   let flaps = 0;
   let syncRetryTimer: unknown = null;
   let tickTimer: unknown = null;
@@ -530,7 +531,8 @@ export async function startRoomRealtime(options: {
     const now = env.now();
     // The wall clock stepped backwards (NTP correction after sleep): deadlines measured in the "future" are
     // due now, and the poll must not pause until the clock catches up.
-    if (now < tokenFetchedAt) tokenRenewAt = now;
+    // Once per token: if the fetch then fails, the normal backoff / Retry-After schedule must apply.
+    if (now < tokenFetchedAt && clockStepHandledFor !== tokenFetchedAt) { tokenRenewAt = now; clockStepHandledFor = tokenFetchedAt; }
     if (now < lastSync) lastSync = -Infinity;
     if (reason !== "timer") {
       // focus / visibilitychange / pageshow / online can fire in bursts: coalesce wake-ups. A burst never
