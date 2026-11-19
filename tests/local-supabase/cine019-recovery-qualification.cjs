@@ -79,6 +79,7 @@ function bundleClient(instDir, tempRoot, format, platform, name) {
     entryPoints: [entry], bundle: true, format, platform, outfile, absWorkingDir: instDir,
     ...(format === "iife" ? { globalName: "CineClient" } : {}),
   });
+  fs.rmSync(entry, { force: true });
   return outfile;
 }
 
@@ -100,7 +101,12 @@ async function main() {
   const realSupabaseUrl = `http://127.0.0.1:${REAL_GATEWAY_PORT}`;
   const proxiedSupabaseUrl = `http://127.0.0.1:${PROXY_PORT}`;
   const capabilitySecret = crypto.randomBytes(32).toString("hex");
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cinematch-cine019-"));
+  // --keep-dir reuses an already prepared exact-commit copy (debugging only; never deleted).
+  const keepDir = flag("--keep-dir");
+  const tempRoot = keepDir ? path.resolve(keepDir) : fs.mkdtempSync(path.join(os.tmpdir(), "cinematch-cine019-"));
+  if (keepDir) fs.mkdirSync(tempRoot, { recursive: true });
+  const reuse = Boolean(keepDir) && fs.existsSync(path.join(tempRoot, "inst2", "package.json"));
+  const debugClientFromWorktree = argv.includes("--client-from-worktree"); // NOT qualification evidence
   const buildDir = path.join(tempRoot, "app");
   const inst1Dir = path.join(tempRoot, "inst1");
   const inst2Dir = path.join(tempRoot, "inst2");
@@ -126,20 +132,23 @@ async function main() {
   };
 
   try {
-    fs.mkdirSync(buildDir, { recursive: true });
-    execFileSync("git", ["-C", REPO_ROOT, "archive", "--format=tar", "-o", tarPath, appCommit]);
-    execFileSync("tar", ["-xf", tarPath, "-C", buildDir]);
-    fs.unlinkSync(tarPath);
-    log("npm ci in exact-commit copy");
-    if (process.platform === "win32") execFileSync("cmd.exe", ["/d", "/s", "/c", "npm ci --prefer-offline --no-audit --no-fund"], { cwd: buildDir, stdio: "pipe" });
-    else execFileSync("npm", ["ci", "--prefer-offline", "--no-audit", "--no-fund"], { cwd: buildDir, stdio: "pipe" });
-
+    if (!reuse) {
+      fs.mkdirSync(buildDir, { recursive: true });
+      execFileSync("git", ["-C", REPO_ROOT, "archive", "--format=tar", "-o", tarPath, appCommit]);
+      execFileSync("tar", ["-xf", tarPath, "-C", buildDir]);
+      fs.unlinkSync(tarPath);
+      log("npm ci in exact-commit copy");
+      if (process.platform === "win32") execFileSync("cmd.exe", ["/d", "/s", "/c", "npm ci --prefer-offline --no-audit --no-fund"], { cwd: buildDir, stdio: "pipe" });
+      else execFileSync("npm", ["ci", "--prefer-offline", "--no-audit", "--no-fund"], { cwd: buildDir, stdio: "pipe" });
+      fs.renameSync(buildDir, inst1Dir);
+      fs.cpSync(inst1Dir, inst2Dir, { recursive: true });
+    } else log("reusing prepared copy", tempRoot);
     base.writeHermeticTmdbPreload(preloadPath, "");
-    fs.renameSync(buildDir, inst1Dir);
-    fs.cpSync(inst1Dir, inst2Dir, { recursive: true });
-    const clientCjs = bundleClient(inst1Dir, tempRoot, "cjs", "node", "node");
-    const clientIife = bundleClient(inst1Dir, tempRoot, "iife", "browser", "browser");
+    const bundleRoot = debugClientFromWorktree ? REPO_ROOT : inst1Dir;
+    const clientCjs = bundleClient(bundleRoot, tempRoot, "cjs", "node", "node");
+    const clientIife = bundleClient(bundleRoot, tempRoot, "iife", "browser", "browser");
     const Lib = require(clientCjs);
+    if (debugClientFromWorktree) evidence.nonQualifying = "client bundled from the working tree, not the exact commit";
 
     baseAppEnv = {
       ...process.env, NODE_ENV: "development", CINEMATCH_ALLOW_LOCAL_REALTIME: "true",
@@ -192,8 +201,8 @@ async function main() {
         rec.handle = await Lib.startRoomRealtime({
           roomId: member.roomId, supabaseUrl, publishableKey: stackEnv.ANON_KEY, fetcher, tuning,
           onSnapshot: (s) => { rec.versions.push(s.room.stateVersion); rec.latest = s; },
-          onError: (e) => rec.errors.push(e.code || e.message),
-          onStatus: (s) => rec.statuses.push(s),
+          onError: (e) => { rec.errors.push(e.code || e.message); if (process.env.CINE019_DEBUG) log(label, "error", e.code || e.message, e.status ?? ""); },
+          onStatus: (s) => { rec.statuses.push(s); if (process.env.CINE019_DEBUG) log(label, "status", s); },
         });
         liveMembers.add(rec);
         return rec;
@@ -500,7 +509,7 @@ async function main() {
       } catch (error) { console.error("fixture cleanup failed:", String(error)); }
     }
     await db.end().catch(() => {});
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    if (!keepDir) fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 }
 

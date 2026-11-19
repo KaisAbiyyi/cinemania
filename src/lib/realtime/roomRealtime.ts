@@ -155,10 +155,14 @@ export async function startRoomRealtime(options: {
   const get = options.fetcher ?? fetch;
   const env = options.environment ?? defaultEnvironment();
   const tuning: RealtimeTuning = { ...DEFAULT_REALTIME_TUNING, ...options.tuning };
-  // setAuth affects every channel on a client, so each room owns its client.
-  const client = createClient(options.supabaseUrl, options.publishableKey, {
+  // setAuth affects every channel on a client, so each room owns its client. Every (re)subscription gets a
+  // brand-new client and socket: after an outage realtime-js replays buffered join/leave pushes for the same
+  // topic, and a stale leave closes the newest channel, which showed up as a tight live/reconnecting flap.
+  const makeClient = () => createClient(options.supabaseUrl, options.publishableKey, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
+  let client = makeClient();
+  let currentToken = "";
   const base = "/api/rooms/" + encodeURIComponent(options.roomId);
   const topic = "room:" + options.roomId;
 
@@ -224,6 +228,7 @@ export async function startRoomRealtime(options: {
     if (renewing) return renewing;
     renewing = (async () => {
       const token = await fetchToken();
+      currentToken = token;
       await client.realtime.setAuth(token);
       const timing = readTokenTiming(token, env.now());
       tokenExpiresAt = timing.expiresAt;
@@ -270,12 +275,16 @@ export async function startRoomRealtime(options: {
     wakeSleepers();
   }
 
+  /** Discards the channel AND its client/socket without waiting for a leave acknowledgement. */
   async function dropChannel() {
     channelGeneration++;
     channelJoined = false;
     const previous = channel;
     channel = null;
-    if (previous) await client.removeChannel(previous).catch(() => undefined);
+    if (!previous) return;
+    const old = client;
+    try { void Promise.resolve(old.removeChannel(previous)).catch(() => undefined); } catch { /* socket may already be gone */ }
+    try { void Promise.resolve(old.realtime?.disconnect?.()).catch(() => undefined); } catch { /* best effort */ }
   }
 
   /** Forced authoritative snapshot read with retry. Never throws; failures are reported and retried. */
@@ -322,6 +331,10 @@ export async function startRoomRealtime(options: {
   /** Replaces the channel. Resolves once SUBSCRIBED; rejects on error, close or timeout. */
   async function openChannel(): Promise<void> {
     await dropChannel();
+    if (channelGeneration > 1) {
+      client = makeClient();
+      if (currentToken) await client.realtime.setAuth(currentToken);
+    }
     const generation = channelGeneration;
     const next = client.channel(topic, { config: { private: true } });
     next.on("broadcast", { event: "room_changed" }, (message: { payload?: unknown }) => {
@@ -413,6 +426,7 @@ export async function startRoomRealtime(options: {
     closed = true;
     stopBackground();
     await dropChannel();
+    try { void Promise.resolve(client.realtime?.disconnect?.()).catch(() => undefined); } catch { /* best effort */ }
     setStatus("closed");
   }
 

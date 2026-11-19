@@ -72,6 +72,7 @@ function jwt(issuedMs: number, ttlSeconds = 60) {
 
 interface Rig {
   clock: FakeClock;
+  clients: Array<{ realtime: { setAuth: (t: string) => Promise<void>; disconnect: ReturnType<typeof vi.fn> } }>;
   channels: FakeChannel[];
   authTokens: string[];
   server: { version: number; snapshotFailures: number; tokenStatus: number; tokenFailures: number; snapshotStatus: number; behindOnce: number };
@@ -87,21 +88,26 @@ interface Rig {
 function makeRig(subscribeScript: string[][] = []): Rig {
   const clock = new FakeClock();
   const channels: FakeChannel[] = [];
+  const clients: Array<{ realtime: { setAuth: (t: string) => Promise<void>; disconnect: ReturnType<typeof vi.fn> } }> = [];
   const authTokens: string[] = [];
   const server = { version: 1, snapshotFailures: 0, tokenStatus: 200, tokenFailures: 0, snapshotStatus: 200, behindOnce: 0 };
   let tokens = 0;
   let snapshots = 0;
   const script = [...subscribeScript];
-  vi.mocked(createClient).mockReturnValue({
-    realtime: { setAuth: async (token: string) => { authTokens.push(token); } },
-    channel: (topic: string, config: unknown) => {
-      expect(config).toEqual({ config: { private: true } });
-      const ch = new FakeChannel(topic, script.shift() ?? ["SUBSCRIBED"]);
-      channels.push(ch);
-      return ch;
-    },
-    removeChannel: async (ch: FakeChannel) => { ch.removed = true; },
-  } as never);
+  vi.mocked(createClient).mockImplementation((() => {
+    const fake = {
+      realtime: { setAuth: async (token: string) => { authTokens.push(token); }, disconnect: vi.fn() },
+      channel: (topic: string, config: unknown) => {
+        expect(config).toEqual({ config: { private: true } });
+        const ch = new FakeChannel(topic, script.shift() ?? ["SUBSCRIBED"]);
+        channels.push(ch);
+        return ch;
+      },
+      removeChannel: async (ch: FakeChannel) => { ch.removed = true; },
+    };
+    clients.push(fake);
+    return fake;
+  }) as never);
   const fetcher = (async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/realtime-token")) {
@@ -118,7 +124,7 @@ function makeRig(subscribeScript: string[][] = []): Rig {
     return new Response(JSON.stringify({ room: { stateVersion: version }, viewer: {} }), { status: 200 });
   }) as typeof fetch;
   const rig: Rig = {
-    clock, channels, authTokens, server, fetcher,
+    clock, clients, channels, authTokens, server, fetcher,
     delivered: [], errors: [], statuses: [], subscribeScript: [],
     tokenRequests: () => tokens,
     snapshotRequests: () => snapshots,
@@ -201,6 +207,22 @@ describe("CINE-019 realtime recovery", () => {
     expect(handle.status()).toBe("live");
     expect(rig.delivered).toEqual([1]);
     await handle();
+  });
+
+  it("gives every resubscription a fresh client and discards the old socket (no replayed join/leave cross-talk)", async () => {
+    const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
+    const handle = await start(rig);
+    expect(rig.clients).toHaveLength(1);
+    rig.channels[0].emit("CLOSED");
+    await rig.clock.advance(2000);
+    expect(rig.channels).toHaveLength(3);
+    expect(rig.clients).toHaveLength(3); // initial + one per recovery attempt
+    expect(rig.clients[0].realtime.disconnect).toHaveBeenCalled();
+    expect(rig.clients[1].realtime.disconnect).toHaveBeenCalled();
+    expect(rig.clients[2].realtime.disconnect).not.toHaveBeenCalled();
+    expect(rig.authTokens.length).toBeGreaterThanOrEqual(3); // the new client is authorised before it joins
+    await handle();
+    expect(rig.clients[2].realtime.disconnect).toHaveBeenCalled();
   });
 
   it("treats a subscription that never answers as a failure and retries", async () => {
