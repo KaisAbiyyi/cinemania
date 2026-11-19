@@ -143,7 +143,7 @@ http.request = function(urlOrOpts) {
   fs.writeFileSync(filePath, script, "utf8");
 }
 
-function bundleTarget(instDir, outDir, entryCode, name, extraExternal = []) {
+function bundleTarget(instDir, outDir, entryCode, name, extraExternal = [], conditions = []) {
   const entry = path.join(instDir, `cine020-entry-${name}.ts`);
   fs.writeFileSync(entry, entryCode, "utf8");
   const outfile = path.join(outDir, `cine020-bundle-${name}.cjs`);
@@ -154,6 +154,7 @@ function bundleTarget(instDir, outDir, entryCode, name, extraExternal = []) {
     platform: "node",
     outfile,
     absWorkingDir: instDir,
+    ...(conditions.length > 0 ? { conditions } : {}),
     external: ["node:*", ...extraExternal],
   });
   fs.rmSync(entry, { force: true });
@@ -211,6 +212,7 @@ async function main() {
   let proc2 = null;
   let worker1 = null;
   let worker2 = null;
+  let dbConnected = false;
 
   try {
     fs.mkdirSync(buildDir, { recursive: true });
@@ -250,7 +252,8 @@ async function main() {
         'export { PostgresRoomAuthorityStore } from "./src/lib/server/room/roomStore";\n' +
         'export { mintGuestCapabilityToken, getGuestCookieName } from "./src/lib/server/auth/guestCapability";\n',
       "server-helper",
-      ["pg", "node:sqlite"]
+      ["pg", "node:sqlite"],
+      ["react-server", "node"]
     );
     const Lib = require(clientCjs);
     const ServerHelper = require(serverHelperCjs);
@@ -280,6 +283,7 @@ async function main() {
     await Promise.all([base.waitForServer(origin1, 120000), base.waitForServer(origin2, 120000)]);
 
     await db.connect();
+    dbConnected = true;
     const unknownPre = await db.query("SELECT count(*)::int AS n FROM public.rooms WHERE id <> ALL($1::uuid[]);", [SEED_ROOMS]);
     assert.equal(unknownPre.rows[0].n, 0, "Refused: pre-existing non-seed rooms found on shared local stack");
 
@@ -600,13 +604,15 @@ async function main() {
     }
     await Promise.all([base.stopChild(worker1), base.stopChild(worker2)]);
     await Promise.all([base.stopChild(proc1), base.stopChild(proc2)]);
-    if (createdRoomIds.length > 0) {
-      await db.query("UPDATE public.rooms SET status = 'EXPIRED', expires_at = NOW() - INTERVAL '1 second' WHERE id = ANY($1::uuid[]);", [createdRoomIds]).catch(() => {});
-      await db.query("DELETE FROM public.rooms WHERE id = ANY($1::uuid[]);", [createdRoomIds]).catch(() => {});
+    if (dbConnected) {
+      if (createdRoomIds.length > 0) {
+        await db.query("UPDATE public.rooms SET status = 'EXPIRED', expires_at = NOW() - INTERVAL '1 second' WHERE id = ANY($1::uuid[]);", [createdRoomIds]).catch(() => {});
+        await db.query("DELETE FROM public.rooms WHERE id = ANY($1::uuid[]);", [createdRoomIds]).catch(() => {});
+      }
+      const leftover = await db.query("SELECT count(*)::int AS n FROM public.rooms WHERE id <> ALL($1::uuid[]);", [SEED_ROOMS]).catch(() => ({ rows: [{ n: -1 }] }));
+      assert.equal(leftover.rows[0].n, 0, "Teardown must leave zero non-seed synthetic rooms");
+      await db.end().catch(() => {});
     }
-    const leftover = await db.query("SELECT count(*)::int AS n FROM public.rooms WHERE id <> ALL($1::uuid[]);", [SEED_ROOMS]).catch(() => ({ rows: [{ n: -1 }] }));
-    assert.equal(leftover.rows[0].n, 0, "Teardown must leave zero non-seed synthetic rooms");
-    await db.end().catch(() => {});
     await pool.end().catch(() => {});
     if (process.platform === "win32") {
       spawnSync("cmd.exe", ["/d", "/s", "/c", "rmdir", "/s", "/q", tempRoot], { stdio: "ignore" });
@@ -616,11 +622,7 @@ async function main() {
   }
 }
 
-main()
-  .catch((err) => {
-    console.error("CINE-020 two-instance qualification failed:", err);
-    process.exitCode = 1;
-  })
-  .finally(() => {
-    process.exit(process.exitCode ?? 0);
-  });
+main().catch((err) => {
+  console.error("CINE-020 two-instance qualification failed:", err);
+  process.exitCode = 1;
+});
