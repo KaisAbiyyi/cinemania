@@ -133,11 +133,12 @@ function readTokenTiming(token: string, now: number): { expiresAt: number; renew
  * Subscribe first; events only invalidate snapshots and are never applied as state.
  *
  * Recovery contract:
- * - CLOSED / CHANNEL_ERROR / TIMED_OUT after the first subscription renew the capability, replace the
- *   channel with a new one (a late setAuth does not revive a closed private channel) and force a
- *   snapshot read once SUBSCRIBED again, with jittered exponential backoff;
- * - the capability is renewed at about half its lifetime using wall-clock deadlines, and failed
- *   renewals retry with backoff and mark the connection degraded once the token has expired;
+ * - CLOSED / CHANNEL_ERROR / TIMED_OUT after the first subscription fetch a new capability, replace the
+ *   channel with one on a brand-new client/socket (a late setAuth does not revive a closed private
+ *   channel) and force a snapshot read once SUBSCRIBED again, with jittered exponential backoff;
+ * - the capability is rotated make-before-break at about half its lifetime using wall-clock deadlines
+ *   (a token pushed to a joined channel makes the server close it early); failed rotations keep the old
+ *   channel, retry with backoff and mark the connection degraded once the token has expired;
  * - tab visibility, focus, network-online and heartbeat gaps (background throttling) force a resync;
  * - snapshots are version-gated, so duplicate, reordered or replayed hints never apply twice.
  */
@@ -155,29 +156,29 @@ export async function startRoomRealtime(options: {
   const get = options.fetcher ?? fetch;
   const env = options.environment ?? defaultEnvironment();
   const tuning: RealtimeTuning = { ...DEFAULT_REALTIME_TUNING, ...options.tuning };
-  // setAuth affects every channel on a client, so each room owns its client. Every (re)subscription gets a
-  // brand-new client and socket: after an outage realtime-js replays buffered join/leave pushes for the same
-  // topic, and a stale leave closes the newest channel, which showed up as a tight live/reconnecting flap.
+  // Every subscription (initial, rotation, recovery) owns a brand-new client and socket:
+  // - after an outage realtime-js replays buffered join/leave pushes for the same topic on one socket and a
+  //   stale leave closes the newest channel (observed as a tight live/reconnecting flap, CINE-019 scenario D);
+  // - pushing a renewed token to a joined private channel (setAuth) made the local Realtime server close it
+  //   EARLY (renewal at 30 s closed the channel at 50 s; at 20 s, at 30 s), so renewal is make-before-break.
   const makeClient = () => createClient(options.supabaseUrl, options.publishableKey, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
-  let client = makeClient();
-  let currentToken = "";
+  interface Slot { client: ReturnType<typeof makeClient>; channel: ReturnType<ReturnType<typeof makeClient>["channel"]>; joined: boolean; dead: boolean }
   const base = "/api/rooms/" + encodeURIComponent(options.roomId);
   const topic = "room:" + options.roomId;
 
   let closed = false;
   let terminal = false;
   let status: RealtimeStatus = "connecting";
-  let channel: ReturnType<typeof client.channel> | null = null;
-  let channelGeneration = 0;
-  let channelJoined = false;
-  let suppressSync = true;
+  let active: Slot | null = null;
   let recovering = false;
+  let rotating: Promise<void> | null = null;
+  let fetching: Promise<void> | null = null;
+  let currentToken = "";
   let tokenExpiresAt = 0;
   let tokenRenewAt = 0;
   let renewFailures = 0;
-  let renewing: Promise<void> | null = null;
   let syncFailures = 0;
   let syncRetryTimer: unknown = null;
   let tickTimer: unknown = null;
@@ -223,20 +224,17 @@ export async function startRoomRealtime(options: {
     return body.token;
   }
 
-  /** Single flight: concurrent renewals (heartbeat, recovery, wake-up) share one request. */
-  function renewToken(): Promise<void> {
-    if (renewing) return renewing;
-    renewing = (async () => {
+  /** Single flight: concurrent requests (heartbeat, recovery, wake-up) share one token request. */
+  function loadToken(): Promise<void> {
+    if (fetching) return fetching;
+    fetching = (async () => {
       const token = await fetchToken();
       currentToken = token;
-      await client.realtime.setAuth(token);
       const timing = readTokenTiming(token, env.now());
       tokenExpiresAt = timing.expiresAt;
       tokenRenewAt = timing.renewAt;
-      renewFailures = 0;
-      if (channelJoined && status === "degraded") setStatus("live");
-    })().finally(() => { renewing = null; });
-    return renewing;
+    })().finally(() => { fetching = null; });
+    return fetching;
   }
 
   const reconciler = createRoomReconciler<{ stateVersion: number; snapshot: RoomSnapshot }>({
@@ -258,13 +256,13 @@ export async function startRoomRealtime(options: {
     onSnapshot: ({ snapshot }) => { if (!closed && !terminal) options.onSnapshot(snapshot); },
   });
 
-  function terminate(error: unknown) {
-    if (terminal || closed) return;
-    terminal = true;
-    report(error);
-    stopBackground();
-    setStatus("closed");
-    void dropChannel();
+  /** Discards a slot's channel AND client/socket without waiting for a leave acknowledgement. */
+  function disposeSlot(slot: Slot | null) {
+    if (!slot || slot.dead) return;
+    slot.dead = true;
+    slot.joined = false;
+    try { void Promise.resolve(slot.client.removeChannel(slot.channel)).catch(() => undefined); } catch { /* socket may already be gone */ }
+    try { void Promise.resolve(slot.client.realtime?.disconnect?.()).catch(() => undefined); } catch { /* best effort */ }
   }
 
   function stopBackground() {
@@ -275,16 +273,14 @@ export async function startRoomRealtime(options: {
     wakeSleepers();
   }
 
-  /** Discards the channel AND its client/socket without waiting for a leave acknowledgement. */
-  async function dropChannel() {
-    channelGeneration++;
-    channelJoined = false;
-    const previous = channel;
-    channel = null;
-    if (!previous) return;
-    const old = client;
-    try { void Promise.resolve(old.removeChannel(previous)).catch(() => undefined); } catch { /* socket may already be gone */ }
-    try { void Promise.resolve(old.realtime?.disconnect?.()).catch(() => undefined); } catch { /* best effort */ }
+  function terminate(error: unknown) {
+    if (terminal || closed) return;
+    terminal = true;
+    report(error);
+    stopBackground();
+    setStatus("closed");
+    disposeSlot(active);
+    active = null;
   }
 
   /** Forced authoritative snapshot read with retry. Never throws; failures are reported and retried. */
@@ -328,55 +324,65 @@ export async function startRoomRealtime(options: {
     })();
   }
 
-  /** Replaces the channel. Resolves once SUBSCRIBED; rejects on error, close or timeout. */
-  async function openChannel(): Promise<void> {
-    await dropChannel();
-    if (channelGeneration > 1) {
-      client = makeClient();
-      if (currentToken) await client.realtime.setAuth(currentToken);
-    }
-    const generation = channelGeneration;
-    const next = client.channel(topic, { config: { private: true } });
-    next.on("broadcast", { event: "room_changed" }, (message: { payload?: unknown }) => {
-      if (generation === channelGeneration) onHint(message.payload);
+  /** Opens a new client + private channel with the current token. Resolves once SUBSCRIBED. */
+  async function joinNewSlot(): Promise<Slot> {
+    const client = makeClient();
+    await client.realtime.setAuth(currentToken);
+    const channel = client.channel(topic, { config: { private: true } });
+    const slot: Slot = { client, channel, joined: false, dead: false };
+    let joinedOnce = false;
+    channel.on("broadcast", { event: "room_changed" }, (message: { payload?: unknown }) => {
+      if (!slot.dead) onHint(message.payload);
     });
-    channel = next;
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const timer = env.setTimeout(() => settle(new RoomRealtimeError("SUBSCRIBE_FAILED", "Private realtime subscription timed out")), tuning.subscribeTimeoutMs);
-      const settle = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        env.clearTimeout(timer);
-        if (error) reject(error); else resolve();
-      };
-      next.subscribe((state: string) => {
-        if (closed || terminal || generation !== channelGeneration) return;
-        if (state === "SUBSCRIBED") {
-          channelJoined = true;
-          setStatus("live");
-          settle();
-          // A later SUBSCRIBED after an internal rejoin also needs a resync: events may have been missed.
-          if (!suppressSync) void syncNow();
-        } else if (state === "CHANNEL_ERROR" || state === "TIMED_OUT" || state === "CLOSED") {
-          channelJoined = false;
-          if (!settled) settle(new RoomRealtimeError("SUBSCRIBE_FAILED", "Private realtime subscription failed"));
-          else void recover();
-        }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const timer = env.setTimeout(() => settle(new RoomRealtimeError("SUBSCRIBE_FAILED", "Private realtime subscription timed out")), tuning.subscribeTimeoutMs);
+        const settle = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          env.clearTimeout(timer);
+          if (error) reject(error); else resolve();
+        };
+        channel.subscribe((state: string) => {
+          if (slot.dead || closed || terminal) return;
+          if (state === "SUBSCRIBED") {
+            slot.joined = true;
+            const rejoined = joinedOnce;
+            joinedOnce = true;
+            settle();
+            // An internal rejoin of the ACTIVE channel may have missed events: resync.
+            if (rejoined && slot === active) { setStatus("live"); void syncNow(); }
+          } else if (state === "CHANNEL_ERROR" || state === "TIMED_OUT" || state === "CLOSED") {
+            slot.joined = false;
+            if (!settled) settle(new RoomRealtimeError("SUBSCRIBE_FAILED", "Private realtime subscription failed"));
+            else if (slot === active) void recover();
+          }
+        });
       });
-    });
+    } catch (error) {
+      disposeSlot(slot);
+      throw error;
+    }
+    return slot;
   }
 
   async function recover(): Promise<void> {
     if (recovering || closed || terminal) return;
     recovering = true;
     setStatus("reconnecting");
+    disposeSlot(active);
+    active = null;
     let attempt = 0;
     try {
       while (!closed && !terminal) {
         try {
-          await renewToken();
-          await openChannel();
+          await loadToken();
+          const slot = await joinNewSlot();
+          if (closed || terminal) { disposeSlot(slot); return; }
+          active = slot;
+          setStatus("live");
+          void syncNow(); // events may have been missed while down
           return;
         } catch (error) {
           if (closed || terminal) return;
@@ -384,8 +390,6 @@ export async function startRoomRealtime(options: {
           attempt++;
           report(error);
           setStatus(attempt >= tuning.degradedAfterAttempts ? "degraded" : "reconnecting");
-          // A timed-out channel may still join late; never leave a zombie behind during backoff.
-          await dropChannel();
           await sleep(backoff(attempt));
         }
       }
@@ -394,14 +398,34 @@ export async function startRoomRealtime(options: {
     }
   }
 
+  /**
+   * Make-before-break capability rotation: join a second channel with a fresh token, then retire the old one.
+   * No gap, and the live channel never receives a token push.
+   */
+  function rotate(): Promise<void> {
+    if (rotating) return rotating;
+    rotating = (async () => {
+      await loadToken();
+      const slot = await joinNewSlot();
+      if (closed || terminal || recovering || !active) { disposeSlot(slot); return; }
+      const previous = active;
+      active = slot;
+      disposeSlot(previous);
+      renewFailures = 0;
+      if (status === "degraded") setStatus("live");
+    })().finally(() => { rotating = null; });
+    return rotating;
+  }
+
   async function tick(reason: "timer" | WakeReason) {
     if (closed || terminal) return;
     const now = env.now();
     const gap = now - lastTick;
     lastTick = now;
     const throttled = reason !== "timer" || gap > tuning.throttleGapMs;
-    if (now >= tokenRenewAt && !renewing && !recovering) {
-      void renewToken().catch((error) => {
+    if (!active?.joined && !recovering) void recover();
+    else if (now >= tokenRenewAt && !rotating && !recovering) {
+      void rotate().catch((error) => {
         if (closed || terminal) return;
         if (isPermanent(error)) { terminate(error); return; }
         renewFailures++;
@@ -410,14 +434,13 @@ export async function startRoomRealtime(options: {
         if (env.now() >= tokenExpiresAt) setStatus("degraded");
       });
     }
-    if (!channelJoined && !recovering) void recover();
     if (throttled) wakeSleepers();
     if (throttled || now - lastSync >= tuning.pollMs) void syncNow();
   }
 
   function scheduleTick() {
     if (closed || terminal) return;
-    // Wake for the renewal deadline too, so a short-lived token is renewed at about half its lifetime.
+    // Wake for the rotation deadline too, so a short-lived token is replaced at about half its lifetime.
     const delay = Math.max(1000, Math.min(tuning.tickMs, tokenRenewAt - env.now()));
     tickTimer = env.setTimeout(() => { tickTimer = null; void tick("timer").finally(scheduleTick); }, delay);
   }
@@ -425,16 +448,16 @@ export async function startRoomRealtime(options: {
   async function shutdown() {
     closed = true;
     stopBackground();
-    await dropChannel();
-    try { void Promise.resolve(client.realtime?.disconnect?.()).catch(() => undefined); } catch { /* best effort */ }
+    disposeSlot(active);
+    active = null;
     setStatus("closed");
   }
 
   setStatus("connecting");
   try {
-    await renewToken();
-    await openChannel();
-    suppressSync = false;
+    await loadToken();
+    active = await joinNewSlot();
+    setStatus("live");
     lastSync = env.now();
     await reconciler.connected();
   } catch (error) {

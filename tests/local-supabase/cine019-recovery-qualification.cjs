@@ -361,6 +361,7 @@ async function main() {
       await converge(room, clients, 15000, "E after start");
       const tokenBefore = clients.map((c) => c.tokenRequests);
       await sleep(135000);
+      for (const c of clients) assert.deepEqual(c.statuses, ["live"], `${c.label} must stay live through token rotations (no flap): ${c.statuses}`);
       for (const c of clients) assert(c.tokenRequests - tokenBefore[clients.indexOf(c)] >= 3, `${c.label} must renew about every 30 s`);
       const t0 = Date.now();
       assert.equal((await castVote(room.members[0], voteBody(round, round.deck[0], "LIKE", "e-0"))).status, 200);
@@ -368,7 +369,7 @@ async function main() {
       await waitUntil(() => clients.every((c) => c.versions.at(-1) === live), 8000, "E hint delivery after 135 s idle");
       const latencyMs = Date.now() - t0;
       await Promise.all(clients.map((c) => c.stop()));
-      return { idleSeconds: 135, renewals: clients.map((c, i) => c.tokenRequests - tokenBefore[i]), hintDeliveryMs: latencyMs, closedDuringIdle: clients.map((c) => c.statuses.filter((s) => s !== "live").length) };
+      return { idleSeconds: 135, renewals: clients.map((c, i) => c.tokenRequests - tokenBefore[i]), hintDeliveryMs: latencyMs, statusesDuringIdle: clients.map((c) => c.statuses.filter((s) => s !== "closed")) };
     });
 
     // F. Process interruption: app instance 1 and both workers are killed during a vote storm.

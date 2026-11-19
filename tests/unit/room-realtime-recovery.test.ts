@@ -225,6 +225,47 @@ describe("CINE-019 realtime recovery", () => {
     expect(rig.clients[2].realtime.disconnect).toHaveBeenCalled();
   });
 
+  it("rotates the capability make-before-break at about half its lifetime, with no status change and no token push to the live channel", async () => {
+    const rig = makeRig();
+    const handle = await start(rig);
+    await rig.clock.advance(32000);
+    expect(rig.channels).toHaveLength(2);
+    expect(rig.clients).toHaveLength(2);
+    expect(rig.channels[0].removed).toBe(true); // retired only after the replacement joined
+    expect(rig.channels[1].removed).toBe(false);
+    expect(rig.clients[0].realtime.disconnect).toHaveBeenCalled();
+    expect(rig.statuses).toEqual(["live"]);
+    expect(rig.authTokens).toHaveLength(2); // one setAuth per NEW client, never a push to a joined channel
+    rig.server.version = 3;
+    rig.channels[0].hint({ roomId: ROOM, version: 3 }); // retired channel: ignored
+    await rig.clock.advance(0);
+    expect(rig.delivered).toEqual([1]);
+    rig.channels[1].hint({ roomId: ROOM, version: 3 });
+    await rig.clock.advance(0);
+    expect(rig.delivered).toEqual([1, 3]);
+    await rig.clock.advance(30000);
+    expect(rig.channels).toHaveLength(3); // keeps rotating
+    expect(rig.statuses).toEqual(["live"]);
+    await handle();
+  });
+
+  it("keeps the old channel when a rotation cannot join, and retries soon", async () => {
+    const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"]]);
+    const handle = await start(rig);
+    await rig.clock.advance(30500); // first rotation attempt at ~30 s fails
+    expect(rig.channels).toHaveLength(2);
+    expect(rig.channels[1].removed).toBe(true); // failed candidate discarded
+    expect(rig.channels[0].removed).toBe(false); // old one still serving
+    expect(handle.status()).toBe("live");
+    expect(rig.errors.some((e) => e.code === "SUBSCRIBE_FAILED")).toBe(true);
+    await rig.clock.advance(3000); // retry within seconds, not at the next half-life
+    expect(rig.channels).toHaveLength(3);
+    expect(rig.channels[0].removed).toBe(true);
+    expect(rig.channels[2].removed).toBe(false);
+    expect(handle.status()).toBe("live");
+    await handle();
+  });
+
   it("treats a subscription that never answers as a failure and retries", async () => {
     const rig = makeRig([["SUBSCRIBED"], [], ["SUBSCRIBED"]]);
     const handle = await start(rig);
