@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { assertSameOriginCsrf } from "@/lib/server/auth/csrfGuard";
+import { enforceRoomRateLimit } from "@/lib/server/auth/roomRateLimit";
 import { handleGuestApiError, privateJsonResponse } from "@/lib/server/auth/guestResponse";
 import { getRoomAuthorityStore } from "@/lib/server/room/roomStore";
 import { submitRoomVoteWithSession } from "@/lib/server/room/roomSnapshot";
@@ -18,6 +19,7 @@ export async function POST(
   try {
     assertSameOriginCsrf(request);
     const { roomId } = await context.params;
+    await enforceRoomRateLimit(request, "vote", roomId);
     const store = getRoomAuthorityStore();
     const result = await submitRoomVoteWithSession(request, roomId, store);
     await notifyAfterCommit(store, result.room.roomId);

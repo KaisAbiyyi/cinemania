@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { ZodError } from "zod";
+import { flattenError, ZodError } from "zod";
 import { TmdbApiError, isTmdbError, TmdbConfigurationError, TmdbHostValidationError } from "@/services/tmdbApi";
 import { cacheConcurrencyLimitResponse } from "@/lib/server/cache/serverCache";
 
@@ -47,7 +47,7 @@ export const LOCAL_SERVICE_UNAVAILABLE_RETRY_AFTER_SECONDS = 30;
 export function handleApiError(error: unknown): NextResponse<ApiErrorPayload> {
   // Input Validation Error (Zod)
   if (error instanceof ZodError) {
-    const fieldErrors = error.flatten().fieldErrors;
+    const fieldErrors = flattenError(error).fieldErrors as Record<string, string[] | undefined>;
     const messages = Object.entries(fieldErrors)
       .map(([field, errs]) => `${field}: ${(errs || []).join(", ")}`)
       .join("; ");

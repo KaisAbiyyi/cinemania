@@ -36,7 +36,8 @@ async function main() {
     await pool.query(`CREATE SCHEMA "${schema}"`); created = true;
     await pool.query(`CREATE TABLE ${table} (id bigserial PRIMARY KEY, room_id uuid NOT NULL, version int NOT NULL,
       dispatched boolean NOT NULL DEFAULT false, dispatched_at timestamptz, retry_count int NOT NULL DEFAULT 0,
-      permanent_retry_count int NOT NULL DEFAULT 0, poison boolean NOT NULL DEFAULT false, UNIQUE(room_id, version))`);
+      permanent_retry_count int NOT NULL DEFAULT 0, poison boolean NOT NULL DEFAULT false,
+      retry_not_before timestamptz NOT NULL DEFAULT '-infinity', UNIQUE(room_id, version))`);
     const store = postgresOutboxStore(pool, schema);
     const room = crypto.randomUUID(), transient = crypto.randomUUID(), poison = crypto.randomUUID(), healthy = crypto.randomUUID(), duplicate = crypto.randomUUID();
     const seen: Record<string, number[]> = {};

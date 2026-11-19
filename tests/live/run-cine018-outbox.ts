@@ -18,7 +18,7 @@ async function main() {
 let created = false;
 try {
   await pool.query(`CREATE SCHEMA "${schema}"`); created = true;
-  await pool.query(`CREATE TABLE "${schema}".room_events (id bigserial primary key, room_id uuid NOT NULL, version int NOT NULL, dispatched boolean NOT NULL DEFAULT false, dispatched_at timestamptz, retry_count int NOT NULL DEFAULT 0, permanent_retry_count int NOT NULL DEFAULT 0, poison boolean NOT NULL DEFAULT false)`);
+  await pool.query(`CREATE TABLE "${schema}".room_events (id bigserial primary key, room_id uuid NOT NULL, version int NOT NULL, dispatched boolean NOT NULL DEFAULT false, dispatched_at timestamptz, retry_count int NOT NULL DEFAULT 0, permanent_retry_count int NOT NULL DEFAULT 0, poison boolean NOT NULL DEFAULT false, retry_not_before timestamptz NOT NULL DEFAULT '-infinity')`);
   const room = crypto.randomUUID();
   await pool.query(`INSERT INTO "${schema}".room_events (room_id, version) VALUES ($1,1),($1,2),($1,3)`, [room]);
   const store = postgresOutboxStore(pool, schema);
@@ -26,16 +26,24 @@ try {
   await dispatchPendingEvents(room, store, async (hint) => { sent.push(hint.version); throw new Error("network"); });
   let rows = await pool.query(`SELECT version, dispatched, retry_count FROM "${schema}".room_events ORDER BY version`);
   assert.deepEqual(rows.rows.map(r => [r.dispatched, r.retry_count]), [[false,1],[false,0],[false,0]]);
+  const releaseRetry = (id: string) => pool.query(`UPDATE "${schema}".room_events SET retry_not_before='-infinity' WHERE room_id=$1 AND NOT dispatched AND NOT poison`, [id]);
+  await releaseRetry(room);
   await Promise.all([1,2].map(() => dispatchPendingEvents(room, store, async (hint) => { sent.push(hint.version); await new Promise(resolve => setTimeout(resolve, 20)); })));
   rows = await pool.query(`SELECT version, dispatched, retry_count FROM "${schema}".room_events ORDER BY version`);
   assert.deepEqual(sent, [1,1,2,3]);
   assert.deepEqual(rows.rows.map(r => r.dispatched), [true,true,true]);
   const poisonedRoom = crypto.randomUUID();
   await pool.query(`INSERT INTO "${schema}".room_events (room_id, version) VALUES ($1,1),($1,2)`, [poisonedRoom]);
-  for (let i = 0; i < 4; i++) await dispatchPendingEvents(poisonedRoom, store, async () => { throw new Error("temporary"); });
+  for (let i = 0; i < 4; i++) {
+    await dispatchPendingEvents(poisonedRoom, store, async () => { throw new Error("temporary"); });
+    await releaseRetry(poisonedRoom);
+  }
   rows = await pool.query(`SELECT poison FROM "${schema}".room_events WHERE room_id=$1 ORDER BY version`, [poisonedRoom]);
   assert.equal(rows.rows[0].poison, false);
-  for (let i = 0; i < 3; i++) await dispatchPendingEvents(poisonedRoom, store, async () => { throw new PermanentPublicationError("oversized"); });
+  for (let i = 0; i < 3; i++) {
+    await dispatchPendingEvents(poisonedRoom, store, async () => { throw new PermanentPublicationError("oversized"); });
+    await releaseRetry(poisonedRoom);
+  }
   const after: number[] = [];
   await dispatchPendingEvents(poisonedRoom, store, async hint => { after.push(hint.version); });
   assert.deepEqual(after, [2]);
@@ -48,4 +56,4 @@ try {
 }
 
 }
-main().catch((error) => { console.error(error); process.exitCode = 1; });
+main().catch(() => { console.error("Hosted outbox qualification failed; provider and database details withheld."); process.exitCode = 1; });

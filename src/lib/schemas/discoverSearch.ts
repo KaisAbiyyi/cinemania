@@ -118,7 +118,7 @@ export const booleanString = z.preprocess((val) => {
   if (val === "true" || val === true) return true;
   if (val === "false" || val === false) return false;
   return val;
-}, z.boolean({ invalid_type_error: "Must be a valid boolean ('true' or 'false')" }));
+}, z.boolean({ error: "Must be a valid boolean ('true' or 'false')" }));
 
 // Validates both YYYY-MM-DD and ISO timestamp (e.g. 2026-11-11T00:00:00.000Z),
 // normalizes safely to canonical YYYY-MM-DD for TMDB API, and validates calendar validity (e.g. rejects 2026-02-31)
@@ -193,7 +193,7 @@ export const ALLOWED_DISCOVER_KEYS = new Set([
 export const discoverMediaSchema = z
   .object({
     mediaType: z.enum(["movie", "tv"], {
-      errorMap: () => ({ message: "Invalid or missing mediaType parameter. Allowed values: movie, tv" }),
+      error: "Invalid or missing mediaType parameter. Allowed values: movie, tv",
     }),
     page: z.coerce.number().int("Page must be an integer").min(1, "Page must be at least 1").max(500, "Page must not exceed 500").default(1),
     include_adult: booleanString.default(false),
@@ -225,23 +225,16 @@ export const discoverMediaSchema = z
     year: z.coerce.number().int().min(1870).max(2100).optional(),
     primary_release_year: z.coerce.number().int().min(1870).max(2100).optional(),
   })
-  .refine(
-    (data) => {
-      // Validate sort option matches mediaType
-      if (!data.sort_by) return true;
-      if (data.mediaType === "movie") {
-        return (ALLOWED_MOVIE_SORT_VALUES as readonly string[]).includes(data.sort_by);
-      }
-      if (data.mediaType === "tv") {
-        return (ALLOWED_TV_SORT_VALUES as readonly string[]).includes(data.sort_by);
-      }
-      return true;
-    },
-    (data) => ({
-      message: `Sort option '${data.sort_by}' is not valid for mediaType '${data.mediaType}'`,
-      path: ["sort_by"],
-    })
-  )
+  .superRefine((data, ctx) => {
+    const allowed: readonly string[] = data.mediaType === "movie" ? ALLOWED_MOVIE_SORT_VALUES : ALLOWED_TV_SORT_VALUES;
+    if (data.sort_by && !allowed.includes(data.sort_by)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `Sort option '${data.sort_by}' is not valid for mediaType '${data.mediaType}'`,
+        path: ["sort_by"],
+      });
+    }
+  })
   .refine(
     (data) => {
       if (data["vote_average.gte"] !== undefined && data["vote_average.lte"] !== undefined) {
@@ -294,10 +287,10 @@ export const ALLOWED_TRENDING_KEYS = new Set(["mediaType", "timeWindow", "page",
 
 export const trendingMediaSchema = z.object({
   mediaType: z.enum(["all", "movie", "tv"], {
-    errorMap: () => ({ message: "Invalid or missing mediaType parameter. Allowed values: all, movie, tv" }),
+    error: "Invalid or missing mediaType parameter. Allowed values: all, movie, tv",
   }),
   timeWindow: z.enum(["day", "week"], {
-    errorMap: () => ({ message: "Invalid or missing timeWindow parameter. Allowed values: day, week" }),
+    error: "Invalid or missing timeWindow parameter. Allowed values: day, week",
   }),
   page: z.coerce.number().int().min(1).max(500).default(1),
   language: z.string().regex(/^[a-z]{2}(-[A-Z]{2})?$/, "Invalid language code format (e.g. en-US)").default("en-US"),

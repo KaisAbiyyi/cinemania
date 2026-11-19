@@ -120,7 +120,7 @@ describe("CINE-013: Anonymous Guest Identity & Capability API Integration", () =
         method: "POST",
         headers: { "content-type": "application/json", origin: ORIGIN },
         body: JSON.stringify({
-          roomId: hostData.roomId,
+          roomCode: hostData.roomCode,
           participantId: hostData.participantId,
           role: "HOST",
           displayName: "GuestEve",

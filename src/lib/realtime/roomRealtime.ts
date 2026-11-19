@@ -124,6 +124,11 @@ const FALLBACK_LIFETIME_MS = 60000;
 /** Longest server-requested pause the client will honour. */
 const MAX_RETRY_AFTER_MS = 60000;
 
+function readRetryAfterMs(header: string | null): number | undefined {
+  const ms = Number(header) * 1000;
+  return ms > 0 ? Math.min(MAX_RETRY_AFTER_MS, ms) : undefined;
+}
+
 /**
  * Decodes only the token's LIFETIME (`exp - iat`) for scheduling. It is never trusted for authorization and
  * deliberately never compares `exp` with the client clock: a client whose clock is far ahead of the server
@@ -224,7 +229,7 @@ export async function startRoomRealtime(options: {
   let lastTick = env.now();
   let lastSync = 0;
   let disposeWake: (() => void) | null = null;
-  const sleepers = new Set<() => void>();
+  const sleepers = new Map<() => void, boolean>();
 
   const report = (error: unknown) => {
     try { options.onError?.(error instanceof Error ? error : new Error("Realtime failed")); } catch { /* consumer errors must not break recovery */ }
@@ -239,12 +244,27 @@ export async function startRoomRealtime(options: {
     const ceiling = Math.min(tuning.backoffMaxMs, tuning.backoffBaseMs * 2 ** Math.max(0, attempt - 1));
     return Math.round(ceiling * (0.5 + env.random() / 2));
   };
-  const sleep = (ms: number) => new Promise<void>((resolve) => {
+  const sleep = (ms: number, interruptible = true) => new Promise<void>((resolve) => {
     const wake = () => { env.clearTimeout(timer); sleepers.delete(wake); resolve(); };
     const timer = env.setTimeout(wake, ms);
-    sleepers.add(wake);
+    sleepers.set(wake, interruptible);
   });
-  const wakeSleepers = () => { for (const wake of [...sleepers]) wake(); };
+  const wakeSleepers = (shutdown = false) => {
+    for (const [wake, interruptible] of sleepers) if (shutdown || interruptible) wake();
+  };
+
+  // Browser wake events can hurry local backoff, but cannot waive a server pause.
+  function createRetryPause() {
+    let pending: Promise<void> | undefined;
+    return {
+      wait: () => pending,
+      start(ms: number | undefined) {
+        if (ms && !closed && !terminal) pending = sleep(ms, false).finally(() => { pending = undefined; });
+      },
+    };
+  }
+  const tokenPause = createRetryPause();
+  const snapshotPause = createRetryPause();
 
   /** Rotate at about half the token lifetime (L-005), never more often than MIN_ROTATION_INTERVAL_MS. */
   function scheduleRenewFromToken() {
@@ -279,7 +299,8 @@ export async function startRoomRealtime(options: {
       throw new RoomRealtimeError("UNAUTHORIZED", "Realtime capability was refused", { status: result.status, permanent: true });
     }
     if (!result.ok) {
-      const retryAfterMs = Math.min(MAX_RETRY_AFTER_MS, Number(result.retryAfter) * 1000 || 0) || undefined;
+      const retryAfterMs = readRetryAfterMs(result.retryAfter);
+      tokenPause.start(retryAfterMs);
       throw new RoomRealtimeError("TOKEN_REQUEST_FAILED", "Realtime capability request failed", { status: result.status, retryAfterMs });
     }
     if (typeof result.body.token !== "string" || result.body.token.length === 0) throw new RoomRealtimeError("TOKEN_INVALID", "Invalid realtime capability");
@@ -295,6 +316,8 @@ export async function startRoomRealtime(options: {
     if (options.reuseIfFresh && currentToken && age >= 0 && age < tokenLifetimeMs / 2 && (options.newerThan === undefined || tokenFetchedAt > options.newerThan)) return Promise.resolve();
     if (fetching) return fetching;
     fetching = (async () => {
+      await tokenPause.wait();
+      if (closed || terminal) throw new RoomRealtimeError("TOKEN_REQUEST_FAILED", "Realtime client was closed");
       const token = await fetchToken();
       currentToken = token;
       const fetchedAt = env.now();
@@ -309,19 +332,23 @@ export async function startRoomRealtime(options: {
 
   const reconciler = createRoomReconciler<{ stateVersion: number; snapshot: RoomSnapshot }>({
     loadSnapshot: async () => {
-      let result: { status: number; ok: boolean; snapshot: RoomSnapshot | null };
+      let result: { status: number; ok: boolean; retryAfter: string | null; snapshot: RoomSnapshot | null };
       try {
+        await snapshotPause.wait();
+        if (closed || terminal) throw new Error("Realtime client was closed");
         result = await withTimeout(async (signal) => {
           const response = await get(base, { credentials: "same-origin", cache: "no-store", ...(signal ? { signal } : {}) });
           let snapshot: RoomSnapshot | null = null;
           if (response.ok) { try { snapshot = await response.json() as RoomSnapshot; } catch { snapshot = null; } }
-          return { status: response.status, ok: response.ok, snapshot };
+          return { status: response.status, ok: response.ok, retryAfter: response.headers?.get("retry-after") ?? null, snapshot };
         });
       } catch {
         throw new RoomRealtimeError("SNAPSHOT_FAILED", "Room snapshot request failed");
       }
       if (!result.ok) {
-        throw new RoomRealtimeError("SNAPSHOT_FAILED", "Room snapshot request failed", { status: result.status, permanent: PERMANENT_HTTP_STATUS.has(result.status) });
+        const retryAfterMs = readRetryAfterMs(result.retryAfter);
+        snapshotPause.start(retryAfterMs);
+        throw new RoomRealtimeError("SNAPSHOT_FAILED", "Room snapshot request failed", { status: result.status, permanent: PERMANENT_HTTP_STATUS.has(result.status), retryAfterMs });
       }
       const snapshot = result.snapshot;
       if (!snapshot) throw new RoomRealtimeError("SNAPSHOT_INVALID", "Room snapshot was not valid JSON");
@@ -354,7 +381,7 @@ export async function startRoomRealtime(options: {
     if (syncRetryTimer !== null) { env.clearTimeout(syncRetryTimer); syncRetryTimer = null; }
     disposeWake?.();
     disposeWake = null;
-    wakeSleepers();
+    wakeSleepers(true);
   }
 
   function terminate(error: unknown) {
@@ -389,7 +416,8 @@ export async function startRoomRealtime(options: {
       }
       report(error);
       if (syncRetryTimer === null) {
-        syncRetryTimer = env.setTimeout(() => { syncRetryTimer = null; void syncNow(requireVersion); }, backoff(behind ? behindFailures : syncFailures));
+        const retryAfterMs = error instanceof RoomRealtimeError ? error.retryAfterMs ?? 0 : 0;
+        syncRetryTimer = env.setTimeout(() => { syncRetryTimer = null; void syncNow(requireVersion); }, Math.max(backoff(behind ? behindFailures : syncFailures), retryAfterMs));
       }
     }
   }

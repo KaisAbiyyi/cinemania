@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
             { videoId },
             async () => {
                 const youtubeApiUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${encodeURIComponent(videoId)}&key=${youtubeApiKey}`;
-                const response = await fetch(youtubeApiUrl);
+                const response = await fetch(youtubeApiUrl, { redirect: "error" });
 
                 if (!response.ok) {
                     throw new YoutubeUpstreamError(response.status, "Failed to fetch video data");
@@ -97,7 +97,7 @@ export async function GET(request: NextRequest) {
                 { status: error.status, headers: { "Cache-Control": "no-store" } }
             );
         }
-        console.error("Error fetching YouTube video:", error);
+        console.error("[YOUTUBE_UPSTREAM_ERROR] Check video lookup connectivity and configuration.");
         return NextResponse.json(
             { error: "Failed to fetch video data" },
             { status: 500, headers: { "Cache-Control": "no-store" } }

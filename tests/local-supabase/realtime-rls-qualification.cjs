@@ -208,6 +208,11 @@ async function main() {
     assert.equal(bobSub.messages.length, 0, "Bob in Room B must receive zero Room A broadcasts");
 
     // 9. Direct Postgres RLS & non-enumeration verification (L-034, L-035)
+    const { rows: [helper] } = await db.query(`
+      SELECT to_regprocedure('public.is_current_user_room_participant(uuid)') IS NOT NULL AS exposed,
+             to_regprocedure('cinematch_private.is_current_user_room_participant(uuid)') IS NOT NULL AS internal
+    `);
+    assert.notEqual(helper.exposed, helper.internal, "Exactly one membership helper must be installed");
     async function expectDeniedAsRole(role, sql, message) {
       await db.query("BEGIN");
       try {
@@ -240,8 +245,8 @@ async function main() {
         "participants_self_read_policy must prevent enumerating other room participants"
       );
 
-      const crossCheck = await db.query("SELECT public.is_current_user_room_participant($1) AS ok", [roomB]);
-      assert.equal(crossCheck.rows[0].ok, false, "Helper must return false for non-member room");
+      const crossCheck = await db.query("SELECT id FROM public.rooms WHERE id = $1", [roomB]);
+      assert.equal(crossCheck.rowCount, 0, "Policy must hide a room from non-members");
     } finally {
       await db.query("ROLLBACK");
     }
@@ -250,7 +255,13 @@ async function main() {
     await expectDeniedAsRole("authenticated", "SELECT * FROM public.room_events", "authenticated role must be denied SELECT on room_events");
     await expectDeniedAsRole("anon", "SELECT * FROM public.rooms", "anon role must be denied SELECT on rooms");
     await expectDeniedAsRole("anon", "SELECT * FROM public.room_participants", "anon role must be denied SELECT on room_participants");
-    await expectDeniedAsRole("anon", `SELECT public.is_current_user_room_participant('${roomA}')`, "anon helper RPC must be denied despite hosted default EXECUTE grants");
+    if (helper.internal) {
+      const call = "SELECT cinematch_private.is_current_user_room_participant(NULL)";
+      await expectDeniedAsRole("anon", call, "Anonymous role must not call the internal helper");
+      await expectDeniedAsRole("authenticated", call, "Authenticated role uses the helper only through policy");
+    } else {
+      await expectDeniedAsRole("anon", "SELECT public.is_current_user_room_participant(NULL)", "Legacy helper must deny anonymous calls");
+    }
 
     // 10. Direct Postgres RLS check on realtime.messages for anon & authenticated under competing permissive policies
     await db.query("BEGIN");

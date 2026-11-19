@@ -5,6 +5,7 @@ import { FC, useSyncExternalStore } from "react";
 import { CardDescription, CardTitle } from "../ui/card";
 import { buttonVariants } from "../ui/button";
 import Link from "next/link";
+import Image from "next/image";
 
 const emptySubscribe = () => () => {};
 
@@ -84,8 +85,11 @@ const Footer: FC = () => {
             </div>
 
             {/* Credit to TMDB */}
-            <div className="mt-10 text-sm text-center text-gray-500">
-                This product uses the <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer nofollow" className="text-primary hover:underline">TMDB API</a> but is not endorsed or certified by TMDB.
+            <div id="credits" className="mt-10 flex flex-col items-center gap-2 text-center text-sm text-muted-foreground">
+                <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer nofollow">
+                    <Image src="/tmdb-attribution.svg" alt="The Movie Database" width={100} height={15} />
+                </a>
+                <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
             </div>
 
             {/* Copyright */}

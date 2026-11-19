@@ -13,8 +13,11 @@ import {
   verifyGuestCapabilityToken,
 } from "@/lib/server/auth/guestCapability";
 import { handleGuestApiError, privateJsonResponse } from "@/lib/server/auth/guestResponse";
-import { requireRoomActor } from "@/lib/server/auth/roomAuth";
+import { requireRoomActor, resolveGuestTokenFromRequest } from "@/lib/server/auth/roomAuth";
 import { getRoomAuthorityStore } from "@/lib/server/room/roomStore";
+import { normalizeDisplayName } from "@/lib/server/room/roomSnapshot";
+import { enforceRoomRateLimit } from "@/lib/server/auth/roomRateLimit";
+import { readBoundedJson } from "@/lib/server/auth/requestBody";
 
 const SessionPostSchema = z.object({
   roomId: z.string().uuid().optional(),
@@ -100,7 +103,7 @@ export async function GET(request: Request) {
  * POST /api/guest/session
  * - Empty body (including absent Content-Length) or JSON with optional displayName creates a HOST room.
  * - With roomId or roomCode + valid existing cookie: safely rejoins preserving server participantId & role.
- * - With roomId or roomCode + no cookie: joins as a new MEMBER with server-generated UUID.
+ * - With roomCode + no cookie: joins as a new MEMBER with server-generated UUID.
  * User-supplied participantId or role fields in request body are never trusted.
  */
 export async function POST(request: Request) {
@@ -112,18 +115,8 @@ export async function POST(request: Request) {
     getCapabilitySecret();
     const store = getRoomAuthorityStore();
 
-    let rawBody: unknown = {};
-    const rawText = await request.text();
-    if (rawText.trim().length > 0) {
-      try {
-        rawBody = JSON.parse(rawText);
-      } catch {
-        return privateJsonResponse(
-          { error: "INVALID_JSON", message: "Request body must be valid JSON." },
-          400
-        );
-      }
-    }
+    const rawBody = await readBoundedJson(request);
+    await enforceRoomRateLimit(request, rawBody.roomId !== undefined || rawBody.roomCode !== undefined ? "join" : "create");
 
     // Explicitly parse only allowed fields so client-supplied participantId/role cannot influence identity or privilege.
     const parsed = SessionPostSchema.safeParse(rawBody);
@@ -134,7 +127,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const { roomId: requestedRoomId, roomCode: requestedRoomCode, displayName } = parsed.data;
+    const { roomId: requestedRoomId, roomCode: requestedRoomCode } = parsed.data;
+    const displayName = normalizeDisplayName(parsed.data.displayName, "Guest");
 
     // Case 1: Create new room as anonymous HOST
     if (!requestedRoomId && !requestedRoomCode) {
@@ -174,8 +168,12 @@ export async function POST(request: Request) {
     }
 
     // Case 2: Join or rejoin an existing room
-    const targetRoom = requestedRoomId
-      ? await store.getRoomById(requestedRoomId.toLowerCase())
+    const roomId = requestedRoomId?.toLowerCase();
+    if (roomId) {
+      verifyGuestCapabilityToken(resolveGuestTokenFromRequest(request, roomId), { expectedRoomId: roomId });
+    }
+    const targetRoom = roomId
+      ? await store.getRoomById(roomId)
       : await store.getRoomByCode(requestedRoomCode!);
 
     if (!targetRoom) {

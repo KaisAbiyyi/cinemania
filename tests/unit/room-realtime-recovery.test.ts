@@ -77,7 +77,7 @@ interface Rig {
   clients: FakeClient[];
   channels: FakeChannel[];
   authTokens: string[];
-  server: { tokenRetryAfter: number; tokenSkewMs: number; version: number; snapshotFailures: number; tokenStatus: number; tokenFailures: number; snapshotStatus: number; behindOnce: number };
+  server: { tokenRetryAfter: number; snapshotRetryAfter: number; tokenSkewMs: number; version: number; snapshotFailures: number; tokenStatus: number; tokenFailures: number; snapshotStatus: number; behindOnce: number };
   delivered: number[];
   errors: RoomRealtimeError[];
   statuses: RealtimeStatus[];
@@ -92,7 +92,7 @@ function makeRig(subscribeScript: string[][] = []): Rig {
   const channels: FakeChannel[] = [];
   const clients: FakeClient[] = [];
   const authTokens: string[] = [];
-  const server = { version: 1, snapshotFailures: 0, tokenStatus: 200, tokenFailures: 0, snapshotStatus: 200, behindOnce: 0, tokenSkewMs: 0, tokenRetryAfter: 0 };
+  const server = { version: 1, snapshotFailures: 0, tokenStatus: 200, tokenFailures: 0, snapshotStatus: 200, behindOnce: 0, tokenSkewMs: 0, tokenRetryAfter: 0, snapshotRetryAfter: 0 };
   let tokens = 0;
   let snapshots = 0;
   const script = [...subscribeScript];
@@ -121,7 +121,7 @@ function makeRig(subscribeScript: string[][] = []): Rig {
     }
     snapshots++;
     if (server.snapshotFailures > 0) { server.snapshotFailures--; throw new TypeError("network down"); }
-    if (server.snapshotStatus !== 200) return new Response("{}", { status: server.snapshotStatus });
+    if (server.snapshotStatus !== 200) return new Response("{}", { status: server.snapshotStatus, headers: server.snapshotRetryAfter ? { "retry-after": String(server.snapshotRetryAfter) } : {} });
     let version = server.version;
     if (server.behindOnce > 0) { server.behindOnce--; version = Math.max(1, version - 1); }
     return new Response(JSON.stringify({ room: { stateVersion: version }, viewer: {} }), { status: 200 });
@@ -581,6 +581,43 @@ describe("CINE-019 realtime recovery", () => {
     await rig.clock.advance(8000); // pause over
     expect(rig.tokenRequests()).toBeGreaterThan(afterFirst);
     expect(handle.status()).toBe("live");
+    await handle();
+  });
+
+  it.each([429, 503])("honours a token retry floor after %i during rotation, reconnect and wake", async status => {
+    const rig = makeRig();
+    const handle = await start(rig);
+    rig.server.tokenStatus = status;
+    rig.server.tokenRetryAfter = 20;
+    await rig.clock.advance(31000);
+    expect(rig.tokenRequests()).toBe(2);
+    rig.channels[0].emit("CLOSED");
+    rig.clock.wake("focus");
+    await rig.clock.advance(1000);
+    rig.clock.wake("online");
+    await rig.clock.advance(17000);
+    expect(rig.tokenRequests()).toBe(2);
+    rig.server.tokenStatus = 200;
+    await rig.clock.advance(2500);
+    expect(rig.tokenRequests()).toBe(3);
+    expect(handle.status()).toBe("live");
+    await handle();
+  });
+
+  it("honours snapshot capacity retry floors after an ordinary browser wake", async () => {
+    const rig = makeRig();
+    const handle = await start(rig);
+    await flush();
+    rig.server.snapshotStatus = 503;
+    rig.server.snapshotRetryAfter = 3;
+    await expect(handle.resync()).rejects.toMatchObject({ status: 503, retryAfterMs: 3000 });
+    const requests = rig.snapshotRequests();
+    rig.clock.wake("focus");
+    await rig.clock.advance(2999);
+    expect(rig.snapshotRequests()).toBe(requests);
+    rig.server.snapshotStatus = 200;
+    await rig.clock.advance(2);
+    expect(rig.snapshotRequests()).toBe(requests + 1);
     await handle();
   });
 

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { readBoundedJson } from "@/lib/server/auth/requestBody";
 import {
   Candidate,
   DECK_SIZE,
@@ -168,25 +169,7 @@ const DISPLAY_NAME_MAX_LENGTH = 32;
 /**
  * Safely parses an optional JSON request body; treats empty bodies as `{}`.
  */
-export async function parseJsonBodySafe(request: Request): Promise<Record<string, unknown>> {
-  const rawBody = await request.text();
-  if (!rawBody.trim()) {
-    return {};
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawBody);
-  } catch {
-    throw new CapabilityAuthError(400, "INVALID_JSON", "Request body must be valid JSON.");
-  }
-
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new CapabilityAuthError(400, "INVALID_REQUEST", "Request body must be a JSON object.");
-  }
-
-  return parsed as Record<string, unknown>;
-}
+export { readBoundedJson as parseJsonBodySafe } from "@/lib/server/auth/requestBody";
 
 /**
  * Sanitizes and bounds a participant display name against HTML/XSS injection,
@@ -490,6 +473,11 @@ export async function joinRoomWithSession(
 
   const target = resolveJoinLookup(body);
   const displayName = normalizeDisplayName(body.displayName, "Guest");
+  if (target.type === "roomId") {
+    const roomId = target.value.toLowerCase();
+    verifyGuestCapabilityToken(resolveGuestTokenFromRequest(request, roomId), { expectedRoomId: roomId });
+    target.value = roomId;
+  }
 
   const targetRoom =
     target.type === "code"
@@ -501,7 +489,7 @@ export async function joinRoomWithSession(
   }
 
   if (isRoomRecordExpired(targetRoom)) {
-    throw new RoomExpiredError(`Room '${targetRoom.code}' has expired.`);
+    throw new RoomExpiredError("Target room has expired.");
   }
 
   const cookieName = getGuestCookieName(targetRoom.id);
@@ -884,7 +872,7 @@ export async function submitRoomVoteWithSession(
   const actor = await requireRoomActor(request, roomId, store);
   const token = resolveGuestTokenFromRequest(request, actor.room.id);
   const headerOperationId = extractOperationIdFromHeaders(request.headers);
-  const body = await parseJsonBodySafe(request);
+  const body = await readBoundedJson(request);
   const payload = parseVoteSubmissionPayload(body, headerOperationId);
 
   const recorded = await store.recordVoteWithSession({

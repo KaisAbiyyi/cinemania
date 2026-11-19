@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { CapabilityAuthError, type CookieAttributes } from "./guestCapability";
+import { RoomRateLimitError } from "./roomRateLimit";
+import { isPostgresCapacityError } from "@/lib/server/room/postgresCapacity";
 import {
   LOCAL_RATE_LIMIT_RETRY_AFTER_SECONDS,
   LOCAL_SERVICE_UNAVAILABLE_RETRY_AFTER_SECONDS,
@@ -38,6 +40,7 @@ import {
 export const PRIVATE_NO_STORE_HEADERS: Record<string, string> = {
   "Cache-Control": "private, no-store, no-cache, must-revalidate",
   Pragma: "no-cache",
+  "Referrer-Policy": "no-referrer",
   Vary: "Cookie",
 };
 
@@ -67,6 +70,19 @@ export function privateJsonResponse<T>(
 }
 
 export function handleGuestApiError(err: unknown): NextResponse {
+  if (isPostgresCapacityError(err)) {
+    console.warn("[CINEMATCH_DB_CAPACITY] Room database connection capacity reached.");
+    return NextResponse.json(
+      { error: "DATABASE_CAPACITY", message: "Room database is temporarily busy. Please retry." },
+      { status: 503, headers: { ...PRIVATE_NO_STORE_HEADERS, "Retry-After": "3" } },
+    );
+  }
+  if (err instanceof RoomRateLimitError) {
+    return NextResponse.json(
+      { error: "RATE_LIMITED", message: err.message },
+      { status: 429, headers: { ...PRIVATE_NO_STORE_HEADERS, "Retry-After": String(err.retryAfter) } },
+    );
+  }
   if (err instanceof CapabilityAuthError) {
     return NextResponse.json(
       { error: err.code, message: err.message },
@@ -173,7 +189,7 @@ export function handleGuestApiError(err: unknown): NextResponse {
     );
   }
   if (err instanceof TmdbConfigurationError) {
-    console.error("[GUEST_API_ERROR] TMDB server configuration missing:", err.message);
+    console.error("[GUEST_API_ERROR] TMDB server configuration is missing.");
     return NextResponse.json(
       {
         error: "UPSTREAM_CONFIG_ERROR",
