@@ -1,0 +1,15 @@
+Local WS/RLS qualification failed: AssertionError [ERR_ASSERTION]: Authorized Room B member must subscribe to private room:<uuid>
++ actual - expected
+
++ 'TIMEOUT'
+- 'SUBSCRIBED'
+
+    at main (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\tests\local-supabase\realtime-rls-qualification.cjs:127:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: 'TIMEOUT',
+  expected: 'SUBSCRIBED',
+  operator: 'strictEqual',
+  diff: 'simple'
+}

@@ -1,0 +1,17 @@
+
+> cinemania@0.1.0 test
+> vitest run
+
+
+ RUN  v5.1.0 D:/projects/cinemania/.claude/worktrees/cine-018-pr51-qualification-040873
+
+
+ Test Files  38 passed | 1 skipped (39)
+      Tests  403 passed | 7 skipped (410)
+   Start at  09:36:40
+   Duration  40.51s (environment 60%, import 30%, setup 4%, tests 3%, transform 2%, worker 1%)
+
+Environment  happy-dom was created 39 times · 202.01s total, 60% of tracked time
+             create it once per worker with pool: 'vmThreads' (keeps per-file isolation) or isolate: false (shares it across files)
+             learn more: https://vitest.dev/guide/improving-performance#test-environments
+

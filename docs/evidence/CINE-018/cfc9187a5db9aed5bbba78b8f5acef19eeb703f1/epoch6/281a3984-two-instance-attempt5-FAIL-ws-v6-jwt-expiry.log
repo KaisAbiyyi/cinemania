@@ -1,0 +1,72 @@
+--- INSTANCE 1 LOGS ---
+▲ Next.js 16.4.5 (Turbopack)
+- Local:         http://127.0.0.1:3101
+- Network:       http://127.0.0.1:3101
+✓ Ready in 806ms
+⚠ Warning: Next.js ignored package-lock.json in C:\Users\kaisa because it would include your home directory (C:\Users\kaisa).
+ To use this directory, set `turbopack.root` in your Next.js config.
+
+✓ Running next.config.ts took 683ms
+
+✓ Generated AGENTS.md for AI agents. Set `agentRules: false` in next.config to disable.
+ GET /api/rooms/00000000-0000-4000-8000-000000000000 401 in 2.9s (next.js: 2.8s, application-code: 164ms)
+ POST /api/rooms 201 in 3.0s (next.js: 197ms, application-code: 2.8s)
+ POST /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca/realtime-token 200 in 2.2s (next.js: 1846ms, application-code: 306ms)
+○ Compiling /_not-found/page ...
+ GET /__cine018_browser_probe__ 404 in 15.9s (next.js: 15.5s, application-code: 410ms)
+[browser] Image with src "/notfound404.svg" was detected as the Largest Contentful Paint (LCP). Please add the `loading="eager"` property if this image is above the fold.
+Read more: https://nextjs.org/docs/app/api-reference/components/image#loading
+[browser] Image with src "http://127.0.0.1:3101/notfound404.svg" has either width or height modified, but not the other. If you use CSS to change the size of your image, also include the styles 'width: "auto"' or 'height: "auto"' to maintain the aspect ratio.
+[browser] A component is changing an uncontrolled input to be controlled. This is likely caused by the value changing from undefined to a defined value, which should not happen. Decide between using a controlled or uncontrolled input element for the lifetime of the component. More info: https://react.dev/link/controlled-components 
+ POST /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca/realtime-token 200 in 889ms (next.js: 17ms, application-code: 872ms)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 1147ms (next.js: 16ms, application-code: 1131ms)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 2.2s (next.js: 43ms, application-code: 2.2s)
+ PATCH /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca/filters 200 in 2.9s (next.js: 1061ms, application-code: 1830ms)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 1863ms (next.js: 15ms, application-code: 1848ms)
+ POST /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca/realtime-token 200 in 1056ms (next.js: 22ms, application-code: 1035ms)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 1355ms (next.js: 32ms, application-code: 1323ms)
+Room notification dispatch failed; retry remains pending.
+ POST /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca/start 200 in 6.2s (next.js: 1036ms, application-code: 5.1s)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 1552ms (next.js: 24ms, application-code: 1528ms)
+ POST /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca/votes 200 in 4.3s (next.js: 1140ms, application-code: 3.2s)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 2.2s (next.js: 23ms, application-code: 2.1s)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 1357ms (next.js: 18ms, application-code: 1338ms)
+
+--- INSTANCE 2 LOGS ---
+tp://127.0.0.1:3102
+✓ Ready in 16.5s
+⚠ Warning: Next.js ignored package-lock.json in C:\Users\kaisa because it would include your home directory (C:\Users\kaisa).
+ To use this directory, set `turbopack.root` in your Next.js config.
+
+✓ Running next.config.ts took 1778ms
+
+✓ Generated AGENTS.md for AI agents. Set `agentRules: false` in next.config to disable.
+  Turbopack has seen frequent file updates and is waiting for the filesystem to settle (0.5s elapsed so far; last modified: "\\\\?\\C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-gh52-2inst-2lCtyK\\inst2\\node_modules\\next\\dist\\compiled\\cookie").
+  Turbopack has seen frequent file updates and is waiting for the filesystem to settle (0.5s elapsed so far; last modified: "\\\\?\\C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-gh52-2inst-2lCtyK\\inst2\\node_modules\\form-data\\lib").
+ GET /api/rooms/00000000-0000-4000-8000-000000000000 200 in 4.1s
+ GET /api/rooms/00000000-0000-4000-8000-000000000000 401 in 7.4s (next.js: 7.1s, application-code: 319ms)
+ POST /api/rooms/join 200 in 2.8s (next.js: 286ms, application-code: 2.6s)
+ POST /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca/realtime-token 200 in 1225ms (next.js: 926ms, application-code: 299ms)
+  Turbopack has seen frequent file updates and is waiting for the filesystem to settle (0.5s elapsed so far; last modified: "\\\\?\\C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-gh52-2inst-2lCtyK\\inst2\\node_modules\\next\\dist\\lib\\framework").
+  Turbopack has seen frequent file updates and is waiting for the filesystem to settle (1.5s elapsed so far; last modified: "\\\\?\\C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-gh52-2inst-2lCtyK\\inst2\\node_modules\\next\\dist\\client\\components\\instant-validation").
+○ Compiling /_not-found/page ...
+  Turbopack has seen frequent file updates and is waiting for the filesystem to settle (0.5s elapsed so far; last modified: "\\\\?\\C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-gh52-2inst-2lCtyK\\inst2\\node_modules\\lucide-react\\dist\\esm\\icons").
+  Turbopack has seen frequent file updates and is waiting for the filesystem to settle (1.5s elapsed so far; last modified: "\\\\?\\C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-gh52-2inst-2lCtyK\\inst2\\node_modules\\react-style-singleton\\dist\\es2015").
+ GET /__cine018_browser_probe__ 404 in 20.7s (next.js: 20.2s, application-code: 443ms)
+[browser] Image with src "/notfound404.svg" was detected as the Largest Contentful Paint (LCP). Please add the `loading="eager"` property if this image is above the fold.
+Read more: https://nextjs.org/docs/app/api-reference/components/image#loading
+[browser] Image with src "http://127.0.0.1:3102/notfound404.svg" has either width or height modified, but not the other. If you use CSS to change the size of your image, also include the styles 'width: "auto"' or 'height: "auto"' to maintain the aspect ratio.
+[browser] A component is changing an uncontrolled input to be controlled. This is likely caused by the value changing from undefined to a defined value, which should not happen. Decide between using a controlled or uncontrolled input element for the lifetime of the component. More info: https://react.dev/link/controlled-components 
+ POST /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca/realtime-token 200 in 899ms (next.js: 23ms, application-code: 876ms)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 1101ms (next.js: 25ms, application-code: 1076ms)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 1094ms (next.js: 17ms, application-code: 1077ms)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 2.3s (next.js: 25ms, application-code: 2.2s)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 3.2s (next.js: 2ms, application-code: 3.2s)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 1405ms (next.js: 26ms, application-code: 1379ms)
+ GET /api/rooms/39681586-caeb-4c0c-a71b-8fc9d9ae2bca 200 in 1358ms (next.js: 25ms, application-code: 1333ms)
+
+{"fixtureCleanup":"PASS","ownedRoomIds":["39681586-caeb-4c0c-a71b-8fc9d9ae2bca"],"remainingOwnedRooms":0}
+Two-instance qualification failed: Error: Timed out waiting for WS version 6; saw [3,4,5]
+    at Timeout._onTimeout (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\tests\local-supabase\two-instance-qualification.cjs:345:16)
+    at listOnTimeout (node:internal/timers:685:17)
+    at process.processTimers (node:internal/timers:618:7)

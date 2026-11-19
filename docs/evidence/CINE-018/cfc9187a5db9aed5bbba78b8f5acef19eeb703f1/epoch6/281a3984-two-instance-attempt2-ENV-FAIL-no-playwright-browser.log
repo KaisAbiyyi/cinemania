@@ -1,0 +1,49 @@
+START 2026-11-19T00:23:38.1670761Z
+--- INSTANCE 1 LOGS ---
+▲ Next.js 16.4.5 (Turbopack)
+- Local:         http://127.0.0.1:3101
+- Network:       http://127.0.0.1:3101
+✓ Ready in 424ms
+⚠ Warning: Next.js ignored package-lock.json in C:\Users\kaisa because it would include your home directory (C:\Users\kaisa).
+ To use this directory, set `turbopack.root` in your Next.js config.
+
+✓ Running next.config.ts took 46ms
+
+✓ Generated AGENTS.md for AI agents. Set `agentRules: false` in next.config to disable.
+ GET /api/rooms/00000000-0000-4000-8000-000000000000 401 in 995ms (next.js: 938ms, application-code: 57ms)
+ POST /api/rooms 201 in 3.1s (next.js: 220ms, application-code: 2.9s)
+ POST /api/rooms/b9678997-43e6-4aee-b1d2-54778a2a0f6a/realtime-token 200 in 1088ms (next.js: 756ms, application-code: 332ms)
+
+--- INSTANCE 2 LOGS ---
+▲ Next.js 16.4.5 (Turbopack)
+- Local:         http://127.0.0.1:3102
+- Network:       http://127.0.0.1:3102
+✓ Ready in 15.4s
+⚠ Warning: Next.js ignored package-lock.json in C:\Users\kaisa because it would include your home directory (C:\Users\kaisa).
+ To use this directory, set `turbopack.root` in your Next.js config.
+
+✓ Running next.config.ts took 1885ms
+
+✓ Generated AGENTS.md for AI agents. Set `agentRules: false` in next.config to disable.
+  Turbopack has seen frequent file updates and is waiting for the filesystem to settle (0.5s elapsed so far; last modified: "\\\\?\\C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-gh52-2inst-UImL3f\\inst2\\node_modules\\pg").
+  Turbopack has seen frequent file updates and is waiting for the filesystem to settle (1.5s elapsed so far; last modified: "\\\\?\\C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-gh52-2inst-UImL3f\\inst2\\node_modules\\get-proto").
+  Turbopack has seen frequent file updates and is waiting for the filesystem to settle (0.5s elapsed so far; last modified: "\\\\?\\C:\\Users\\kaisa\\AppData\\Local\\Temp\\cinematch-gh52-2inst-UImL3f\\inst2\\node_modules\\pg\\lib\\crypto").
+ GET /api/rooms/00000000-0000-4000-8000-000000000000 401 in 2.9s (next.js: 2.8s, application-code: 110ms)
+ POST /api/rooms/join 200 in 2.8s (next.js: 169ms, application-code: 2.7s)
+ POST /api/rooms/b9678997-43e6-4aee-b1d2-54778a2a0f6a/realtime-token 200 in 1049ms (next.js: 772ms, application-code: 276ms)
+
+{"fixtureCleanup":"PASS","ownedRoomIds":["b9678997-43e6-4aee-b1d2-54778a2a0f6a"],"remainingOwnedRooms":0}
+Two-instance qualification failed: browserType.launch: Executable doesn't exist at C:\Users\kaisa\AppData\Local\ms-playwright\chromium_headless_shell-1254\chrome-headless-shell-win64\chrome-headless-shell.exe
+╔════════════════════════════════════════════════════════════╗
+║ Looks like Playwright was just installed or updated.       ║
+║ Please run the following command to download new browsers: ║
+║                                                            ║
+║     npx playwright install                                 ║
+║                                                            ║
+║ <3 Playwright Team                                         ║
+╚════════════════════════════════════════════════════════════╝
+    at main (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\tests\local-supabase\two-instance-qualification.cjs:522:93) {
+  log: [],
+  name: 'Error'
+}
+EXIT=1 END 2026-11-19T00:26:43.4445924Z

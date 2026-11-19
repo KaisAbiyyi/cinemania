@@ -1,0 +1,26 @@
+{
+ "sent": 184,
+ "received": 184,
+ "missing": [],
+ "renewals": [
+  {
+   "start": 31.1,
+   "end": 31.1
+  },
+  {
+   "start": 61.1,
+   "end": 61.1
+  },
+  {
+   "start": 91.1,
+   "end": 91.1
+  }
+ ],
+ "statuses": [
+  {
+   "s": "SUBSCRIBED",
+   "t": 1
+  }
+ ]
+}
+cleanup rooms remaining: 0

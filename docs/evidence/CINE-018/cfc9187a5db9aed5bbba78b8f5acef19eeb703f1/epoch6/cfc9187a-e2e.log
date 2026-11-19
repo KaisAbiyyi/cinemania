@@ -1,0 +1,184 @@
+
+> cinemania@0.1.0 test:e2e
+> playwright test
+
+[WebServer] (node:25260) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 27 tests using 12 workers
+
+(node:42084) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:9240) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:4344) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:28292) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:31528) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:23828) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:20976) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:44312) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:39048) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:8024) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:18056) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:32952) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] [mock_tmdb] BLOCKED unexpected outbound external request to ipinfo.io: offline determinism enforced
+[WebServer] Error fetching geolocation: Error: [mock_tmdb] BLOCKED unexpected outbound external request to ipinfo.io: offline determinism enforced
+[WebServer]     at <unknown> (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\tests\fixtures\mock-tmdb.cjs:450:17)
+[WebServer]     at async (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\.next\server\chunks\_0nvixifbtkxx4._.js:1:6757)
+[WebServer]     at async Object.fetchWithPolicy (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\.next\server\chunks\src_lib_server_cache_serverCache_ts_03t7bh0u0a474._.js:1:1338)
+[WebServer]     at async n (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\.next\server\chunks\_0nvixifbtkxx4._.js:1:6719)
+[WebServer]     at async Z (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\.next\server\chunks\_0nvixifbtkxx4._.js:1:3085)
+[WebServer]     at async ee (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\.next\server\chunks\_0nvixifbtkxx4._.js:1:4077)
+[WebServer]     at <unknown> (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\tests\fixtures\mock-tmdb.cjs:450:31) {
+[WebServer]   isAxiosError: true,
+[WebServer]   config: [Object: null prototype] {
+[WebServer]     transitional: {
+[WebServer]       silentJSONParsing: true,
+[WebServer]       forcedJSONParsing: true,
+[WebServer]       clarifyTimeoutError: false,
+[WebServer]       legacyInterceptorReqResOrdering: true,
+[WebServer]       advertiseZstdAcceptEncoding: false,
+[WebServer]       validateStatusUndefinedResolves: true,
+[WebServer]       encodeBasicAuthUsername: false
+[WebServer]     },
+[WebServer]     adapter: [ 'xhr', 'http', 'fetch' ],
+[WebServer]     transformRequest: [ [Function (anonymous)] ],
+[WebServer]     transformResponse: [ [Function (anonymous)] ],
+[WebServer]     timeout: 0,
+[WebServer]     xsrfCookieName: 'XSRF-TOKEN',
+[WebServer]     xsrfHeaderName: 'X-XSRF-TOKEN',
+[WebServer]     maxContentLength: -1,
+[WebServer]     maxBodyLength: -1,
+[WebServer]     env: { FormData: [Function], Blob: [class Blob] },
+[WebServer]     validateStatus: [Function: validateStatus],
+[WebServer]     headers: Object [AxiosHeaders] {
+[WebServer]       Accept: 'application/json, text/plain, */*',
+[WebServer]       'Content-Type': undefined,
+[WebServer]       'User-Agent': 'axios/1.21.0',
+[WebServer]       'Accept-Encoding': 'gzip, compress, deflate, br'
+[WebServer]     },
+[WebServer]     params: { token: 'YOUR_TOKEN' },
+[WebServer]     method: 'get',
+[WebServer]     url: 'https://ipinfo.io/::ffff:127.0.0.1',
+[WebServer]     allowAbsoluteUrls: true,
+[WebServer]     data: undefined
+[WebServer]   },
+[WebServer]   request: <ref *1> Writable {
+[WebServer]     _events: {
+[WebServer]       close: [Function],
+[WebServer]       error: [Function (anonymous)],
+[WebServer]       prefinish: undefined,
+[WebServer]       finish: undefined,
+[WebServer]       drain: undefined,
+[WebServer]       response: [Function (anonymous)],
+[WebServer]       socket: [Array],
+[WebServer]       abort: undefined
+[WebServer]     },
+[WebServer]     _writableState: WritableState {
+[WebServer]       highWaterMark: 16384,
+[WebServer]       length: 0,
+[WebServer]       corked: 0,
+[WebServer]       onwrite: [Function (anonymous)],
+[WebServer]       writelen: 0,
+[WebServer]       bufferedIndex: 0,
+[WebServer]       pendingcb: 0,
+[WebServer]       Symbol(kState): 17580812,
+[WebServer]       Symbol(kBufferedValue): null
+[WebServer]     },
+[WebServer]     _maxListeners: undefined,
+[WebServer]     _options: {
+[WebServer]       maxRedirects: 21,
+[WebServer]       maxBodyLength: Infinity,
+[WebServer]       protocol: 'https:',
+[WebServer]       path: '/::ffff:127.0.0.1?token=YOUR_TOKEN',
+[WebServer]       method: 'GET',
+[WebServer]       headers: [Object: null prototype],
+[WebServer]       agents: [Object],
+[WebServer]       auth: undefined,
+[WebServer]       family: undefined,
+[WebServer]       beforeRedirect: [Function: tw],
+[WebServer]       beforeRedirects: [Object: null prototype],
+[WebServer]       http2Options: undefined,
+[WebServer]       createConnection: undefined,
+[WebServer]       hostname: 'ipinfo.io',
+[WebServer]       port: '',
+[WebServer]       agent: undefined,
+[WebServer]       sensitiveHeaders: [],
+[WebServer]       insecureHTTPParser: false,
+[WebServer]       nativeProtocols: [Object],
+[WebServer]       pathname: '/::ffff:127.0.0.1',
+[WebServer]       search: '?token=YOUR_TOKEN'
+[WebServer]     },
+[WebServer]     _ended: true,
+[WebServer]     _ending: true,
+[WebServer]     _redirectCount: 0,
+[WebServer]     _redirects: [],
+[WebServer]     _requestBodyLength: 0,
+[WebServer]     _requestBodyBuffers: [],
+[WebServer]     _eventsCount: 4,
+[WebServer]     _onNativeResponse: [Function (anonymous)],
+[WebServer]     _headerFilter: /^(?:Authorization|Proxy-Authorization|Cookie)$/i,
+[WebServer]     _currentRequest: PassThrough {
+[WebServer]       _events: [Object],
+[WebServer]       _readableState: [ReadableState],
+[WebServer]       _writableState: [WritableState],
+[WebServer]       allowHalfOpen: true,
+[WebServer]       _maxListeners: undefined,
+[WebServer]       _eventsCount: 7,
+[WebServer]       setHeader: [Function (anonymous)],
+[WebServer]       getHeader: [Function (anonymous)],
+[WebServer]       removeHeader: [Function (anonymous)],
+[WebServer]       abort: [Function (anonymous)],
+[WebServer]       destroy: [Function (anonymous)],
+[WebServer]       setTimeout: [Function (anonymous)],
+[WebServer]       _redirectable: [Circular *1],
+[WebServer]       Symbol(shapeMode): true,
+[WebServer]       Symbol(kCapture): false,
+[WebServer]       Symbol(kCallback): null
+[WebServer]     },
+[WebServer]     _currentUrl: 'https://ipinfo.io/::ffff:127.0.0.1?token=YOUR_TOKEN',
+[WebServer]     Symbol(shapeMode): true,
+[WebServer]     Symbol(kCapture): false
+[WebServer]   },
+[WebServer]   [cause]: Error: [mock_tmdb] BLOCKED unexpected outbound external request to ipinfo.io: offline determinism enforced
+[WebServer]       at <unknown> (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\tests\fixtures\mock-tmdb.cjs:450:31)
+[WebServer] }
+  ok  3 [chromium] › tests\e2e\app-router-metadata.spec.ts:193:3 › CINE-009: App Router Rendering, Metadata & Hydration › dynamic search route renders SSR query heading and noindex metadata cleanly (2.3s)
+  ok  1 [chromium] › tests\e2e\app-router-metadata.spec.ts:163:3 › CINE-009: App Router Rendering, Metadata & Hydration › dynamic detail routes limited metadata & hydration probe (client TMDB detail fetches uncertified under minimal fixtures) (2.3s)
+  ok  6 [chromium] › tests\e2e\app-router-metadata.spec.ts:216:3 › CINE-009: App Router Rendering, Metadata & Hydration › returns HTTP 404 with NotFound UI and loaded 404 illustration, and exposes clean robots.txt (2.6s)
+  ok 12 [chromium] › tests\e2e\discovery-filter-certification.spec.ts:479:3 › CINE-010: Discovery, filter, pagination & error certification › supports mobile viewport filter drawer, explicit Apply, and infinite scroll cleanly (2.7s)
+  ok  7 [chromium] › tests\e2e\discovery-filter-certification.spec.ts:145:3 › CINE-010: Discovery, filter, pagination & error certification › does not fetch on draft edits until explicit Apply is clicked on /movie (3.0s)
+  ok 14 [chromium] › tests\e2e\discovery-filter-certification.spec.ts:759:3 › CINE-010: Discovery, filter, pagination & error certification › SearchWrapper renders ready category tabs immediately without blocking on slow categories (960ms)
+  ok  8 [chromium] › tests\e2e\discovery-filter-certification.spec.ts:185:3 › CINE-010: Discovery, filter, pagination & error certification › deduplicates overlapping page-2 infinite scroll items and halts+recovers on 429 page-2 failure (3.5s)
+  ok  2 [chromium] › tests\e2e\app-router-metadata.spec.ts:239:3 › CINE-009: App Router Rendering, Metadata & Hydration › footer links resolve cleanly without broken /about link and interactive filters stay client-side (3.5s)
+  ok 18 [chromium] › tests\e2e\room-deck.spec.ts:144:3 › CINE-016 Deterministic Room Movie Deck & Filters E2E › handles 0-result recoverable 422 DECK_EMPTY and caps 100 provider results strictly at 20 (293ms)
+  ok 19 [chromium] › tests\e2e\room-deck.spec.ts:200:3 › CINE-016 Deterministic Room Movie Deck & Filters E2E › handles 1-result shortage + null poster_path and recovers from 429 rate-limit without leaving LOBBY (438ms)
+  ok 17 [chromium] › tests\e2e\room-deck.spec.ts:26:3 › CINE-016 Deterministic Room Movie Deck & Filters E2E › 5 browser contexts converge on identical deterministic 20-movie deck, zero per-read TMDB calls, and lock post-start filters (1.3s)
+  ok 22 [chromium] › tests\e2e\room-voting.spec.ts:215:3 › CINE-017 Multi-Context Unanimous Matching & Immutable Votes E2E › handles 1-card shortage exhaustion when last vote is LIKE after prior SKIP and enforces fail-closed security (417ms)
+  ok 16 [chromium] › tests\e2e\room-create-join.spec.ts:4:3 › CINE-014: Room Create, Invite Join, and Concurrent Capacity E2E › creates a room with short code, joins via normalized invite link, and rejects concurrent 6th+ join over live HTTP (1.8s)
+  ok 10 [chromium] › tests\e2e\discovery-filter-certification.spec.ts:401:3 › CINE-010: Discovery, filter, pagination & error certification › handles 429 and timeout failures gracefully with accessible retry recovery without full reload (4.7s)
+  ok 21 [chromium] › tests\e2e\room-voting.spec.ts:4:3 › CINE-017 Multi-Context Unanimous Matching & Immutable Votes E2E › converges across 5 browser contexts: advance on SKIP, immutable flips, idempotent retries, and unanimous MATCHED (1.1s)
+  ok 23 [chromium] › tests\e2e\smoke.spec.ts:17:3 › CineMatch E2E Smoke Tests (100% Offline & Deterministic TMDB Mock) › home page loads and renders core elements without broken images (2.5s)
+  ok 20 [chromium] › tests\e2e\room-lobby-freeze.spec.ts:4:3 › CINE-015: Lobby Roster, Leave/Host Transfer, Start & Freeze E2E › supports two-tab converged roster, XSS nickname sanitization, leave/host handover, host-only start, and ACTIVE late-join denial (3.4s)
+  ok 15 [chromium] › tests\e2e\guest-identity.spec.ts:4:3 › CINE-013: Anonymous Guest Identity Two-Browser-Context E2E › maintains isolated HttpOnly room capabilities, safe rejoin, host privilege enforcement, and rotation across two browser contexts (4.5s)
+  ok 25 [chromium] › tests\e2e\smoke.spec.ts:51:3 › CineMatch E2E Smoke Tests (100% Offline & Deterministic TMDB Mock) › tv series page renders seeded tv shows with loaded images (2.8s)
+  ok 24 [chromium] › tests\e2e\smoke.spec.ts:31:3 › CineMatch E2E Smoke Tests (100% Offline & Deterministic TMDB Mock) › movies page renders seeded movies with loaded images (2.8s)
+  ok  5 [chromium] › tests\e2e\app-router-metadata.spec.ts:84:3 › CINE-009: App Router Rendering, Metadata & Hydration › static and discovery routes serve crawlable SSR HTML metadata with canonicals and zero hydration mismatches (7.4s)
+  ok  4 [chromium] › tests\e2e\discovery-filter-certification.spec.ts:240:3 › CINE-010: Discovery, filter, pagination & error certification › retains URL filter selections across detail navigation, Back/Forward, and Trending route navigation (7.3s)
+  ok 27 [chromium] › tests\e2e\smoke.spec.ts:94:3 › CineMatch E2E Smoke Tests (100% Offline & Deterministic TMDB Mock) › negative search displays zero result counters and zero cards (2.7s)
+  ok 26 [chromium] › tests\e2e\smoke.spec.ts:71:3 › CineMatch E2E Smoke Tests (100% Offline & Deterministic TMDB Mock) › search page displays exact seeded movie results and loaded artwork (2.9s)
+  ok  9 [chromium] › tests\e2e\discovery-filter-certification.spec.ts:338:3 › CINE-010: Discovery, filter, pagination & error certification › displays accessible no-results & empty states across discovery, search, genre, keyword, trending, and detail routes (7.7s)
+  ok 13 [chromium] › tests\e2e\discovery-filter-certification.spec.ts:680:3 › CINE-010: Discovery, filter, pagination & error certification › Movie rolling presets (/movie/now-playing & /movie/upcoming) persist explicitly cleared date bounds across reload and Reset/Back (5.9s)
+  ok 11 [chromium] › tests\e2e\discovery-filter-certification.spec.ts:516:3 › CINE-010: Discovery, filter, pagination & error certification › TV presets persist First Air Date switch (and cleared bounds) across reload, detail Back, and Forward without dual date params (8.4s)
+
+  27 passed (12.5s)

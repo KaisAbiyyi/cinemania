@@ -1,0 +1,52 @@
+### npm run lint  START 2026-11-19T00:22:19Z
+     |             ^^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect
+  58 |         } else {
+  59 |             setSelectedProviders([]);
+  60 |         }                                                     react-hooks/set-state-in-effect
+
+D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\src\hooks\use-mobile.tsx
+  14:5  warning  Error: Calling setState synchronously within an effect can trigger cascading renders
+
+Effects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:
+* Update external systems with the latest state from React.
+* Subscribe for updates from some external system, calling setState in a callback function when external state changes.
+
+Calling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).
+
+D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\src\hooks\use-mobile.tsx:14:5
+  12 |     }
+  13 |     mql.addEventListener("change", onChange)
+> 14 |     setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
+     |     ^^^^^^^^^^^ Avoid calling setState() directly within an effect
+  15 |     return () => mql.removeEventListener("change", onChange)
+  16 |   }, [])
+  17 |  react-hooks/set-state-in-effect
+
+✖ 26 problems (0 errors, 26 warnings)
+
+### npm run lint EXIT=0 END 2026-11-19T00:22:35Z
+### npm run typecheck  START 2026-11-19T00:22:35Z
+
+> cinemania@0.1.0 typecheck
+> tsc --noEmit
+
+### npm run typecheck EXIT=0 END 2026-11-19T00:22:42Z
+### npm test  START 2026-11-19T00:22:42Z
+
+> cinemania@0.1.0 test
+> vitest run
+
+
+ RUN  v5.1.0 D:/projects/cinemania/.claude/worktrees/cine-018-pr51-qualification-040873
+
+
+ Test Files  38 passed | 1 skipped (39)
+      Tests  403 passed | 7 skipped (410)
+   Start at  07:22:44
+   Duration  11.69s (environment 39%, import 29%, tests 14%, transform 10%, setup 7%, worker 1%)
+
+Environment  happy-dom was created 39 times · 49.90s total, 39% of tracked time
+             create it once per worker with pool: 'vmThreads' (keeps per-file isolation) or isolate: false (shares it across files)
+             learn more: https://vitest.dev/guide/improving-performance#test-environments
+
+### npm test EXIT=0 END 2026-11-19T00:22:55Z

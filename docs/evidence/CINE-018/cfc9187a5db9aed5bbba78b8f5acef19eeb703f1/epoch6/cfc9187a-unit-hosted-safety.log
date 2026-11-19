@@ -1,0 +1,9 @@
+
+ RUN  v5.1.0 D:/projects/cinemania/.claude/worktrees/cine-018-pr51-qualification-040873
+
+
+ Test Files  2 passed (2)
+      Tests  11 passed (11)
+   Start at  09:40:01
+   Duration  868ms (environment 86%, setup 9%, transform 2%, worker 1%, tests 1%, import 1%)
+

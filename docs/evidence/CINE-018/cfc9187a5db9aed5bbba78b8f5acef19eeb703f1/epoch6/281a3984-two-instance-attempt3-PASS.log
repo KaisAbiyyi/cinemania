@@ -1,0 +1,71 @@
+START 2026-11-19T00:29:22.6434447Z
+{
+  "ok": true,
+  "appCommit": "281a3984dc5bf64b320b5f69bb381c51bdbf75eb",
+  "environment": "hosted:dmrbticnsczhyaiftrar",
+  "negativeProdControl": "PASS",
+  "twoInstances": {
+    "port1": 3101,
+    "port2": 3102
+  },
+  "unanimousMatchConverged": true,
+  "votePrivacyVerified": true,
+  "reconnectGapReplayVerified": true,
+  "outOfOrderDuplicateIgnored": true,
+  "realBrowserTabsConverged": true,
+  "realDuplicateStaleHintsDidNotRepeatMatch": true,
+  "multiClientGroupSizes": [
+    2,
+    3,
+    4,
+    5
+  ],
+  "processCrashAfterAuthorityCommitRecovered": true,
+  "recoveryTrigger": "independent worker timer; no app HTTP after commit until WS receipt",
+  "autonomousNoTrafficRecovery": true,
+  "dispatcherRestartRecovered": true,
+  "concurrentDispatcherProcesses": 2,
+  "latencySamplesMs": [
+    3204.806,
+    1634.596,
+    1685.093,
+    1612.275,
+    1686.731,
+    1599.454,
+    1691.641,
+    1605.799,
+    1610.219,
+    1588.164,
+    1668.056,
+    1562.023,
+    1615.953,
+    1711.35,
+    2307.796,
+    1585.218,
+    1711.525,
+    1656.595,
+    1710.348,
+    3214.726,
+    2943.176,
+    1728.474,
+    1671.961,
+    1583.8,
+    1590.303,
+    1752.983,
+    1655.723,
+    1602.95,
+    1601.171,
+    1604.34
+  ],
+  "latencyAuthRenewals": 2,
+  "latencyMs": {
+    "samples": 30,
+    "min": 1562.02,
+    "p50": 1655.72,
+    "p95": 3204.81,
+    "p99": 3214.73,
+    "max": 3214.73
+  }
+}
+{"fixtureCleanup":"PASS","ownedRoomIds":["cfa928c3-3462-49d7-a987-660e886cc556","d12daacd-d551-4a81-85cc-644c9c3d24fa","51ee8ee1-c809-42a0-9fb6-5718ed1a04da","39374608-a10b-4451-870f-aef49a8a7474","3de622e4-4140-4433-9bca-461a2c073fc1"],"remainingOwnedRooms":0}
+EXIT=0 END 2026-11-19T00:37:33.7309902Z

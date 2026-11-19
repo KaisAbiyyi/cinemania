@@ -1,0 +1,70 @@
+{
+ "statuses": [
+  {
+   "s": "SUBSCRIBED",
+   "t": 0.5
+  },
+  {
+   "s": "CLOSED",
+   "t": 127
+  }
+ ],
+ "log": [
+  {
+   "sent": 1,
+   "at": 10.8,
+   "http": 202
+  },
+  {
+   "renewedAt": 30.5
+  },
+  {
+   "sent": 2,
+   "at": 41,
+   "http": 202
+  },
+  {
+   "renewedAt": 60.5
+  },
+  {
+   "sent": 3,
+   "at": 71.3,
+   "http": 202
+  },
+  {
+   "renewedAt": 90.5
+  },
+  {
+   "sent": 4,
+   "at": 101.6,
+   "http": 202
+  },
+  {
+   "renewedAt": 120.6
+  },
+  {
+   "sent": 5,
+   "at": 127,
+   "http": 202
+  }
+ ],
+ "received": [
+  {
+   "v": 1,
+   "t": 10.8
+  },
+  {
+   "v": 2,
+   "t": 41
+  },
+  {
+   "v": 3,
+   "t": 71.3
+  },
+  {
+   "v": 4,
+   "t": 101.6
+  }
+ ]
+}
+cleanup rooms remaining: 0

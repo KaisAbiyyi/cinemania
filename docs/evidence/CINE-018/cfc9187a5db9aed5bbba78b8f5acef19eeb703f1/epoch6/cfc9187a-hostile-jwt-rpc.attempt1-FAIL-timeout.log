@@ -1,0 +1,2 @@
+{"head":"cfc9187a5db9aed5bbba78b8f5acef19eeb703f1","project":"dmrbticnsczhyaiftrar","utc":"2026-11-19T02:39:37.415Z","checks":[{"name":"own membership boolean only","http":200,"boolean":true,"verdict":"PASS"},{"name":"cross-room boolean false","http":200,"boolean":false,"verdict":"PASS"}],"ownedFixtureCleanup":"PASS","credentialValuesLogged":false}
+Helper RPC qualification failed: The operation was aborted due to timeout

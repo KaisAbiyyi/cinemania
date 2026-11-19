@@ -1,0 +1,31 @@
+START 2026-11-19T00:23:25Z
+tar: Cannot connect to C: resolve failed
+--- INSTANCE 1 LOGS ---
+
+--- INSTANCE 2 LOGS ---
+
+Two-instance qualification failed: Error: Command failed: tar -xf C:\Users\kaisa\AppData\Local\Temp\cinematch-gh52-2inst-pY1mRA\app.tar -C C:\Users\kaisa\AppData\Local\Temp\cinematch-gh52-2inst-pY1mRA\app
+tar: Cannot connect to C: resolve failed
+
+    at genericNodeError (node:internal/errors:986:15)
+    at wrappedFn (node:internal/errors:540:14)
+    at checkExecSyncError (node:child_process:942:11)
+    at execFileSync (node:child_process:978:15)
+    at main (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\tests\local-supabase\two-instance-qualification.cjs:403:5)
+    at Object.<anonymous> (D:\projects\cinemania\.claude\worktrees\cine-018-pr51-qualification-040873\tests\local-supabase\two-instance-qualification.cjs:813:1)
+    at Module._compile (node:internal/modules/cjs/loader:1929:14)
+    at Object..js (node:internal/modules/cjs/loader:2060:10)
+    at Module.load (node:internal/modules/cjs/loader:1651:32)
+    at Module._load (node:internal/modules/cjs/loader:1443:12) {
+  status: 128,
+  signal: null,
+  output: [
+    null,
+    <Buffer >,
+    <Buffer 74 61 72 3a 20 43 61 6e 6e 6f 74 20 63 6f 6e 6e 65 63 74 20 74 6f 20 43 3a 20 72 65 73 6f 6c 76 65 20 66 61 69 6c 65 64 0a>
+  ],
+  pid: 49912,
+  stdout: <Buffer >,
+  stderr: <Buffer 74 61 72 3a 20 43 61 6e 6e 6f 74 20 63 6f 6e 6e 65 63 74 20 74 6f 20 43 3a 20 72 65 73 6f 6c 76 65 20 66 61 69 6c 65 64 0a>
+}
+EXIT=1 END 2026-11-19T00:23:29Z
