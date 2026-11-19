@@ -382,6 +382,65 @@ describe("CINE-019 realtime recovery", () => {
     await handle();
   });
 
+  it("does not re-join in a tight loop when the server keeps accepting then dropping the channel", async () => {
+    const rig = makeRig();
+    const handle = await start(rig);
+    for (let cycle = 0; cycle < 12; cycle++) {
+      rig.channels[rig.channels.length - 1].emit("CLOSED");
+      await rig.clock.advance(100);
+    }
+    // 12 drops in ~1.2 s must not produce 12 immediate sockets: the flap guard backs off (0.5 s .. 10 s)
+    expect(rig.channels.length).toBeLessThanOrEqual(5);
+    await rig.clock.advance(60000);
+    expect(handle.status()).toBe("live");
+    await handle();
+  });
+
+  it("times out a hung token request so recovery is not wedged", async () => {
+    const rig = makeRig();
+    const real = rig.fetcher;
+    let hung = false;
+    const wrapped = (async (input: RequestInfo | URL, init?: RequestInit) => (hung && String(input).endsWith("/realtime-token") ? new Promise<Response>(() => {}) : real(input, init))) as typeof fetch;
+    const handle = await start(rig, { fetcher: wrapped });
+    rig.clock.current += 0;
+    hung = true;
+    await rig.clock.advance(31000); // the rotation's token request hangs
+    rig.channels[0].emit("CLOSED"); // and the channel dies too (the token is past half-life, so recovery must fetch)
+    await rig.clock.advance(20000); // longer than the 15 s request deadline
+    expect(rig.errors.some((e) => e.code === "TOKEN_REQUEST_FAILED")).toBe(true);
+    hung = false;
+    await rig.clock.advance(30000);
+    expect(handle.status()).toBe("live");
+    await handle();
+  });
+
+  it("times out a hung snapshot request so resync and polling recover", async () => {
+    const rig = makeRig();
+    let hungSnapshots = false;
+    const real = rig.fetcher;
+    const wrapped = (async (input: RequestInfo | URL, init?: RequestInit) => (hungSnapshots && !String(input).endsWith("/realtime-token") ? new Promise<Response>(() => {}) : real(input, init))) as typeof fetch;
+    const handle = await start(rig, { fetcher: wrapped });
+    hungSnapshots = true;
+    const stuck = handle.resync().catch((e) => e);
+    await rig.clock.advance(16000);
+    expect(await stuck).toMatchObject({ code: "SNAPSHOT_FAILED" });
+    hungSnapshots = false;
+    rig.server.version = 5;
+    await rig.clock.advance(16000);
+    expect(rig.delivered.at(-1)).toBe(5);
+    await handle();
+  });
+
+  it("a rotation retry after a failed join reuses the token it already fetched (token endpoint budget)", async () => {
+    const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["CHANNEL_ERROR"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
+    const handle = await start(rig);
+    await rig.clock.advance(45000);
+    // initial + the one fetch for the rotation that is retried 3 times; never one fetch per retry
+    expect(rig.tokenRequests()).toBeLessThanOrEqual(2);
+    expect(handle.status()).toBe("live");
+    await handle();
+  });
+
   it("never lets the unused auth client initialise, and gives every client its own storage key", async () => {
     const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
     const handle = await start(rig);
@@ -394,8 +453,8 @@ describe("CINE-019 realtime recovery", () => {
     await handle();
   });
 
-  it("does not swallow wake-ups after a backwards clock step, and a coalesced wake still cuts a backoff short", async () => {
-    const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
+  it("does not swallow wake-ups after a backwards clock step, and treats the token deadline as due", async () => {
+    const rig = makeRig();
     const handle = await start(rig);
     await rig.clock.advance(1000);
     rig.server.version = 4;
@@ -407,14 +466,47 @@ describe("CINE-019 realtime recovery", () => {
     rig.clock.wake("online");
     await rig.clock.advance(0);
     expect(rig.delivered).toEqual([1, 4, 6]);
-    // recovery backoff is cut short by a wake even when that wake is coalesced
-    rig.channels[rig.channels.length - 1].emit("CLOSED");
+    // the token fetched "in the future" is rotated now instead of being trusted until the clock catches up
+    await rig.clock.advance(1000);
+    expect(rig.channels.length).toBeGreaterThanOrEqual(2);
+    await handle();
+  });
+
+  it("never reuses a token that looks fetched in the future after a backwards clock step", async () => {
+    const rig = makeRig();
+    const handle = await start(rig);
+    await rig.clock.advance(1000);
+    rig.clock.current -= 3_600_000; // wall clock corrected an hour backwards
+    const before = rig.tokenRequests();
+    rig.channels[0].emit("CLOSED");
     await rig.clock.advance(0);
-    const before = rig.channels.length;
+    expect(rig.tokenRequests()).toBeGreaterThan(before); // fresh capability, not the (possibly expired) old one
+    await handle();
+  });
+
+  it("a coalesced wake still cuts a recovery backoff short", async () => {
+    const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
+    const handle = await start(rig);
+    rig.channels[0].emit("CLOSED");
+    await rig.clock.advance(0);
+    expect(rig.channels).toHaveLength(2); // first attempt failed, now backing off
     rig.clock.wake("online");
     rig.clock.wake("online"); // coalesced
     await rig.clock.advance(0);
-    expect(rig.channels.length).toBeGreaterThan(before);
+    expect(rig.channels).toHaveLength(3);
+    expect(handle.status()).toBe("live");
+    await handle();
+  });
+
+  it("never lets the unused auth client initialise, and gives every client its own storage key", async () => {
+    const rig = makeRig([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
+    const handle = await start(rig);
+    rig.channels[0].emit("CLOSED");
+    await rig.clock.advance(3000);
+    const calls = vi.mocked(createClient).mock.calls as unknown as Array<[string, string, { auth?: { skipAutoInitialize?: boolean; storageKey?: string } }]>;
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    expect(calls.every((c) => c[2]?.auth?.skipAutoInitialize === true)).toBe(true);
+    expect(new Set(calls.map((c) => c[2]?.auth?.storageKey)).size).toBe(calls.length);
     await handle();
   });
 

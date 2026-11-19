@@ -95,7 +95,7 @@ export function createRoomActions(options: RoomActionsOptions) {
         let parsed: Record<string, unknown> | null = null;
         try { parsed = await response.json() as Record<string, unknown>; } catch { parsed = null; }
         if (response.ok) {
-          if (parsed === null || typeof parsed !== "object") {
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
             // The server answered 2xx but the body is unreadable: the outcome is known only to the server.
             last = { ok: false, status: response.status, code: "INVALID_RESPONSE", message: "Response body was not readable", stale: false, transient: true };
           } else {

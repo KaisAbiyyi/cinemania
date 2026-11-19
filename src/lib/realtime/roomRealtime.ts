@@ -63,6 +63,8 @@ export interface RealtimeTuning {
   behindRetryMax: number;
   /** Minimum gap between wake-triggered resyncs (focus/visibility/online can fire in bursts). */
   wakeMinIntervalMs: number;
+  /** Upper bound for a token or snapshot request including its body; a hung request must not wedge recovery. */
+  fetchTimeoutMs: number;
 }
 
 export const DEFAULT_REALTIME_TUNING: RealtimeTuning = {
@@ -75,6 +77,7 @@ export const DEFAULT_REALTIME_TUNING: RealtimeTuning = {
   degradedAfterAttempts: 3,
   behindRetryMax: 5,
   wakeMinIntervalMs: 1000,
+  fetchTimeoutMs: 15000,
 };
 
 export interface RoomRealtimeHandle {
@@ -188,6 +191,8 @@ export async function startRoomRealtime(options: {
     dead: boolean;
     /** Local deadline of the capability this slot joined with (never derived from the server clock). */
     expiresAt: number;
+    /** Local time that capability was fetched. */
+    tokenFetchedAt: number;
     /** Rejects an in-flight join when the slot is disposed. */
     abort?: (error: Error) => void;
   }
@@ -211,6 +216,8 @@ export async function startRoomRealtime(options: {
   let syncFailures = 0;
   let behindFailures = 0;
   let lastWake = -Infinity;
+  let lastRecoveryAt = -Infinity;
+  let flaps = 0;
   let syncRetryTimer: unknown = null;
   let tickTimer: unknown = null;
   let lastTick = env.now();
@@ -238,31 +245,53 @@ export async function startRoomRealtime(options: {
   });
   const wakeSleepers = () => { for (const wake of [...sleepers]) wake(); };
 
+  /** Rotate at about half the token lifetime (L-005), never more often than MIN_ROTATION_INTERVAL_MS. */
+  function scheduleRenewFromToken() {
+    tokenRenewAt = tokenFetchedAt + Math.max(MIN_ROTATION_INTERVAL_MS, tokenLifetimeMs / 2);
+  }
+
+  /** Runs a request with a hard deadline (also aborting the underlying fetch where supported). */
+  async function withTimeout<T>(run: (signal: AbortSignal | undefined) => Promise<T>): Promise<T> {
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    let timer: unknown;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = env.setTimeout(() => { controller?.abort(); reject(new Error("request timed out")); }, tuning.fetchTimeoutMs);
+    });
+    const work = run(controller?.signal);
+    work.catch(() => undefined); // a late failure after the deadline must not become an unhandled rejection
+    try { return await Promise.race([work, deadline]); } finally { env.clearTimeout(timer); }
+  }
+
   async function fetchToken(): Promise<string> {
-    let response: Response;
+    let result: { status: number; ok: boolean; retryAfter: string | null; body: { token?: unknown } };
     try {
-      response = await get(base + "/realtime-token", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}" });
+      result = await withTimeout(async (signal) => {
+        const response = await get(base + "/realtime-token", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: "{}", ...(signal ? { signal } : {}) });
+        let body: { token?: unknown } = {};
+        try { body = await response.json() as { token?: unknown }; } catch { body = {}; }
+        return { status: response.status, ok: response.ok, retryAfter: response.headers?.get("retry-after") ?? null, body };
+      });
     } catch {
       throw new RoomRealtimeError("TOKEN_REQUEST_FAILED", "Realtime capability request failed");
     }
-    if (PERMANENT_HTTP_STATUS.has(response.status)) {
-      throw new RoomRealtimeError("UNAUTHORIZED", "Realtime capability was refused", { status: response.status, permanent: true });
+    if (PERMANENT_HTTP_STATUS.has(result.status)) {
+      throw new RoomRealtimeError("UNAUTHORIZED", "Realtime capability was refused", { status: result.status, permanent: true });
     }
-    if (!response.ok) {
-      const retryAfterMs = Math.min(MAX_RETRY_AFTER_MS, Number(response.headers?.get("retry-after")) * 1000 || 0) || undefined;
-      throw new RoomRealtimeError("TOKEN_REQUEST_FAILED", "Realtime capability request failed", { status: response.status, retryAfterMs });
+    if (!result.ok) {
+      const retryAfterMs = Math.min(MAX_RETRY_AFTER_MS, Number(result.retryAfter) * 1000 || 0) || undefined;
+      throw new RoomRealtimeError("TOKEN_REQUEST_FAILED", "Realtime capability request failed", { status: result.status, retryAfterMs });
     }
-    let body: { token?: unknown };
-    try { body = await response.json() as { token?: unknown }; } catch { body = {}; }
-    if (typeof body.token !== "string" || body.token.length === 0) throw new RoomRealtimeError("TOKEN_INVALID", "Invalid realtime capability");
-    return body.token;
+    if (typeof result.body.token !== "string" || result.body.token.length === 0) throw new RoomRealtimeError("TOKEN_INVALID", "Invalid realtime capability");
+    return result.body.token;
   }
 
   /** Single flight: concurrent requests (heartbeat, recovery, wake-up) share one token request. */
-  function loadToken(options: { reuseIfFresh?: boolean } = {}): Promise<void> {
+  function loadToken(options: { reuseIfFresh?: boolean; newerThan?: number } = {}): Promise<void> {
     // Recovery may try to join many times during an outage; a capability that is still in the first half of its
     // life is reused so the token endpoint (rate limited per guest, e.g. 12/min) is not hammered (CINE-021 limits).
-    if (options.reuseIfFresh && currentToken && env.now() < tokenFetchedAt + tokenLifetimeMs / 2) return Promise.resolve();
+    // `age >= 0`: a token "fetched in the future" (the wall clock stepped backwards) is never reused.
+    const age = env.now() - tokenFetchedAt;
+    if (options.reuseIfFresh && currentToken && age >= 0 && age < tokenLifetimeMs / 2 && (options.newerThan === undefined || tokenFetchedAt > options.newerThan)) return Promise.resolve();
     if (fetching) return fetching;
     fetching = (async () => {
       const token = await fetchToken();
@@ -272,26 +301,30 @@ export async function startRoomRealtime(options: {
       tokenFetchedAt = fetchedAt;
       tokenLifetimeMs = lifetime;
       tokenExpiresAt = fetchedAt + lifetime;
-      // Rotate at about half the lifetime (L-005), never more often than MIN_ROTATION_INTERVAL_MS.
-      tokenRenewAt = fetchedAt + Math.max(MIN_ROTATION_INTERVAL_MS, lifetime / 2);
+      scheduleRenewFromToken();
     })().finally(() => { fetching = null; });
     return fetching;
   }
 
   const reconciler = createRoomReconciler<{ stateVersion: number; snapshot: RoomSnapshot }>({
     loadSnapshot: async () => {
-      let response: Response;
+      let result: { status: number; ok: boolean; snapshot: RoomSnapshot | null };
       try {
-        response = await get(base, { credentials: "same-origin", cache: "no-store" });
+        result = await withTimeout(async (signal) => {
+          const response = await get(base, { credentials: "same-origin", cache: "no-store", ...(signal ? { signal } : {}) });
+          let snapshot: RoomSnapshot | null = null;
+          if (response.ok) { try { snapshot = await response.json() as RoomSnapshot; } catch { snapshot = null; } }
+          return { status: response.status, ok: response.ok, snapshot };
+        });
       } catch {
         throw new RoomRealtimeError("SNAPSHOT_FAILED", "Room snapshot request failed");
       }
-      if (!response.ok) {
-        throw new RoomRealtimeError("SNAPSHOT_FAILED", "Room snapshot request failed", { status: response.status, permanent: PERMANENT_HTTP_STATUS.has(response.status) });
+      if (!result.ok) {
+        throw new RoomRealtimeError("SNAPSHOT_FAILED", "Room snapshot request failed", { status: result.status, permanent: PERMANENT_HTTP_STATUS.has(result.status) });
       }
-      let snapshot: RoomSnapshot;
-      try { snapshot = await response.json() as RoomSnapshot; } catch { throw new RoomRealtimeError("SNAPSHOT_INVALID", "Room snapshot was not valid JSON"); }
-      if (!snapshot || typeof snapshot.room !== "object" || snapshot.room === null) throw new RoomRealtimeError("SNAPSHOT_INVALID", "Room snapshot has no room");
+      const snapshot = result.snapshot;
+      if (!snapshot) throw new RoomRealtimeError("SNAPSHOT_INVALID", "Room snapshot was not valid JSON");
+      if (typeof snapshot.room !== "object" || snapshot.room === null) throw new RoomRealtimeError("SNAPSHOT_INVALID", "Room snapshot has no room");
       return { stateVersion: snapshot.room.stateVersion, snapshot };
     },
     onSnapshot: ({ snapshot }) => { if (!closed && !terminal) options.onSnapshot(snapshot); },
@@ -382,6 +415,7 @@ export async function startRoomRealtime(options: {
   /** Opens a new client + private channel with the current token. Resolves once SUBSCRIBED. */
   async function joinNewSlot(): Promise<Slot> {
     const expiresAt = tokenExpiresAt;
+    const joinTokenFetchedAt = tokenFetchedAt;
     const client = makeClient();
     let channel: Slot["channel"];
     try {
@@ -393,7 +427,7 @@ export async function startRoomRealtime(options: {
       try { void Promise.resolve(client.auth?.dispose?.()).catch(() => undefined); } catch { /* best effort */ }
       throw error;
     }
-    const slot: Slot = { client, channel, joined: false, dead: false, expiresAt };
+    const slot: Slot = { client, channel, joined: false, dead: false, expiresAt, tokenFetchedAt: joinTokenFetchedAt };
     slots.add(slot);
     let joinedOnce = false;
     channel.on("broadcast", { event: "room_changed" }, (message: { payload?: unknown }) => {
@@ -440,13 +474,19 @@ export async function startRoomRealtime(options: {
     disposeSlot(active);
     active = null;
     let attempt = 0;
+    // Flap guard: a server that accepts the join and drops it again right away must not be re-joined in a tight loop.
+    const startedAt = env.now();
+    flaps = startedAt >= lastRecoveryAt && startedAt - lastRecoveryAt < 5000 ? flaps + 1 : 0;
     try {
+      if (flaps > 0) await sleep(backoff(flaps));
       while (!closed && !terminal) {
         try {
           await loadToken({ reuseIfFresh: true });
           const slot = await joinNewSlot();
           if (closed || terminal) { disposeSlot(slot); return; }
           active = slot;
+          lastRecoveryAt = env.now();
+          scheduleRenewFromToken();
           setStatus("live");
           void syncNow(); // events may have been missed while down
           return;
@@ -471,13 +511,15 @@ export async function startRoomRealtime(options: {
   function rotate(): Promise<void> {
     if (rotating) return rotating;
     rotating = (async () => {
-      await loadToken();
+      // A retry after a failed join reuses the token fetched for the failed attempt (token endpoint budget).
+      await loadToken({ reuseIfFresh: true, newerThan: active?.tokenFetchedAt ?? Infinity });
       const slot = await joinNewSlot();
       if (closed || terminal || recovering || !active) { disposeSlot(slot); return; }
       const previous = active;
       active = slot;
       disposeSlot(previous);
       renewFailures = 0;
+      scheduleRenewFromToken(); // a reused token keeps its own half-life; a failed-attempt backoff no longer applies
       if (status === "degraded") setStatus("live");
     })().finally(() => { rotating = null; });
     return rotating;
@@ -486,6 +528,10 @@ export async function startRoomRealtime(options: {
   async function tick(reason: "timer" | WakeReason) {
     if (closed || terminal) return;
     const now = env.now();
+    // The wall clock stepped backwards (NTP correction after sleep): deadlines measured in the "future" are
+    // due now, and the poll must not pause until the clock catches up.
+    if (now < tokenFetchedAt) tokenRenewAt = now;
+    if (now < lastSync) lastSync = -Infinity;
     if (reason !== "timer") {
       // focus / visibilitychange / pageshow / online can fire in bursts: coalesce wake-ups. A burst never
       // swallows the chance to cut a recovery backoff short, and a backwards clock step is never coalesced.

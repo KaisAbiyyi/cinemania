@@ -37,6 +37,7 @@ const PORT_1 = 3111;
 const PORT_2 = 3112;
 const PROXY_PORT = 54399;
 const REAL_GATEWAY_PORT = 54321;
+const ALL_SCENARIOS = ["A", "B", "I", "H", "C", "D", "E", "F", "G", "J"];
 const SEED_ROOMS = ["00000000-0000-4000-8000-000000005201", "00000000-0000-4000-8000-000000005202"];
 
 const argv = process.argv.slice(2);
@@ -139,8 +140,9 @@ async function main() {
   const tarPath = path.join(tempRoot, "app.tar");
 
   const db = new Client(hosted ? hosted.pgConfig : { host: "127.0.0.1", port: 55432, user: "supabase_admin", password: stackEnv.POSTGRES_PASSWORD, database: "postgres", connectionTimeoutMillis: 5000 });
-  const evidence = { appCommit, environment: hosted ? `hosted staging ${hosted.project} (synthetic data)` : "local Docker (GH-52 stack, synthetic data)", startedAt: new Date().toISOString(), scenarios: [] };
+  const evidence = { skipped: [], appCommit, environment: hosted ? `hosted staging ${hosted.project} (synthetic data)` : "local Docker (GH-52 stack, synthetic data)", startedAt: new Date().toISOString(), scenarios: [] };
   const createdRoomIds = [];
+  const writeEvidence = () => { const out = flag("--evidence"); if (out) fs.writeFileSync(out, JSON.stringify(evidence, null, 2)); };
   const liveMembers = new Set();
   let proc1 = null, proc2 = null, worker1 = null, worker2 = null, proxy = null, browser = null;
   let baseAppEnv, origin1, origin2;
@@ -167,7 +169,7 @@ async function main() {
       else execFileSync("npm", ["ci", "--prefer-offline", "--no-audit", "--no-fund"], { cwd: buildDir, stdio: "pipe" });
       fs.renameSync(buildDir, inst1Dir);
       fs.cpSync(inst1Dir, inst2Dir, { recursive: true });
-    } else log("reusing prepared copy", tempRoot);
+    } else { log("reusing prepared copy", tempRoot); evidence.nonQualifying = "prepared copy reused via --keep-dir; not verified against --app-commit"; }
     base.writeHermeticTmdbPreload(preloadPath, hostedHostname);
     const bundleRoot = debugClientFromWorktree ? REPO_ROOT : inst1Dir;
     const clientCjs = bundleClient(bundleRoot, tempRoot, "cjs", "node", "node");
@@ -192,7 +194,8 @@ async function main() {
     if (hosted) await assertEmptyHostedApplication(db);
     const unknown = await db.query("SELECT count(*)::int AS n FROM public.rooms WHERE id <> ALL($1::uuid[])", [SEED_ROOMS]);
     assert.equal(unknown.rows[0].n, 0, "Synthetic-only qualification refused: unknown existing rooms (another run may be using the stack)");
-    await Promise.all([startWorker(1), startWorker(2)]);
+    // The staging session pooler allows 15 sessions in total (EMAXCONNSESSION): hosted runs use ONE worker.
+    await Promise.all(hosted ? [startWorker(1)] : [startWorker(1), startWorker(2)]);
     proxy = hosted ? installWebSocketFaults() : await startProxy();
 
     // ---------- helpers bound to the running stack ----------
@@ -259,6 +262,16 @@ async function main() {
       return { roundId: snap.room.currentRoundId, deck: snap.room.deck };
     }
     const voteBody = (round, card, vote, operationId) => ({ roundId: round.roundId, candidateId: card.candidateId, movieId: card.movieId, vote, operationId });
+    // Hosted staging: at most 4 requests in flight at once (session pooler cap 15 = 2 apps + worker + harness + clients).
+    const burstLimit = hosted ? 4 : Infinity;
+    async function runLimited(thunks, limit) {
+      const results = new Array(thunks.length);
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(limit, thunks.length) }, async () => {
+        while (next < thunks.length) { const i = next++; results[i] = await thunks[i](); }
+      }));
+      return results;
+    }
     const castVote = (member, body) => post(member.origin, member.cookie, `/api/rooms/${member.roomId}/votes`, body);
     async function dbCounts(roomId) {
       const q = async (sql) => (await db.query(sql, [roomId])).rows[0].n;
@@ -273,7 +286,7 @@ async function main() {
     }
     const scenarios = {};
     const run = async (id, title, fn) => {
-      if (ONLY.length && !ONLY.includes(id)) return;
+      if (ONLY.length && !ONLY.includes(id)) { evidence.skipped.push(id); return; }
       const t0 = Date.now();
       log(`>>> ${id} ${title}`);
       const detail = await fn();
@@ -294,10 +307,14 @@ async function main() {
         const calls = [];
         room.members.forEach((member, i) => {
           const body = voteBody(round, card, "LIKE", `a-${size}-${i}`);
-          for (const origin of [origin1, origin2, origin1]) calls.push(castVote({ ...member, origin }, body));
+          for (const origin of [origin1, origin2, origin1]) calls.push(() => castVote({ ...member, origin }, body));
         });
-        const responses = await Promise.all(calls);
-        assert(responses.every((r) => r.status === 200), `all duplicate votes must be 200, got ${responses.map((r) => r.status)}`);
+        const responses = await runLimited(calls, burstLimit);
+        if (!responses.every((r) => r.status === 200)) {
+          // Error codes only (never bodies with data): the server returns { error, message } for failures.
+          const detail = await Promise.all(responses.map(async (r) => r.status === 200 ? 200 : `${r.status}:${String((await r.clone().json().catch(() => ({}))).error ?? "?")}`));
+          assert.fail(`all duplicate votes must be 200, got ${detail}`);
+        }
         const bodies = await Promise.all(responses.map((r) => r.json()));
         assert.equal(bodies.filter((b) => b.idempotentReplay === false).length, size, "exactly one fresh vote per participant");
         const truth = await converge(room, clients, 20000, `A${size} after votes`);
@@ -415,7 +432,7 @@ async function main() {
       // Dispatchers and instance 1 come back; clients on instance 1 recover on their own.
       startInstance(1);
       await base.waitForServer(origin1, 120000);
-      await Promise.all([startWorker(1), startWorker(2)]);
+      await Promise.all(hosted ? [startWorker(1)] : [startWorker(1), startWorker(2)]);
       const truth = await converge(room, clients, 60000, "F after restart");
       const counts = await dbCounts(room.roomId);
       assert.equal(counts.votes >= 3, true);
@@ -552,13 +569,15 @@ async function main() {
       return { finalVersion: truth, replays: voteResults.filter((r) => r.replayed).length, staleCode: stale.code };
     });
 
-    for (const id of ["A", "B", "I", "H", "C", "D", "E", "F", "G", "J"]) await scenarios[id]();
+    for (const id of ALL_SCENARIOS) await scenarios[id]();
     evidence.finishedAt = new Date().toISOString();
-    evidence.allPass = evidence.scenarios.length > 0 && evidence.scenarios.every((s) => s.result === "PASS");
-    const out = flag("--evidence");
-    if (out) fs.writeFileSync(out, JSON.stringify(evidence, null, 2));
+    evidence.requested = ONLY.length ? ONLY : ALL_SCENARIOS;
+    evidence.partial = evidence.skipped.length > 0;
+    evidence.allPass = !evidence.partial && !evidence.nonQualifying && evidence.scenarios.length === ALL_SCENARIOS.length && evidence.scenarios.every((s) => s.result === "PASS");
+    writeEvidence();
     console.log(JSON.stringify(evidence, null, 2));
-    assert(evidence.allPass);
+    // Debug runs (--only / --keep-dir / --client-from-worktree) report allPass=false instead of failing.
+    if (!evidence.partial && !evidence.nonQualifying) assert(evidence.allPass, "a scenario did not pass");
   } catch (error) {
     console.error("--- INSTANCE 1 LOGS ---\n" + (proc1?.getLogs() || ""));
     console.error("--- INSTANCE 2 LOGS ---\n" + (proc2?.getLogs() || ""));
@@ -579,8 +598,11 @@ async function main() {
         await db.query("UPDATE public.rooms SET status='EXPIRED', expires_at=NOW() - INTERVAL '1 second' WHERE id = ANY($1::uuid[])", [createdRoomIds]);
         await db.query("DELETE FROM public.rooms WHERE id = ANY($1::uuid[])", [createdRoomIds]);
         const left = await db.query("SELECT count(*)::int n FROM public.rooms WHERE id <> ALL($1::uuid[])", [SEED_ROOMS]);
-        console.error(JSON.stringify({ fixtureCleanup: left.rows[0].n === 0 ? "PASS" : "FAIL", remainingNonSeedRooms: left.rows[0].n, createdRooms: createdRoomIds.length }));
-      } catch (error) { console.error("fixture cleanup failed:", String(error)); }
+        evidence.cleanup = { result: left.rows[0].n === 0 ? "PASS" : "FAIL", remainingNonSeedRooms: left.rows[0].n, createdRooms: createdRoomIds.length };
+        console.error(JSON.stringify({ fixtureCleanup: evidence.cleanup.result, ...evidence.cleanup }));
+        if (left.rows[0].n !== 0) process.exitCode = 1;
+      } catch (error) { evidence.cleanup = { result: "FAIL", error: String(error).slice(0, 200) }; console.error("fixture cleanup failed:", String(error)); process.exitCode = 1; }
+      writeEvidence();
     }
     await db.end().catch(() => {});
     if (!keepDir) fs.rmSync(tempRoot, { recursive: true, force: true });
