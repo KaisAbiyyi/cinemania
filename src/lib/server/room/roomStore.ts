@@ -715,6 +715,7 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
   private readonly pool: Pool;
   private readonly repo: PostgresRoomRepository;
   private readonly schema?: string;
+  private publisher?: { url: string; secret: string; send: ReturnType<typeof createSupabasePublisher> };
 
   async listRoomEventVersions(roomId: string, since: number): Promise<number[]> {
     return this.withClient(async (client) => {
@@ -727,8 +728,10 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     const url = process.env.SUPABASE_URL;
     const secret = process.env.SUPABASE_SECRET_KEY;
     if (!url || !secret) throw new Error("Realtime publisher configuration missing");
-    const sent = await dispatchPendingEvents(roomId, postgresOutboxStore(this.pool, this.schema), createSupabasePublisher(url, secret));
-    if (!sent) throw new Error("Realtime publication failed");
+    if (this.publisher?.url !== url || this.publisher.secret !== secret) {
+      this.publisher = { url, secret, send: createSupabasePublisher(url, secret) };
+    }
+    await dispatchPendingEvents(roomId, postgresOutboxStore(this.pool, this.schema), this.publisher.send);
   }
 
   constructor(pool: Pool, options?: { schema?: string }) {
@@ -1151,6 +1154,7 @@ export function getRoomAuthorityStore(): RoomAuthorityStore {
       void cachedPg.pool.end().catch(() => {});
     }
     const pool = new Pool(resolvedPg.poolConfig);
+    pool.on("error", () => console.warn("[CINEMATCH_DB_CONNECTION_ERROR] Check room database connectivity."));
     const store = new PostgresRoomAuthorityStore(pool);
     globalForStore.__cinematchPostgresConnection = {
       fingerprint: resolvedPg.fingerprint,
@@ -1197,6 +1201,11 @@ export function getRoomAuthorityStore(): RoomAuthorityStore {
   const store = new SqliteRoomAuthorityStore(db);
   globalForStore.__cinematchSqliteConnection = { path: sqlitePath, db, store };
   return store;
+}
+
+export function getRoomRateLimitPool(store: RoomAuthorityStore): Pool | undefined {
+  const connection = globalForStore.__cinematchPostgresConnection;
+  return connection?.store === store ? connection.pool : undefined;
 }
 
 export function resetRoomAuthorityStoreForTests(): void {

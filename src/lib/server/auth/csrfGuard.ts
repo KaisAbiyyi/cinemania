@@ -1,43 +1,18 @@
 import { CapabilityAuthError } from "./guestCapability";
+import { roomRequestOrigin } from "./requestOrigin";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-function normalizeHost(rawHost: string | null): string | null {
-  if (!rawHost) return null;
-  const trimmed = rawHost.split(",")[0]?.trim().toLowerCase();
-  return trimmed || null;
-}
-
-function getExpectedOrigin(request: Request): { protocol: string; host: string } | null {
-  try {
-    const parsed = new URL(request.url);
-    const forwardedProto = request.headers
-      .get("x-forwarded-proto")
-      ?.split(",")[0]
-      ?.trim()
-      .toLowerCase();
-    const protocol = forwardedProto ? `${forwardedProto}:` : parsed.protocol.toLowerCase();
-    const host =
-      normalizeHost(request.headers.get("x-forwarded-host")) ||
-      normalizeHost(request.headers.get("host")) ||
-      parsed.host.toLowerCase();
-
-    return { protocol, host };
-  } catch {
-    return null;
-  }
-}
-
-function originsMatch(candidateUrl: string, expected: { protocol: string; host: string }): boolean {
+function originsMatch(candidateUrl: string, expected: URL, originHeader: boolean): boolean {
   if (!candidateUrl || candidateUrl.toLowerCase() === "null") {
     return false;
   }
   try {
     const parsed = new URL(candidateUrl);
-    return (
-      parsed.protocol.toLowerCase() === expected.protocol &&
-      parsed.host.toLowerCase() === expected.host
-    );
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    if (parsed.username || parsed.password) return false;
+    if (originHeader && (parsed.pathname !== "/" || parsed.search || parsed.hash)) return false;
+    return parsed.origin === expected.origin;
   } catch {
     return false;
   }
@@ -63,14 +38,14 @@ export function assertSameOriginCsrf(request: Request): void {
     );
   }
 
-  const expected = getExpectedOrigin(request);
+  const expected = roomRequestOrigin(request);
   if (!expected) {
     throw new CapabilityAuthError(403, "CSRF_FORBIDDEN", "Unable to verify request origin.");
   }
 
   const originHeader = request.headers.get("origin")?.trim();
   if (originHeader !== undefined) {
-    if (!originsMatch(originHeader, expected)) {
+    if (!originsMatch(originHeader, expected, true)) {
       throw new CapabilityAuthError(
         403,
         "CSRF_FORBIDDEN",
@@ -82,7 +57,7 @@ export function assertSameOriginCsrf(request: Request): void {
 
   const refererHeader = request.headers.get("referer")?.trim();
   if (refererHeader !== undefined) {
-    if (!originsMatch(refererHeader, expected)) {
+    if (!originsMatch(refererHeader, expected, false)) {
       throw new CapabilityAuthError(
         403,
         "CSRF_FORBIDDEN",

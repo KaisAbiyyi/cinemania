@@ -12,8 +12,11 @@ export function postgresOutboxStore(pool: Pool, requestedSchema = "public"): Out
     async scanPendingRooms(after, limit) {
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid outbox page size");
       const result = await pool.query<{ room_id: string }>(
-        `SELECT DISTINCT room_id FROM ${table} WHERE NOT dispatched AND NOT poison
-         AND ($1::uuid IS NULL OR room_id > $1::uuid) ORDER BY room_id LIMIT $2`,
+        `SELECT room_id FROM (
+           SELECT DISTINCT ON (room_id) room_id, retry_not_before FROM ${table}
+           WHERE NOT dispatched AND NOT poison AND ($1::uuid IS NULL OR room_id > $1::uuid)
+           ORDER BY room_id, version
+         ) AS heads WHERE retry_not_before <= NOW() ORDER BY room_id LIMIT $2`,
         [after ?? null, limit],
       );
       return result.rows.map(row => row.room_id);
@@ -27,17 +30,30 @@ export function postgresOutboxStore(pool: Pool, requestedSchema = "public"): Out
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`cinematch-outbox:${schema}:${roomId}`]);
         const outbox: LockedOutbox = {
           async pending(): Promise<PendingEvent[]> {
-            const result = await client.query<{ id: string; version: number }>(
-              `SELECT id::text, version FROM ${table} WHERE room_id = $1 AND NOT dispatched AND NOT poison ORDER BY version ASC LIMIT 3`,
+            const result = await client.query<{ id: string; version: number; ready: boolean }>(
+              `SELECT id::text, version, retry_not_before <= NOW() AS ready FROM ${table}
+               WHERE room_id = $1 AND NOT dispatched AND NOT poison ORDER BY version ASC LIMIT 3`,
               [roomId],
             );
-            return result.rows;
+            const delayed = result.rows.findIndex(event => !event.ready);
+            return delayed < 0 ? result.rows : result.rows.slice(0, delayed);
           },
           async markDispatched(id) {
             await client.query(`UPDATE ${table} SET dispatched = TRUE, dispatched_at = NOW() WHERE room_id = $1 AND id = $2 AND NOT dispatched`, [roomId, id]);
           },
-          async recordFailure(id, permanent) {
-            await client.query(`UPDATE ${table} SET retry_count = retry_count + 1, permanent_retry_count = permanent_retry_count + CASE WHEN $3 THEN 1 ELSE 0 END, poison = CASE WHEN $3 AND permanent_retry_count + 1 >= 3 THEN TRUE ELSE poison END WHERE room_id = $1 AND id = $2 AND NOT dispatched`, [roomId, id, permanent]);
+          async recordFailure(id, permanent, authorization) {
+            const initialDelay = authorization ? 60 : 1;
+            const maxDelay = authorization ? 900 : 60;
+            await client.query(
+              `UPDATE ${table}
+               SET retry_count = LEAST(retry_count::bigint + 1, 2147483647),
+                   permanent_retry_count = permanent_retry_count + CASE WHEN $3 THEN 1 ELSE 0 END,
+                   poison = poison OR ($3 AND permanent_retry_count + 1 >= 3),
+                   retry_not_before = clock_timestamp() +
+                     make_interval(secs => LEAST($5::integer, $4::integer * (1 << LEAST(retry_count, 6))))
+               WHERE room_id = $1 AND id = $2 AND NOT dispatched`,
+              [roomId, id, permanent, initialDelay, maxDelay],
+            );
           },
         };
         const result = await work(outbox);

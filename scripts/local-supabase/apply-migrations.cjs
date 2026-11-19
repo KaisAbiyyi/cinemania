@@ -12,7 +12,9 @@ const run = (program, args, options = {}) =>
 function loadMigrationsFromCommit(commit, paths = migrationPaths()) {
   validateCommit(commit);
   run("git", ["cat-file", "-e", commit + "^{commit}"]);
-  return paths.map((file) => {
+  const existing = run("git", ["ls-tree", "-r", "--name-only", commit, "--", "src/db/migrations"]).split("\n");
+  const hardened = existing.includes(migrationPaths().at(-1));
+  return paths.filter(file => hardened || !file.startsWith("src/db/migrations/006_")).map((file) => {
     const sql = run("git", ["show", commit + ":" + file], { maxBuffer: 10 * 1024 * 1024 });
     return { file, sql, hash: crypto.createHash("sha256").update(sql).digest("hex") };
   });
@@ -87,7 +89,7 @@ if (require.main === module) {
   try {
     const sqls = applyCanonicalMigrations(commit);
     for (const item of sqls) console.log(item.file, item.hash);
-    console.log("Applied five canonical migrations from commit", commit, "to loopback-only local Compose database.");
+    console.log(`Applied ${sqls.length} canonical migrations from commit`, commit, "to loopback-only local Compose database.");
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;

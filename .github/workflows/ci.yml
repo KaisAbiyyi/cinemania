@@ -77,6 +77,14 @@ jobs:
   build:
     name: Next.js Production Build
     runs-on: ubuntu-latest
+    env:
+      TMDB_API_RAT: "TMDB_SECRET_SENTINEL_BUILD_MARKER_999"
+      SUPABASE_SECRET_KEY: "supabase-publisher-synthetic-build-sentinel"
+      SUPABASE_SERVICE_ROLE_KEY: "supabase-service-role-synthetic-build-sentinel"
+      SUPABASE_JWT_SECRET: "supabase-jwt-synthetic-build-sentinel"
+      DATABASE_URL: "postgresql://sentinel:database-synthetic-build-sentinel@127.0.0.1:1/sentinel"
+      YOUTUBE_API_KEY: "youtube-synthetic-build-sentinel"
+      CINEMATCH_REQUIRE_BUNDLE_SENTINELS: "true"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -101,13 +109,9 @@ jobs:
 
       - name: Build Next.js application
         run: npm run build
-        env:
-          TMDB_API_RAT: "TMDB_SECRET_SENTINEL_BUILD_MARKER_999"
 
       - name: Verify zero server secrets in client bundle (Hard Gate)
         run: npm run test:bundle-secrets
-        env:
-          TMDB_API_RAT: "TMDB_SECRET_SENTINEL_BUILD_MARKER_999"
 
   e2e-tests:
     name: Playwright E2E Tests

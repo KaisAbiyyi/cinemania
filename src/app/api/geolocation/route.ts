@@ -1,4 +1,5 @@
 import axios from "axios";
+import { isIP } from "node:net";
 import { ENDPOINT_CACHE_POLICIES } from "@/lib/server/cache/cachePolicies";
 import {
     cacheConcurrencyLimitResponse,
@@ -12,10 +13,11 @@ import {
  */
 export async function GET(request: Request) {
     const policy = ENDPOINT_CACHE_POLICIES.geolocation;
-    const ip = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "127.0.0.1";
-    const token = process.env.IPINFO_TOKEN || "YOUR_TOKEN";
+    const forwarded = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip");
+    const ip = forwarded?.split(",")[0]?.trim() || "127.0.0.1";
+    const token = process.env.IPINFO_TOKEN;
 
-    if (ip === "127.0.0.1" || ip === "::1") {
+    if (!isIP(ip) || ip === "127.0.0.1" || ip === "::1" || ip.toLowerCase() === "::ffff:127.0.0.1") {
         return jsonWithCachePolicy({ region: "US" }, policy, "BYPASS");
     }
     if (!token) {
@@ -28,6 +30,8 @@ export async function GET(request: Request) {
             async () => {
                 const res = await axios.get(`https://ipinfo.io/${ip}`, {
                     params: { token },
+                    maxRedirects: 0,
+                    timeout: 3000,
                 });
                 return { region: res.data.country || "US" };
             }
@@ -38,7 +42,7 @@ export async function GET(request: Request) {
         if (overloadResponse) {
             return overloadResponse;
         }
-        console.error("Error fetching geolocation:", error);
+        console.error("[IPINFO_UPSTREAM_ERROR] Check region lookup connectivity and configuration.");
         return jsonWithCachePolicy({ region: "US" }, policy, "BYPASS", { status: 500 });
     }
 }

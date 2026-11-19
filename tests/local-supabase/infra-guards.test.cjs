@@ -11,8 +11,9 @@ const { SYNTHETIC_IDS } = require("../../scripts/local-supabase/seed.cjs");
 
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-test("downMigrationPaths reverses canonical 001-005 order", () => {
+test("downMigrationPaths reverses canonical migration order", () => {
   assert.deepEqual(downMigrationPaths(), [
+    "src/db/migrations/006_down_cinematch_security_hardening.sql",
     "src/db/migrations/005_down_realtime_authorization.sql",
     "src/db/migrations/004_down_vote_operation_idempotency.sql",
     "src/db/migrations/003_down_round_roster_freeze.sql",

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { ParticipantRole } from "@/db/schema";
+import { isLoopbackHostname, roomRequestOrigin } from "./requestOrigin";
 
 export const GUEST_COOKIE_PREFIX = "cm_guest_";
 export const DEFAULT_CAPABILITY_TTL_SECONDS = 7200; // 2 hours
@@ -290,58 +291,14 @@ export function extractCookieValue(cookieHeader: string | null, cookieName: stri
   return null;
 }
 
-function extractHostname(hostHeader: string | null): string {
-  if (!hostHeader) return "";
-  const first = hostHeader.split(",")[0]?.trim().toLowerCase() ?? "";
-  if (first.startsWith("[")) {
-    const closing = first.indexOf("]");
-    return closing > 0 ? first.slice(0, closing + 1) : first;
-  }
-  const colonIdx = first.indexOf(":");
-  return colonIdx > -1 ? first.slice(0, colonIdx) : first;
-}
-
-export function isLoopbackHostname(hostname: string): boolean {
-  return (
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname === "::1" ||
-    hostname === "[::1]"
-  );
-}
-
 /**
- * Sets Secure on HTTPS requests (including reverse-proxied x-forwarded-proto=https)
+ * Sets Secure on HTTPS requests
  * and non-loopback production hosts while keeping plain HTTP loopback E2E functional.
  */
 export function shouldUseSecureCookie(request: Request): boolean {
-  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
-  if (forwardedProto === "https") {
-    return true;
-  }
-
-  let parsedUrl: URL | null = null;
-  try {
-    parsedUrl = new URL(request.url);
-    if (parsedUrl.protocol === "https:") {
-      return true;
-    }
-  } catch {
-    // Fall through to host inspection
-  }
-
-  const host = extractHostname(
-    request.headers.get("x-forwarded-host") ||
-      request.headers.get("host") ||
-      parsedUrl?.host ||
-      null
-  );
-
-  if (isLoopbackHostname(host)) {
-    return false;
-  }
-
-  return process.env.NODE_ENV === "production";
+  const origin = roomRequestOrigin(request);
+  if (origin?.protocol === "https:") return true;
+  return process.env.NODE_ENV === "production" && !isLoopbackHostname(origin?.hostname ?? "");
 }
 
 export function buildGuestCookieAttributes(

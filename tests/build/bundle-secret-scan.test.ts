@@ -61,7 +61,7 @@ export function scanClientBundlesForSecrets(
       // 3. Base64 representation (for strings >= 8 characters)
       if (secret.length >= 8) {
         const b64 = Buffer.from(secret).toString("base64");
-        if (content.includes(b64)) {
+        if (content.includes(b64) || content.includes(Buffer.from(secret).toString("base64url"))) {
           throw new Error(
             `Secret leak detected in ${path.relative(process.cwd(), filePath)}: Base64-encoded secret found`
           );
@@ -87,13 +87,24 @@ describe("Client Bundle Secret Leak Prevention (Build-Tied Hard Gate)", () => {
     // In this build-tied suite, staticDir MUST exist from the preceding `npm run build`
     expect(fs.existsSync(staticDir)).toBe(true);
 
+    const secretNames = [
+      "TMDB_API_RAT",
+      "CINEMATCH_CAPABILITY_SECRET",
+      "SUPABASE_SERVICE_ROLE_KEY",
+      "SUPABASE_SECRET_KEY",
+      "SUPABASE_JWT_SECRET",
+      "DATABASE_URL",
+      "IPINFO_TOKEN",
+      "YOUTUBE_API_KEY",
+    ];
+    if (process.env.CINEMATCH_REQUIRE_BUNDLE_SENTINELS === "true") {
+      const missing = secretNames.filter(name => !process.env[name]?.trim());
+      expect(missing, "Build qualification requires configured synthetic secret markers").toEqual([]);
+    }
+    const databasePassword = URL.parse(process.env.DATABASE_URL ?? "")?.password ?? "";
     const prohibitedTokens = [
-      process.env.TMDB_API_RAT,
-      process.env.CINEMATCH_CAPABILITY_SECRET,
-      process.env.SUPABASE_SERVICE_ROLE_KEY,
-      process.env.SUPABASE_SECRET_KEY,
-      process.env.SUPABASE_JWT_SECRET,
-      process.env.DATABASE_URL,
+      ...secretNames.map(name => process.env[name]),
+      databasePassword.length >= 8 ? databasePassword : undefined,
       "TMDB_SECRET_SENTINEL_BUILD_MARKER_999",
       "mock-tmdb-offline-rat-token",
       "mock-tmdb-offline-ci-token",

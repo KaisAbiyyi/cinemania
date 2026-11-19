@@ -18,13 +18,14 @@ test("rejects wildcard, missing, wrong project and unexpected published bindings
   assert.throws(() => validateBindings([safe[0], { ...safe[1], ports: { "8000/tcp": [{ HostIp: "::", HostPort: "54321" }] } }]));
 });
 
-test("only returns the canonical five up migrations", () => {
+test("only returns the canonical up migrations", () => {
   assert.deepEqual(migrationPaths(), [
     "src/db/migrations/001_create_room_schema.sql",
     "src/db/migrations/002_guest_capability_sessions.sql",
     "src/db/migrations/003_round_roster_freeze.sql",
     "src/db/migrations/004_vote_operation_idempotency.sql",
     "src/db/migrations/005_realtime_authorization.sql",
+    "src/db/migrations/006_cinematch_security_hardening.sql",
   ]);
 });
 
