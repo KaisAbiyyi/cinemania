@@ -355,7 +355,23 @@ async function connectRoomWs({ supabaseUrl, anonKey, origin, roomId, cookie }) {
     });
   }
 
-  return { client, channel, hints, waitForVersion, refreshAuth: async () => client.realtime.setAuth(await requestToken()) };
+  const refreshAuth = async () => client.realtime.setAuth(await requestToken());
+  // Mirror the product client (src/lib/realtime/roomRealtime.ts): the 60s room JWT is
+  // renewed every 30s. Hosted Realtime CLOSES a private channel when its JWT expires
+  // (observed at ~59.7s), so a non-renewing test client silently loses later hints.
+  // TTL, subscription and wait deadlines are unchanged.
+  let renewTimer = null;
+  const pauseRenewal = () => { if (renewTimer) { clearInterval(renewTimer); renewTimer = null; } };
+  const resumeRenewal = () => {
+    pauseRenewal();
+    renewTimer = setInterval(() => {
+      if (client.getChannels().length === 0) return pauseRenewal();
+      void refreshAuth().catch(() => {});
+    }, 30000);
+    renewTimer.unref();
+  };
+  resumeRenewal();
+  return { client, channel, hints, waitForVersion, refreshAuth, pauseRenewal, resumeRenewal };
 }
 
 function percentile(sorted, p) {
@@ -688,6 +704,12 @@ async function main() {
 
     // 7. Actual authority COMMIT -> committer SIGKILL -> independent worker recovery.
     // No app HTTP requests, browser polling, or request-assisted trigger in this window.
+    // Renew the WS capability immediately BEFORE the window (full 60s TTL), then pause
+    // renewal so no app HTTP request occurs inside it. Resumed after WS recovery below.
+    await guest2WsB.refreshAuth();
+    guest2WsB.pauseRenewal();
+    // Earlier room-1 clients stay subscribed but must issue no app HTTP in the window.
+    hostWs.pauseRenewal(); guestWs.pauseRenewal();
     await Promise.all([stopChild(worker1), stopChild(worker2)]);
     worker1 = null; worker2 = null;
     await stopChild(proc1);
@@ -715,6 +737,7 @@ async function main() {
     await guest2WsB.waitForVersion(7);
     await waitForAcknowledgement(db, room2.roomId, 7);
     // HTTP resumes only AFTER autonomous recovery has been observed over WS.
+    guest2WsB.resumeRenewal();
     proc1 = spawnNextInstance({ cwd: inst1Dir, port: PORT_1, env: { ...baseAppEnv, PORT: String(PORT_1) } });
     await waitForServer(origin1, 90000);
 
@@ -723,6 +746,7 @@ async function main() {
     // original signed token's 60-second lifetime before the latency section.
     const latencyGuest = await connectRoomWs({ supabaseUrl, anonKey: stackEnv.ANON_KEY, origin: origin2, roomId: room2.roomId, cookie: guest2Cookie });
     wsClients.push(latencyGuest.client);
+    latencyGuest.pauseRenewal(); // this section renews manually, outside measured operations
     const latenciesMs = [];
     let latencyAuthRenewals = 0, lastRenewedAt = performance.now();
     let currentVersion = 7;
