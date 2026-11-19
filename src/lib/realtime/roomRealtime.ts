@@ -22,13 +22,16 @@ export class RoomRealtimeError extends Error {
   readonly code: RealtimeFailureCode;
   readonly status?: number;
   readonly permanent: boolean;
+  /** Server-requested pause (`Retry-After`), honoured by the retry schedules. */
+  readonly retryAfterMs?: number;
 
-  constructor(code: RealtimeFailureCode, message: string, details: { status?: number; permanent?: boolean } = {}) {
+  constructor(code: RealtimeFailureCode, message: string, details: { status?: number; permanent?: boolean; retryAfterMs?: number } = {}) {
     super(message);
     this.name = "RoomRealtimeError";
     this.code = code;
     this.status = details.status;
     this.permanent = details.permanent ?? false;
+    this.retryAfterMs = details.retryAfterMs;
   }
 }
 
@@ -115,6 +118,8 @@ function defaultEnvironment(): RealtimeEnvironment {
 /** Smallest gap between two scheduled rotations, so no token can ever cause a rotation storm. */
 const MIN_ROTATION_INTERVAL_MS = 5000;
 const FALLBACK_LIFETIME_MS = 60000;
+/** Longest server-requested pause the client will honour. */
+const MAX_RETRY_AFTER_MS = 60000;
 
 /**
  * Decodes only the token's LIFETIME (`exp - iat`) for scheduling. It is never trusted for authorization and
@@ -199,6 +204,8 @@ export async function startRoomRealtime(options: {
   let fetching: Promise<void> | null = null;
   let currentToken = "";
   let tokenExpiresAt = 0;
+  let tokenFetchedAt = 0;
+  let tokenLifetimeMs = 0;
   let tokenRenewAt = 0;
   let renewFailures = 0;
   let syncFailures = 0;
@@ -241,7 +248,10 @@ export async function startRoomRealtime(options: {
     if (PERMANENT_HTTP_STATUS.has(response.status)) {
       throw new RoomRealtimeError("UNAUTHORIZED", "Realtime capability was refused", { status: response.status, permanent: true });
     }
-    if (!response.ok) throw new RoomRealtimeError("TOKEN_REQUEST_FAILED", "Realtime capability request failed", { status: response.status });
+    if (!response.ok) {
+      const retryAfterMs = Math.min(MAX_RETRY_AFTER_MS, Number(response.headers?.get("retry-after")) * 1000 || 0) || undefined;
+      throw new RoomRealtimeError("TOKEN_REQUEST_FAILED", "Realtime capability request failed", { status: response.status, retryAfterMs });
+    }
     let body: { token?: unknown };
     try { body = await response.json() as { token?: unknown }; } catch { body = {}; }
     if (typeof body.token !== "string" || body.token.length === 0) throw new RoomRealtimeError("TOKEN_INVALID", "Invalid realtime capability");
@@ -249,13 +259,18 @@ export async function startRoomRealtime(options: {
   }
 
   /** Single flight: concurrent requests (heartbeat, recovery, wake-up) share one token request. */
-  function loadToken(): Promise<void> {
+  function loadToken(options: { reuseIfFresh?: boolean } = {}): Promise<void> {
+    // Recovery may try to join many times during an outage; a capability that is still in the first half of its
+    // life is reused so the token endpoint (rate limited per guest, e.g. 12/min) is not hammered (CINE-021 limits).
+    if (options.reuseIfFresh && currentToken && env.now() < tokenFetchedAt + tokenLifetimeMs / 2) return Promise.resolve();
     if (fetching) return fetching;
     fetching = (async () => {
       const token = await fetchToken();
       currentToken = token;
       const fetchedAt = env.now();
       const lifetime = readTokenLifetimeMs(token);
+      tokenFetchedAt = fetchedAt;
+      tokenLifetimeMs = lifetime;
       tokenExpiresAt = fetchedAt + lifetime;
       // Rotate at about half the lifetime (L-005), never more often than MIN_ROTATION_INTERVAL_MS.
       tokenRenewAt = fetchedAt + Math.max(MIN_ROTATION_INTERVAL_MS, lifetime / 2);
@@ -428,7 +443,7 @@ export async function startRoomRealtime(options: {
     try {
       while (!closed && !terminal) {
         try {
-          await loadToken();
+          await loadToken({ reuseIfFresh: true });
           const slot = await joinNewSlot();
           if (closed || terminal) { disposeSlot(slot); return; }
           active = slot;
@@ -441,7 +456,7 @@ export async function startRoomRealtime(options: {
           attempt++;
           report(error);
           setStatus(attempt >= tuning.degradedAfterAttempts ? "degraded" : "reconnecting");
-          await sleep(backoff(attempt));
+          await sleep(Math.max(backoff(attempt), error instanceof RoomRealtimeError ? error.retryAfterMs ?? 0 : 0));
         }
       }
     } finally {
@@ -486,7 +501,7 @@ export async function startRoomRealtime(options: {
         if (closed || terminal) return;
         if (isPermanent(error)) { terminate(error); return; }
         renewFailures++;
-        tokenRenewAt = env.now() + backoff(renewFailures);
+        tokenRenewAt = env.now() + Math.max(backoff(renewFailures), error instanceof RoomRealtimeError ? error.retryAfterMs ?? 0 : 0);
         report(error);
         // The ACTIVE channel dies at ITS token's deadline, not at the (newer) token that failed to join.
         if (env.now() >= (active?.expiresAt ?? tokenExpiresAt)) setStatus("degraded");

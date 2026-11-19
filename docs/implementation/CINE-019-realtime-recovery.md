@@ -26,6 +26,7 @@ Scope: client state and concurrency only (`src/lib/realtime/**`). The publisher,
 | Hint ahead of the snapshot | Bounded retry (5), then left to the poll. |
 | Snapshot failure | Retried with backoff instead of waiting for the next poll; 401/403/404/410 are permanent. |
 | Stale channel callbacks | Ignored: a disposed slot is marked `dead`, so late `SUBSCRIBED`/`CLOSED`/hints from it do nothing. `close()` and a permanent failure dispose every slot, including a join still in flight. |
+| Token endpoint budget | The capability endpoint may be rate limited per guest (CINE-021 proposes 12/min). Recovery reuses a capability that is still in the first half of its life instead of fetching one per join attempt (at most about one fetch per half-life even during a long outage), and a `Retry-After` (capped at 60 s) on a refused token request delays the next attempt of both rotation and recovery. |
 | Wake-up bursts | `focus`, `visibilitychange`, `pageshow` and `online` are coalesced to one resync per second. |
 
 `startRoomRealtime` keeps its signature and returns a callable close handle that also exposes `resync()`,

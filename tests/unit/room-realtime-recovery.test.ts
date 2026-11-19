@@ -77,7 +77,7 @@ interface Rig {
   clients: FakeClient[];
   channels: FakeChannel[];
   authTokens: string[];
-  server: { tokenSkewMs: number; version: number; snapshotFailures: number; tokenStatus: number; tokenFailures: number; snapshotStatus: number; behindOnce: number };
+  server: { tokenRetryAfter: number; tokenSkewMs: number; version: number; snapshotFailures: number; tokenStatus: number; tokenFailures: number; snapshotStatus: number; behindOnce: number };
   delivered: number[];
   errors: RoomRealtimeError[];
   statuses: RealtimeStatus[];
@@ -92,7 +92,7 @@ function makeRig(subscribeScript: string[][] = []): Rig {
   const channels: FakeChannel[] = [];
   const clients: FakeClient[] = [];
   const authTokens: string[] = [];
-  const server = { version: 1, snapshotFailures: 0, tokenStatus: 200, tokenFailures: 0, snapshotStatus: 200, behindOnce: 0, tokenSkewMs: 0 };
+  const server = { version: 1, snapshotFailures: 0, tokenStatus: 200, tokenFailures: 0, snapshotStatus: 200, behindOnce: 0, tokenSkewMs: 0, tokenRetryAfter: 0 };
   let tokens = 0;
   let snapshots = 0;
   const script = [...subscribeScript];
@@ -116,7 +116,7 @@ function makeRig(subscribeScript: string[][] = []): Rig {
     if (url.endsWith("/realtime-token")) {
       tokens++;
       if (server.tokenFailures > 0) { server.tokenFailures--; throw new TypeError("network down"); }
-      if (server.tokenStatus !== 200) return new Response("{}", { status: server.tokenStatus });
+      if (server.tokenStatus !== 200) return new Response("{}", { status: server.tokenStatus, headers: server.tokenRetryAfter ? { "retry-after": String(server.tokenRetryAfter) } : {} });
       return new Response(JSON.stringify({ token: jwt(clock.now() + server.tokenSkewMs) }), { status: 200 });
     }
     snapshots++;
@@ -163,7 +163,7 @@ describe("CINE-019 realtime recovery", () => {
     await rig.clock.advance(0);
     expect(rig.channels).toHaveLength(2);
     expect(first.removed).toBe(true);
-    expect(rig.tokenRequests()).toBe(2); // renewed before resubscribing (a late setAuth cannot revive a closed channel)
+    expect(rig.tokenRequests()).toBe(1); // the capability was still fresh, so it is reused (token budget); the channel is replaced regardless
     expect(rig.delivered).toEqual([1, 4]);
     expect(rig.statuses).toEqual(["live", "reconnecting", "live"]); // "connecting" is the initial state, not an event
     first.hint({ roomId: ROOM, version: 9 }); // stale channel: ignored
@@ -173,7 +173,7 @@ describe("CINE-019 realtime recovery", () => {
     await rig.clock.advance(0);
     expect(rig.delivered).toEqual([1, 4]);
     expect(rig.channels).toHaveLength(2);
-    expect(rig.tokenRequests()).toBe(2);
+    expect(rig.tokenRequests()).toBe(1);
     await handle();
   });
 
@@ -415,6 +415,52 @@ describe("CINE-019 realtime recovery", () => {
     rig.clock.wake("online"); // coalesced
     await rig.clock.advance(0);
     expect(rig.channels.length).toBeGreaterThan(before);
+    await handle();
+  });
+
+  it("keeps the token endpoint within a small budget during a long outage by reusing a fresh capability", async () => {
+    const failures = Array.from({ length: 40 }, () => ["CHANNEL_ERROR"]);
+    const rig = makeRig([["SUBSCRIBED"], ...failures]);
+    const handle = await start(rig);
+    expect(rig.tokenRequests()).toBe(1);
+    rig.channels[0].emit("CLOSED");
+    await rig.clock.advance(28000); // many join attempts, all inside the first half of the token's life
+    expect(rig.channels.length).toBeGreaterThanOrEqual(6);
+    expect(rig.tokenRequests()).toBe(1);
+    await rig.clock.advance(60000);
+    // About one refresh per half-life, never one per attempt (per-guest limit is 12 requests/minute).
+    expect(rig.tokenRequests()).toBeLessThanOrEqual(5);
+    await handle();
+  });
+
+  it("fetches a new capability for recovery once the previous one is past half its life (stale token)", async () => {
+    const rig = makeRig();
+    const handle = await start(rig);
+    rig.server.tokenFailures = 3; // rotation cannot refresh the token...
+    await rig.clock.advance(29000);
+    rig.channels[0].emit("CLOSED"); // ...but the channel dies at 29 s of a 60 s token (fresh enough)
+    await rig.clock.advance(0);
+    const afterFresh = rig.tokenRequests();
+    await rig.clock.advance(6000); // now >30 s old: the next recovery attempt must fetch
+    expect(rig.tokenRequests()).toBeGreaterThan(afterFresh);
+    await rig.clock.advance(20000);
+    await handle();
+  });
+
+  it("honours Retry-After from a rate-limited token endpoint for rotation and recovery", async () => {
+    const rig = makeRig();
+    const handle = await start(rig);
+    rig.server.tokenStatus = 429;
+    rig.server.tokenRetryAfter = 20;
+    await rig.clock.advance(31000); // rotation attempt at ~30 s is refused
+    const afterFirst = rig.tokenRequests();
+    expect(afterFirst).toBe(2);
+    await rig.clock.advance(15000); // still inside the requested pause
+    expect(rig.tokenRequests()).toBe(afterFirst);
+    rig.server.tokenStatus = 200;
+    await rig.clock.advance(8000); // pause over
+    expect(rig.tokenRequests()).toBeGreaterThan(afterFirst);
+    expect(handle.status()).toBe("live");
     await handle();
   });
 
