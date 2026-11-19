@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dispatchPendingEvents, PermanentPublicationError } from "@/lib/server/realtime/dispatch";
+import { dispatchPendingEvents, PermanentPublicationError, PublicationDeferredError } from "@/lib/server/realtime/dispatch";
 
 describe("outbox dispatch", () => {
   it("sends only room and version in order and marks after publication", async () => {
@@ -35,5 +35,17 @@ describe("outbox dispatch", () => {
     await dispatchPendingEvents("room-a", store, async () => { throw new Error("provider unavailable"); });
     await dispatchPendingEvents("room-a", store, async () => { throw new PermanentPublicationError(); });
     expect(failures).toEqual([false, true]);
+  });
+  it("keeps a deferred event pending without recording a failure or sending later versions", async () => {
+    const steps: string[] = [];
+    const sent = await dispatchPendingEvents("room-a", {
+      withRoomLock: async (_room, work) => work({
+        pending: async () => [{ id: "a", version: 1 }, { id: "b", version: 2 }],
+        markDispatched: async (id) => { steps.push(`marked:${id}`); },
+        recordFailure: async (id) => { steps.push(`failed:${id}`); },
+      }),
+    }, async (hint) => { steps.push(`send:${hint.version}`); throw new PublicationDeferredError(); });
+    expect(sent).toBe(false);
+    expect(steps).toEqual(["send:1"]);
   });
 });

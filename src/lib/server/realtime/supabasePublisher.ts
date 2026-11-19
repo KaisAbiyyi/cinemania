@@ -1,7 +1,11 @@
 import "server-only";
-import { PermanentPublicationError, PublicationAuthorizationError, type RoomHint } from "./dispatch";
+import { PermanentPublicationError, PublicationAuthorizationError, PublicationDeferredError, type RoomHint } from "./dispatch";
 
 const AUTHORIZATION_COOLDOWN_MS = 60_000;
+// After a timeout, reset or 5xx, stop probing for a few seconds. Each in-flight send holds a pooled
+// database connection inside the outbox lock; against a hanging provider and a 2-connection
+// session-pool budget, unbounded probing would queue ordinary requests behind provider timeouts.
+const PROVIDER_UNAVAILABLE_COOLDOWN_MS = 5_000;
 
 /** Server-only factory: callers must keep the key outside client bundles. */
 export function createSupabasePublisher(projectUrl: string, secret: string, send: typeof fetch = fetch) {
@@ -20,14 +24,17 @@ export function createSupabasePublisher(projectUrl: string, secret: string, send
     throw new Error("Invalid Supabase broadcast configuration");
   }
   let authorizationCooldownUntil = 0;
+  let providerUnavailableUntil = 0;
   let nextOutageReport = 0;
   function reportOutage(status?: number) {
+    providerUnavailableUntil = Date.now() + PROVIDER_UNAVAILABLE_COOLDOWN_MS;
     if (Date.now() < nextOutageReport) return;
     nextOutageReport = Date.now() + AUTHORIZATION_COOLDOWN_MS;
     console.warn("[CINEMATCH_REALTIME_UNAVAILABLE] Check provider connectivity and pending outbox age.", status ?? "transport");
   }
   return async (hint: RoomHint): Promise<void> => {
     if (Date.now() < authorizationCooldownUntil) throw new PublicationAuthorizationError();
+    if (Date.now() < providerUnavailableUntil) throw new PublicationDeferredError();
     const topic = encodeURIComponent(`room:${hint.roomId}`);
     const endpoint = new URL(`/realtime/v1/api/broadcast/${topic}/events/room_changed?private=true`, base);
     let response: Response;

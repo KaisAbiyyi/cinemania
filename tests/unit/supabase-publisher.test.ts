@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createSupabasePublisher } from "@/lib/server/realtime/supabasePublisher";
-import { PublicationAuthorizationError } from "@/lib/server/realtime/dispatch";
+import { PermanentPublicationError, PublicationAuthorizationError, PublicationDeferredError } from "@/lib/server/realtime/dispatch";
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
@@ -56,4 +56,36 @@ it("accepts explicitly enabled loopback HTTP only outside production", () => {
   vi.stubEnv("NODE_ENV", "production");
   expect(() => createSupabasePublisher("http://127.0.0.1:54321", "key")).toThrow();
   expect(() => createSupabasePublisher("https://project.supabase.co", "key")).not.toThrow();
+});
+
+it.each([500, 503, "timeout"] as const)("defers further sends for 5s after provider outage (%s) without a second request", async fault => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const send = vi.fn(async () => {
+    if (fault === "timeout") throw new DOMException("timed out", "TimeoutError");
+    return new Response(null, { status: fault });
+  });
+  const publish = createSupabasePublisher("https://exampleproject.supabase.co", "synthetic-key", send as unknown as typeof fetch);
+  const hint = { roomId: "synthetic-room", version: 1 };
+  await expect(publish(hint)).rejects.not.toBeInstanceOf(PublicationDeferredError);
+  await expect(publish(hint)).rejects.toBeInstanceOf(PublicationDeferredError);
+  await expect(publish({ roomId: "another-room", version: 9 })).rejects.toBeInstanceOf(PublicationDeferredError);
+  expect(send).toHaveBeenCalledTimes(1);
+  clock.mockReturnValue(15_001);
+  await expect(publish(hint)).rejects.not.toBeInstanceOf(PublicationDeferredError);
+  expect(send).toHaveBeenCalledTimes(2);
+});
+
+it("does not enter the outage cooldown for success or permanent rejection", async () => {
+  vi.spyOn(Date, "now").mockReturnValue(10_000);
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  let status = 202;
+  const send = vi.fn(async () => new Response(null, { status }));
+  const publish = createSupabasePublisher("https://exampleproject.supabase.co", "synthetic-key", send as unknown as typeof fetch);
+  await publish({ roomId: "r", version: 1 });
+  status = 413;
+  await expect(publish({ roomId: "r", version: 2 })).rejects.toBeInstanceOf(PermanentPublicationError);
+  status = 202;
+  await publish({ roomId: "r", version: 2 });
+  expect(send).toHaveBeenCalledTimes(3);
 });
