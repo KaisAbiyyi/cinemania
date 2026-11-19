@@ -4,11 +4,13 @@ import type { NextConfig } from "next";
 // bootstrap scripts need a nonce-based policy that is a separate, tested change. `frame-ancestors`
 // is the only CSP directive set, so nothing the app loads or embeds (TMDB images, YouTube embeds)
 // is restricted; these headers only stop *this* app being framed or MIME-sniffed.
+// Referrer-Policy is applied to pages only: API responses already send the stricter `no-referrer`
+// (guestResponse.ts) and a route-level config header would silently override it.
+export const pageReferrerPolicy = { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" };
 export const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
-  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()" },
 ];
 
@@ -16,7 +18,10 @@ const nextConfig: NextConfig = {
   /* config options here */
   trailingSlash: false,
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      { source: "/((?!api/).*)", headers: [pageReferrerPolicy] },
+    ];
   },
   env: {
     NEXT_PUBLIC_TMDB_POSTER_URL: process.env.NEXT_PUBLIC_TMDB_POSTER_URL || "https://image.tmdb.org/t/p",

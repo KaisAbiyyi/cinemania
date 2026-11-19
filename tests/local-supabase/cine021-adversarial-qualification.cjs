@@ -514,10 +514,26 @@ async function main() {
       return JSON.stringify(out).slice(0, 300);
     });
 
-    await check("S6b XSS response hardening: security headers on pages and error bodies", async () => {
-      const r = await fetch(`${A}/`, { redirect: "manual" });
-      const h = Object.fromEntries(r.headers.entries());
-      return `page headers: x-content-type-options=${h["x-content-type-options"] ?? "-"} x-frame-options=${h["x-frame-options"] ?? "-"} csp=${h["content-security-policy"] ? "set" : "unset"} referrer-policy=${h["referrer-policy"] ?? "-"}`;
+    await check("S6b response hardening headers on pages, 404 and API (success + error) responses", async () => {
+      const room = await makeRoom(A, "Hdr");
+      const probes = [
+        ["page /", await fetch(`${A}/`, { redirect: "manual" })],
+        ["404 page", await fetch(`${A}/definitely-not-a-route-${crypto.randomBytes(4).toString("hex")}`, { redirect: "manual" })],
+        ["API 401", await fetch(`${A}/api/rooms/${randomUuid()}`)],
+        ["API 200", await fetch(`${A}/api/rooms/${room.roomId}`, { headers: { cookie: room.cookie } })],
+      ];
+      const apiPolicies = [];
+      for (const [label, r] of probes) {
+        assert.equal((r.headers.get("x-content-type-options") || "").toLowerCase(), "nosniff", label + " nosniff");
+        assert.equal((r.headers.get("x-frame-options") || "").toUpperCase(), "DENY", label + " x-frame-options");
+        assert.match(r.headers.get("content-security-policy") || "", /frame-ancestors 'none'/, label + " frame-ancestors");
+        assert.match(r.headers.get("permissions-policy") || "", /geolocation=()/, label + " permissions-policy");
+        if (label.startsWith("API")) apiPolicies.push(r.headers.get("referrer-policy"));
+        else assert.equal(r.headers.get("referrer-policy"), "strict-origin-when-cross-origin", label + " referrer-policy");
+      }
+      assert.deepEqual(apiPolicies, ["no-referrer", "no-referrer"], "API keeps stricter no-referrer: " + JSON.stringify(apiPolicies));
+      assert.equal(probes[3][1].status, 200);
+      return "pages: strict-origin-when-cross-origin; API: no-referrer; nosniff/DENY/frame-ancestors on all 4 probes";
     });
 
     // ───────────────────────── S7 payload abuse ─────────────────────────
@@ -668,6 +684,7 @@ async function main() {
         };
         const mine = await read(`room:${a.roomId}`);
         const theirs = await read(`room:${b.roomId}`);
+        assert(mine.includes(`room:${a.roomId}`), "positive control failed: A cannot read its own topic rows");
         assert(!theirs.includes(`room:${b.roomId}`), "A could read B topic rows: " + JSON.stringify(theirs));
         return `policies=${pol.length}; A-visible-on-A=${mine.length}; A-visible-on-B=${theirs.length}`;
       } finally { await c.end(); }
