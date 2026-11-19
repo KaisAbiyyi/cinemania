@@ -297,6 +297,23 @@ describe("CINE-019 reconnect, duplicate request and stale-tab resilience (API + 
     });
   });
 
+  it("scopes idempotency per room and actor: the same operationId never collides across participants or rooms", async () => {
+    const first = await setupStartedRoom(2);
+    const second = await setupStartedRoom(2);
+    for (const room of [first, second]) {
+      const card = room.deck[0]!;
+      const responses = await Promise.all(
+        room.cookies.map((cookie) => vote(room.roomId, cookie, { roundId: room.roundId, candidateId: card.candidateId, movieId: card.movieId, vote: "LIKE", operationId: "shared-op" }))
+      );
+      expect(responses.map((r) => r.status)).toEqual([200, 200]);
+      const bodies = await Promise.all(responses.map((r) => r.json()));
+      expect(bodies.map((b) => b.idempotentReplay)).toEqual([false, false]);
+    }
+    inspect(sqlitePath, (db) => {
+      expect(count(db, "SELECT COUNT(*) AS c FROM votes WHERE operation_id = 'shared-op';")).toBe(4);
+    });
+  });
+
   it("keeps the room authoritative when many tabs hit snapshots, votes and the realtime capability at once", async () => {
     const { roomId, roundId, deck, cookies } = await setupStartedRoom(3);
     const card0 = deck[0]!;

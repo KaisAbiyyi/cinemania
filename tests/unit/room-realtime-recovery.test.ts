@@ -187,6 +187,22 @@ describe("CINE-019 realtime recovery", () => {
     await handle();
   });
 
+  it("keeps retrying throughout a 90 s outage and is live again as soon as the service returns", async () => {
+    const failures = Array.from({ length: 12 }, () => ["CHANNEL_ERROR"]);
+    const rig = makeRig([["SUBSCRIBED"], ...failures, ["SUBSCRIBED"]]);
+    const handle = await start(rig);
+    rig.channels[0].emit("CLOSED");
+    await rig.clock.advance(60000);
+    // Backoff is capped (10 s), so a 90 s reconnect window always contains many attempts.
+    expect(rig.channels.length).toBeGreaterThanOrEqual(10);
+    expect(handle.status()).toBe("degraded");
+    await rig.clock.advance(30000);
+    expect(rig.channels).toHaveLength(14);
+    expect(handle.status()).toBe("live");
+    expect(rig.delivered).toEqual([1]);
+    await handle();
+  });
+
   it("treats a subscription that never answers as a failure and retries", async () => {
     const rig = makeRig([["SUBSCRIBED"], [], ["SUBSCRIBED"]]);
     const handle = await start(rig);

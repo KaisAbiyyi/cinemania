@@ -846,11 +846,16 @@ async function main() {
   }
 }
 
-main()
-  .catch((error) => {
-    console.error("Two-instance qualification failed:", error);
-    process.exitCode = 1;
-  })
-  .finally(() => {
-    process.exit(process.exitCode ?? 0);
-  });
+// CINE-019 reuses these process helpers; requiring this file must not run the qualification.
+module.exports = { writeHermeticTmdbPreload, waitForServer, spawnNextInstance, stopChild, spawnWorker, waitForWorker, extractCookieHeader };
+
+if (require.main === module) {
+  main()
+    .catch((error) => {
+      console.error("Two-instance qualification failed:", error);
+      process.exitCode = 1;
+    })
+    .finally(() => {
+      process.exit(process.exitCode ?? 0);
+    });
+}
