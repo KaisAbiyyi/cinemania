@@ -45,6 +45,7 @@ it("validates a per-pool override and changes the cached pool fingerprint", () =
 
 it.each([
   new Error("EMAXCONNSESSION: synthetic internal details"),
+  new Error("timeout exceeded when trying to connect"),
   Object.assign(new Error("synthetic internal details"), { code: "53300" }),
 ])("returns a privacy-preserving busy response when PostgreSQL is at capacity", async error => {
   const log = vi.spyOn(console, "warn").mockImplementation(() => {});
