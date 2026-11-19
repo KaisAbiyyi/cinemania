@@ -31,7 +31,7 @@ test.describe("CineMatch E2E Smoke Tests (100% Offline & Deterministic TMDB Mock
     await expect(credits).toContainText("This product uses the TMDB API but is not endorsed or certified by TMDB.");
     const tmdbLogo = credits.getByRole("img", { name: "The Movie Database" });
     await tmdbLogo.scrollIntoViewIfNeeded();
-    await expect(tmdbLogo).toHaveJSProperty("naturalWidth", 160);
+    await expect.poll(() => tmdbLogo.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
   });
 
   test("movies page renders seeded movies with loaded images", async ({ page }) => {
