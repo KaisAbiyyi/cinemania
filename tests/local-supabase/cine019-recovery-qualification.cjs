@@ -164,7 +164,7 @@ async function main() {
   const preloadPath = path.join(tempRoot, "tmdb-offline-preload.cjs");
   const tarPath = path.join(tempRoot, "app.tar");
 
-  const db = new Client(hosted ? hosted.pgConfig : { host: "127.0.0.1", port: 55432, user: "supabase_admin", password: stackEnv.POSTGRES_PASSWORD, database: "postgres", connectionTimeoutMillis: 5000 });
+  const db = new Client(hosted ? { ...hosted.pgConfig, connectionTimeoutMillis: 30000 } : { host: "127.0.0.1", port: 55432, user: "supabase_admin", password: stackEnv.POSTGRES_PASSWORD, database: "postgres", connectionTimeoutMillis: 5000 });
   const evidence = { skipped: [], appCommit, environment: hosted ? `hosted staging ${hosted.project} (synthetic data)` : "local Docker (GH-52 stack, synthetic data)", startedAt: new Date().toISOString(), scenarios: [] };
   const createdRoomIds = [];
   const writeEvidence = () => {
