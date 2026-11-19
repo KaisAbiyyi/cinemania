@@ -527,10 +527,25 @@ async function main() {
           patch(origin2, host.cookie, `/api/rooms/${room.roomId}/filters`, { sort_by: "vote_average.desc" }),
           late,
         ]);
-        const statuses = [s1.status, s2.status, s3.status].sort();
-        assert.equal(statuses.filter((s) => s === 200).length, 1, `exactly one start wins, got ${statuses}`);
-        assert(statuses.every((s) => s === 200 || s === 409), `losers must be 409, got ${statuses}`);
-        const counts = await dbCounts(room.roomId);
+        const results = [s1, s2, s3];
+        const codes = await Promise.all(results.map(async (r) => (r.status === 200 ? 200 : `${r.status}:${String((await r.clone().json().catch(() => ({}))).error ?? "?")}`)));
+        const wins = results.filter((r) => r.status === 200).length;
+        // Invariants (order-independent, so they hold at local and hosted latencies): never more than one start wins and
+        // every loser is a plain 409. Zero winners is legitimate: the host's concurrent filter edit can commit before any
+        // start takes the room lock, and the server rejects a start whose lobby filter changed underneath it.
+        assert(wins <= 1, `at most one start may win, got ${codes}`);
+        assert(results.every((r) => r.status === 200 || r.status === 409), `losers must be 409, got ${codes}`);
+        let counts = await dbCounts(room.roomId);
+        assert.equal(counts.rounds, wins, "rounds created equals winning starts");
+        let retried = false;
+        if (wins === 0) {
+          assert.equal(filterRes.status, 200, `no start won, so the filter edit must have: ${codes}`);
+          assert.equal((await db.query("SELECT status FROM public.rooms WHERE id=$1", [room.roomId])).rows[0].status, "LOBBY");
+          const retry = await post(origin1, host.cookie, `/api/rooms/${room.roomId}/start`, {});
+          assert.equal(retry.status, 200, "a deliberate retry after the filter edit starts the round");
+          retried = true;
+          counts = await dbCounts(room.roomId);
+        }
         assert.equal(counts.rounds, 1);
         const joined = joinRes.status === 200;
         assert.equal(counts.frozen, counts.participants, "frozen quorum equals the roster at start");
@@ -538,7 +553,7 @@ async function main() {
         assert([200, 409].includes(filterRes.status));
         const cand = await db.query("SELECT count(*)::int n FROM public.candidates WHERE room_id=$1", [room.roomId]);
         assert.equal(cand.rows[0].n, 20);
-        outcomes.push({ starts: statuses, filter: filterRes.status, lateJoin: joinRes.status, quorum: counts.frozen });
+        outcomes.push({ starts: codes, retried, filter: filterRes.status, lateJoin: joinRes.status, quorum: counts.frozen });
       }
       return { outcomes };
     });
