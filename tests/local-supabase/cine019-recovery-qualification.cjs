@@ -76,6 +76,31 @@ function startProxy() {
   })));
 }
 
+/**
+ * Hosted staging only: the project's session pooler allows 15 sessions in total (EMAXCONNSESSION) while each Next
+ * route bundle builds its own pg Pool (max 10). This preload, injected into the app processes of the HARNESS only,
+ * clamps every pg Pool to 3 connections with a 2 s idle timeout so the two-instance topology fits the budget.
+ * Product code is untouched; the clamp is recorded in the evidence.
+ */
+function writePoolClampPreload(filePath) {
+  fs.writeFileSync(filePath, `"use strict";
+const Module = require("node:module");
+const originalLoad = Module._load;
+const CLAMP_MAX = 3;
+Module._load = function (request, parent, isMain) {
+  const loaded = originalLoad.apply(this, arguments);
+  if (/^pg(-[0-9a-f]+)?$/.test(request) && loaded && loaded.Pool && !loaded.__cine019Clamped) {
+    const NativePool = loaded.Pool;
+    const ClampedPool = class extends NativePool {
+      constructor(config) { super({ ...(config || {}), max: Math.min((config && config.max) || 10, CLAMP_MAX), idleTimeoutMillis: 2000 }); }
+    };
+    try { loaded.Pool = ClampedPool; Object.defineProperty(loaded, "__cine019Clamped", { value: true }); } catch { /* frozen export */ }
+  }
+  return loaded;
+};
+`, "utf8");
+}
+
 /** In-process network fault injection for TLS endpoints: closes live sockets and fails new ones until restored. */
 function installWebSocketFaults() {
   const Native = globalThis.WebSocket;
@@ -171,6 +196,8 @@ async function main() {
       fs.cpSync(inst1Dir, inst2Dir, { recursive: true });
     } else { log("reusing prepared copy", tempRoot); evidence.nonQualifying = "prepared copy reused via --keep-dir; not verified against --app-commit"; }
     base.writeHermeticTmdbPreload(preloadPath, hostedHostname);
+    const poolClampPath = path.join(tempRoot, "pg-pool-clamp-preload.cjs");
+    if (hosted) { writePoolClampPreload(poolClampPath); evidence.hostedTopology = { sessionPoolerLimit: 15, appPoolMax: 3, appPoolIdleMs: 2000, workers: 1, maxRequestsInFlight: 4, appInstances: 2 }; }
     const bundleRoot = debugClientFromWorktree ? REPO_ROOT : inst1Dir;
     const clientCjs = bundleClient(bundleRoot, tempRoot, "cjs", "node", "node");
     const clientIife = bundleClient(bundleRoot, tempRoot, "iife", "browser", "browser");
@@ -183,7 +210,7 @@ async function main() {
       SUPABASE_JWT_SECRET: stackEnv.JWT_SECRET, CINEMATCH_CAPABILITY_SECRET: capabilitySecret,
       TMDB_API_RAT: "synthetic-local-tmdb-rat", IPINFO_TOKEN: "synthetic-local-ipinfo", YOUTUBE_API_KEY: "synthetic-local-youtube",
       NEXT_PUBLIC_TMDB_POSTER_URL: "https://image.tmdb.org/t/p", NEXT_PUBLIC_IMAGE_BASE_URL: "https://image.tmdb.org/t/p",
-      NODE_OPTIONS: `--require ${preloadPath}`, ALLOW_DESTRUCTIVE_PG_TESTS: "false",
+      NODE_OPTIONS: `--require ${preloadPath}${hosted ? ` --require ${poolClampPath}` : ""}`, ALLOW_DESTRUCTIVE_PG_TESTS: "false",
       ...(hosted ? hosted.appEnv : {}),
     };
     origin1 = `http://127.0.0.1:${PORT_1}`;
