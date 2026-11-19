@@ -19,7 +19,7 @@ const fs = require("node:fs");
 const { spawn, execFileSync } = require("node:child_process");
 
 const REPO = path.resolve(__dirname, "../..");
-const { Client, Pool } = require(path.join(REPO, "node_modules", "pg"));
+const { Client } = require(path.join(REPO, "node_modules", "pg"));
 
 const CONTAINER = "cine021-isolated-adv";
 const PG_PORT = 55440;
@@ -158,7 +158,7 @@ const randomUuid = () => crypto.randomUUID();
 const randomCode = () => Array.from({ length: 6 }, () => "ABCDEFGHJKMNPQRSTUVWXYZ23456789"[crypto.randomInt(31)]).join("");
 
 function rawPost(port, p, headers, writeBody) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const req = http.request({ host: "127.0.0.1", port, path: p, method: "POST", headers, agent: false }, (res) => {
       let t = "";
       res.on("data", (d) => { t += d; });

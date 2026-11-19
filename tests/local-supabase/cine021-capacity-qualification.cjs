@@ -193,8 +193,7 @@ async function runTopology(apps) {
   for (const apps of TOPOLOGIES) {
     console.log(`--- topology: ${apps} app process(es) + 1 outbox worker, role limit ${LIMIT}`);
     const r = await runTopology(apps);
-    const { samples: _s, ...rest } = r; // eslint-disable-line no-unused-vars
-    console.log(JSON.stringify(rest));
+    console.log(JSON.stringify({ ...r, samples: undefined }));
     all.push(r);
   }
   const a = new Client(adminCfg()); await a.connect();
@@ -202,5 +201,5 @@ async function runTopology(apps) {
   const lim = (await a.query("SELECT rolconnlimit FROM pg_roles WHERE rolname='postgres'")).rows[0].rolconnlimit;
   await a.end();
   console.log(`Disposable databases remaining: ${left}; postgres role connection limit restored: ${lim}`);
-  fs.writeFileSync(path.join(process.env.CINE021_EVIDENCE_DIR || process.cwd(), "cine021-capacity-results.json"), JSON.stringify(all.map(({ samples, ...r }) => r), null, 2));
+  fs.writeFileSync(path.join(process.env.CINE021_EVIDENCE_DIR || process.cwd(), "cine021-capacity-results.json"), JSON.stringify(all.map((r) => ({ ...r, samples: undefined })), null, 2));
 })().catch((e) => { console.error("harness failure:", e && e.message); process.exitCode = 2; });
