@@ -8,6 +8,7 @@ import type {
   Candidate,
   Room,
   RoomParticipant,
+  Round,
   RoundParticipant,
   Vote,
   VoteType,
@@ -17,6 +18,10 @@ import { CapabilityAuthError } from "@/lib/server/auth/guestCapability";
 import { dispatchPendingEvents } from "@/lib/server/realtime/dispatch";
 import { postgresOutboxStore } from "@/lib/server/realtime/postgresOutbox";
 import { createSupabasePublisher } from "@/lib/server/realtime/supabasePublisher";
+import type {
+  GraceRoomSweepOutcome,
+  SyntheticClock,
+} from "./expiryWorker";
 import {
   PostgresRoomRepository,
   assertValidPgSchema,
@@ -32,9 +37,12 @@ import {
   type CreateRoomOptions,
   type LeaveLobbyResult,
   type RecordVoteResult,
+  type RetryRoundOptions,
+  type RetryRoundResult,
   type StartLobbyRoundOptions,
   type StartLobbyRoundResult,
   type UpdateDeckFilterResult,
+  type UpdatePresenceResult,
 } from "./roomRepository";
 
 export interface RoomMutationHooks {
@@ -113,6 +121,22 @@ export interface RecordVoteSessionResult extends RecordVoteResult {
   votes: Vote[];
 }
 
+export interface RetryRoundSessionOptions {
+  roomId: string;
+  actorParticipantId: string;
+  options: RetryRoundOptions;
+  verifyLockedSession?: (context: { room: Room; minGeneration: number }) => void;
+  beforeCommit?: (retried: RetryRoundResult) => void | Promise<void>;
+}
+
+export interface UpdatePresenceSessionOptions {
+  roomId: string;
+  participantId: string;
+  connected: boolean;
+  verifyLockedSession?: (context: { room: Room; minGeneration: number }) => void;
+  beforeCommit?: (updated: UpdatePresenceResult) => void | Promise<void>;
+}
+
 function assertSyncHookResult(value: unknown, hookName: string): void {
   if (value && typeof (value as PromiseLike<unknown>).then === "function") {
     throw new CapabilityAuthError(
@@ -135,6 +159,10 @@ export interface RoomAuthorityStore {
     options: UpdateRoomDeckFilterSessionOptions
   ): Promise<UpdateDeckFilterResult>;
   startLobbyRoundWithSession(options: StartLobbyRoundSessionOptions): Promise<StartLobbyRoundResult>;
+  retryExhaustedRoundWithSession(options: RetryRoundSessionOptions): Promise<RetryRoundResult>;
+  updateParticipantPresenceWithSession(
+    options: UpdatePresenceSessionOptions
+  ): Promise<UpdatePresenceResult>;
   recordVoteWithSession(options: RecordVoteSessionOptions): Promise<RecordVoteSessionResult>;
   getConsistentRoomSnapshot(
     roomId: string
@@ -144,8 +172,22 @@ export interface RoomAuthorityStore {
     roundParticipants: RoundParticipant[];
     candidates: Candidate[];
     votes: Vote[];
+    latestRound: Round | null;
   } | null>;
   getRoundParticipants(roomId: string, roundId: string): Promise<RoundParticipant[]>;
+  getLatestRound(roomId: string): Promise<Round | null>;
+  getNextRoundNumber(roomId: string): Promise<number>;
+  findActiveRooms(): Promise<Room[]>;
+  expireRoom(roomId: string, expectedVersion: number, expiredAt: string): Promise<boolean>;
+  purgeExpiredRooms(retentionBeforeIso: string): Promise<string[]>;
+  sweepRoomGraceTimeouts(
+    roomId: string,
+    options?: {
+      nowIso?: string;
+      graceSeconds?: number;
+      heartbeatStaleSeconds?: number;
+    }
+  ): Promise<GraceRoomSweepOutcome>;
   getRoomById(roomId: string): Promise<Room | null>;
   getRoomByCode(code: string): Promise<Room | null>;
   getParticipant(roomId: string, participantId: string): Promise<RoomParticipant | null>;
@@ -353,9 +395,12 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
     return rows.map((row) => row.version);
   }
 
-  constructor(db: DatabaseSync) {
+  constructor(db: DatabaseSync, options?: { clock?: SyntheticClock }) {
     this.db = db;
-    this.repo = new SqliteRoomRepository(db, { enforceMigrationAuthority: true });
+    this.repo = new SqliteRoomRepository(db, {
+      enforceMigrationAuthority: true,
+      clock: options?.clock,
+    });
   }
 
   async createRoom(options: CreateRoomOptions): Promise<{ room: Room; host: RoomParticipant }> {
@@ -463,6 +508,7 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
     roundParticipants: RoundParticipant[];
     candidates: Candidate[];
     votes: Vote[];
+    latestRound: Round | null;
   } | null> {
     return this.repo.getConsistentSnapshot(roomId);
   }
@@ -481,7 +527,10 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
         options.verifyLockedSession?.({ room, minGeneration });
       },
       afterLeave: (left) => {
-        if (left.roomClosed) {
+        const retainedHistoricalRow = left.participants.some(
+          (p) => p.participant_id.toLowerCase() === left.leftParticipantId.toLowerCase()
+        );
+        if (left.roomClosed || retainedHistoricalRow) {
           const rotatedAt = new Date().toISOString();
           this.db
             .prepare(
@@ -558,6 +607,95 @@ export class SqliteRoomAuthorityStore implements RoomAuthorityStore {
         },
       }
     );
+  }
+
+  async retryExhaustedRoundWithSession(
+    options: RetryRoundSessionOptions
+  ): Promise<RetryRoundResult> {
+    return this.repo.retryExhaustedRoundInTransaction(
+      options.roomId,
+      options.actorParticipantId,
+      {
+        options: options.options,
+        beforeRetryLocked: (room) => {
+          const row = this.db
+            .prepare(
+              "SELECT min_generation FROM guest_capability_sessions WHERE room_id = ? AND participant_id = ? LIMIT 1;"
+            )
+            .get(room.id, options.actorParticipantId) as unknown as
+            | { min_generation: number }
+            | undefined;
+          const minGeneration = row ? Number(row.min_generation) : 1;
+          options.verifyLockedSession?.({ room, minGeneration });
+        },
+        afterRetry: (retried) => {
+          if (options.beforeCommit) {
+            assertSyncHookResult(options.beforeCommit(retried), "beforeCommit");
+          }
+          return retried;
+        },
+      }
+    );
+  }
+
+  async updateParticipantPresenceWithSession(
+    options: UpdatePresenceSessionOptions
+  ): Promise<UpdatePresenceResult> {
+    return this.repo.updateParticipantPresenceInTransaction(
+      options.roomId,
+      options.participantId,
+      options.connected,
+      {
+        beforePresenceLocked: (room) => {
+          const row = this.db
+            .prepare(
+              "SELECT min_generation FROM guest_capability_sessions WHERE room_id = ? AND participant_id = ? LIMIT 1;"
+            )
+            .get(room.id, options.participantId) as unknown as
+            | { min_generation: number }
+            | undefined;
+          const minGeneration = row ? Number(row.min_generation) : 1;
+          options.verifyLockedSession?.({ room, minGeneration });
+        },
+        afterPresence: (updated) => {
+          if (options.beforeCommit) {
+            assertSyncHookResult(options.beforeCommit(updated), "beforeCommit");
+          }
+          return updated;
+        },
+      }
+    );
+  }
+
+  async getLatestRound(roomId: string): Promise<Round | null> {
+    return this.repo.getLatestRound(roomId);
+  }
+
+  async getNextRoundNumber(roomId: string): Promise<number> {
+    return this.repo.getNextRoundNumber(roomId);
+  }
+
+  async findActiveRooms(): Promise<Room[]> {
+    return this.repo.findActiveRooms();
+  }
+
+  async expireRoom(roomId: string, expectedVersion: number, expiredAt: string): Promise<boolean> {
+    return this.repo.expireRoom(roomId, expectedVersion, expiredAt);
+  }
+
+  async purgeExpiredRooms(retentionBeforeIso: string): Promise<string[]> {
+    return this.repo.purgeExpiredRooms(retentionBeforeIso);
+  }
+
+  async sweepRoomGraceTimeouts(
+    roomId: string,
+    options?: {
+      nowIso?: string;
+      graceSeconds?: number;
+      heartbeatStaleSeconds?: number;
+    }
+  ): Promise<GraceRoomSweepOutcome> {
+    return this.repo.sweepRoomGraceTimeouts(roomId, options);
   }
 
   async recordVoteWithSession(
@@ -731,7 +869,7 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     if (!sent) throw new Error("Realtime publication failed");
   }
 
-  constructor(pool: Pool, options?: { schema?: string }) {
+  constructor(pool: Pool, options?: { schema?: string; clock?: SyntheticClock }) {
     try {
       this.schema = assertValidPgSchema(options?.schema);
     } catch {
@@ -883,6 +1021,7 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
     roundParticipants: RoundParticipant[];
     candidates: Candidate[];
     votes: Vote[];
+    latestRound: Round | null;
   } | null> {
     return this.repo.getConsistentSnapshot(roomId);
   }
@@ -901,7 +1040,10 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
         options.verifyLockedSession?.({ room, minGeneration });
       },
       afterLeave: async (client, left) => {
-        if (left.roomClosed) {
+        const retainedHistoricalRow = left.participants.some(
+          (p) => p.participant_id.toLowerCase() === left.leftParticipantId.toLowerCase()
+        );
+        if (left.roomClosed || retainedHistoricalRow) {
           const rotatedAt = new Date().toISOString();
           await client.query(
             `INSERT INTO guest_capability_sessions (room_id, participant_id, min_generation, rotated_at, expires_at)
@@ -973,6 +1115,95 @@ export class PostgresRoomAuthorityStore implements RoomAuthorityStore {
         return started;
       },
     });
+  }
+
+  async retryExhaustedRoundWithSession(
+    options: RetryRoundSessionOptions
+  ): Promise<RetryRoundResult> {
+    return this.repo.retryExhaustedRoundInTransaction(
+      options.roomId,
+      options.actorParticipantId,
+      {
+        options: options.options,
+        beforeRetryLocked: async (client, room) => {
+          const genRes = await client.query(
+            "SELECT min_generation FROM guest_capability_sessions WHERE room_id = $1 AND participant_id = $2 LIMIT 1;",
+            [room.id, options.actorParticipantId]
+          );
+          const minGeneration =
+            genRes.rows.length > 0
+              ? Number((genRes.rows[0] as { min_generation: number }).min_generation)
+              : 1;
+          options.verifyLockedSession?.({ room, minGeneration });
+        },
+        afterRetry: async (_client, retried) => {
+          if (options.beforeCommit) {
+            await options.beforeCommit(retried);
+          }
+          return retried;
+        },
+      }
+    );
+  }
+
+  async updateParticipantPresenceWithSession(
+    options: UpdatePresenceSessionOptions
+  ): Promise<UpdatePresenceResult> {
+    return this.repo.updateParticipantPresenceInTransaction(
+      options.roomId,
+      options.participantId,
+      options.connected,
+      {
+        beforePresenceLocked: async (client, room) => {
+          const genRes = await client.query(
+            "SELECT min_generation FROM guest_capability_sessions WHERE room_id = $1 AND participant_id = $2 LIMIT 1;",
+            [room.id, options.participantId]
+          );
+          const minGeneration =
+            genRes.rows.length > 0
+              ? Number((genRes.rows[0] as { min_generation: number }).min_generation)
+              : 1;
+          options.verifyLockedSession?.({ room, minGeneration });
+        },
+        afterPresence: async (_client, updated) => {
+          if (options.beforeCommit) {
+            await options.beforeCommit(updated);
+          }
+          return updated;
+        },
+      }
+    );
+  }
+
+  async getLatestRound(roomId: string): Promise<Round | null> {
+    return this.repo.getLatestRound(roomId);
+  }
+
+  async getNextRoundNumber(roomId: string): Promise<number> {
+    return this.repo.getNextRoundNumber(roomId);
+  }
+
+  async findActiveRooms(): Promise<Room[]> {
+    return this.repo.findActiveRooms();
+  }
+
+  async expireRoom(roomId: string, expectedVersion: number, expiredAt: string): Promise<boolean> {
+    return this.repo.expireRoom(roomId, expectedVersion, expiredAt);
+  }
+
+  async purgeExpiredRooms(retentionBeforeIso: string): Promise<string[]> {
+    return this.repo.purgeExpiredRooms(retentionBeforeIso);
+  }
+
+  async sweepRoomGraceTimeouts(
+    roomId: string,
+    options?: {
+      nowIso?: string;
+      graceSeconds?: number;
+      heartbeatStaleSeconds?: number;
+    }
+  ): Promise<GraceRoomSweepOutcome> {
+    return this.repo.sweepRoomGraceTimeouts(roomId, options);
   }
 
   async recordVoteWithSession(

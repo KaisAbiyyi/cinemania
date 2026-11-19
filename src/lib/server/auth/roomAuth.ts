@@ -84,7 +84,8 @@ export async function requireRoomActor(
     throw new CapabilityAuthError(404, "ROOM_NOT_FOUND", "Room does not exist.");
   }
 
-  if (isRoomRecordExpired(room)) {
+  const evaluationNow = options.nowMs !== undefined ? new Date(options.nowMs) : new Date();
+  if (isRoomRecordExpired(room, evaluationNow)) {
     throw new CapabilityAuthError(410, "ROOM_EXPIRED", "Room session has expired.");
   }
 

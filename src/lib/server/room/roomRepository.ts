@@ -12,6 +12,7 @@ import {
   MIN_PARTICIPANTS,
   MAX_PARTICIPANTS,
   DEFAULT_INACTIVITY_TTL_SECONDS,
+  DEFAULT_RECONNECT_GRACE_SECONDS,
   DECK_SIZE,
 } from "@/db/schema";
 import { CapabilityAuthError } from "../auth/guestCapability";
@@ -22,11 +23,20 @@ import {
 } from "@/lib/schemas/roomDeck";
 import {
   assertValidTransition,
+  calculateGraceExpiryTimestamp,
   DeckEmptyError,
   isRoomRecordExpired,
+  RoomNotExhaustedError,
+  selectDeterministicHostSuccessor,
   validateStartRoundDeckBounds,
   validateStartRoundPrerequisites,
 } from "./stateMachine";
+import {
+  SystemClock,
+  type GraceRoomSweepOutcome,
+  type SyntheticClock,
+} from "./expiryWorker";
+import { evaluateGraceTimeoutPlan } from "./finishPolicy";
 import {
   DEFAULT_CODE_GENERATION_MAX_RETRIES,
   RoomCodeGenerationError,
@@ -52,6 +62,7 @@ export {
   ImmutableVoteError,
   MissingMigrationSchemaError,
   OperationConflictError,
+  RoomNotExhaustedError,
   VoterNotEligibleError,
   type DeckProgressionResult,
 };
@@ -111,6 +122,8 @@ export type RoomCapacityErrorCode =
   | "ROOM_ALREADY_MATCHED"
   | "ROOM_ALREADY_EXHAUSTED"
   | "ROOM_NOT_ACTIVE"
+  | "ROUND_CANCELLED"
+  | "ROUND_CONFLICT"
   | "LOBBY_LEAVE_CLOSED"
   | "FILTER_LOCKED"
   | "DECK_FILTER_CONFLICT";
@@ -127,7 +140,34 @@ export interface StartLobbyRoundOptions {
   candidates: CandidateInput[];
   deckFilter?: CanonicalRoomDeckFilter;
   expectedLobbyFilterJson?: string | null;
+  expectedRoundNumber?: number;
   deckSeed?: string;
+}
+
+export interface RetryRoundOptions {
+  deckFilter?: CanonicalRoomDeckFilter;
+  startRound?: boolean;
+  candidates?: CandidateInput[];
+  deckSeed?: string;
+  expectedRoundId?: string | null;
+  expectedRoundNumber?: number;
+  operationId?: string | null;
+}
+
+export interface RetryRoundResult {
+  room: Room;
+  participants: RoomParticipant[];
+  round: Round | null;
+  frozenParticipants: RoundParticipant[];
+  candidates: Candidate[];
+  idempotentReplay: boolean;
+}
+
+export interface UpdatePresenceResult {
+  room: Room;
+  participants: RoomParticipant[];
+  participant: RoomParticipant;
+  changed: boolean;
 }
 
 export interface StartLobbyRoundResult {
@@ -209,6 +249,29 @@ export function normalizeSqliteRoom(row: Record<string, unknown>): Room {
   };
 }
 
+export function normalizeSqliteParticipant(row: Record<string, unknown>): RoomParticipant {
+  return {
+    room_id: String(row.room_id),
+    participant_id: String(row.participant_id),
+    display_name: String(row.display_name),
+    role: row.role as RoomParticipant["role"],
+    is_connected: Boolean(row.is_connected),
+    joined_at: String(row.joined_at),
+    last_seen_at: String(row.last_seen_at),
+  };
+}
+
+export function normalizeSqliteRound(row: Record<string, unknown>): Round {
+  return {
+    id: String(row.id),
+    room_id: String(row.room_id),
+    round_number: Number(row.round_number),
+    status: row.status as Round["status"],
+    started_at: String(row.started_at),
+    completed_at: row.completed_at !== null && row.completed_at !== undefined ? String(row.completed_at) : null,
+  };
+}
+
 export function normalizeSqliteCandidate(row: Record<string, unknown>): Candidate {
   return {
     id: String(row.id),
@@ -285,17 +348,24 @@ export class DuplicateVoteError extends Error {
 
 export interface SqliteRepositoryOptions {
   enforceMigrationAuthority?: boolean;
+  clock?: SyntheticClock;
 }
 
 export class SqliteRoomRepository {
   private readonly db: DatabaseSync;
   private readonly enforceMigrationAuthority: boolean;
+  private readonly clock: SyntheticClock;
 
   constructor(db: DatabaseSync, options?: SqliteRepositoryOptions) {
     this.db = db;
     this.enforceMigrationAuthority = Boolean(
       options?.enforceMigrationAuthority || process.env.NODE_ENV === "production"
     );
+    this.clock = options?.clock ?? new SystemClock();
+  }
+
+  private now(): Date {
+    return this.clock.now();
   }
 
   private runInImmediateTransaction<T>(fn: () => T): T {
@@ -318,7 +388,7 @@ export class SqliteRoomRepository {
     const roomId = crypto.randomUUID();
     const hostParticipantId = options.hostParticipantId || crypto.randomUUID();
     const ttlSeconds = options.inactivityTtlSeconds || DEFAULT_INACTIVITY_TTL_SECONDS;
-    const now = new Date();
+    const now = this.now();
     const nowIso = now.toISOString();
     const expiresAt = new Date(now.getTime() + ttlSeconds * 1000).toISOString();
 
@@ -405,7 +475,7 @@ export class SqliteRoomRepository {
     displayName: string,
     beforeJoinLocked?: (room: Room) => void
   ): { room: Room; participant: RoomParticipant; rejoined: boolean } {
-    const now = new Date();
+    const now = this.now();
     const nowIso = now.toISOString();
 
     const room = this.getRoomById(roomId);
@@ -418,13 +488,15 @@ export class SqliteRoomRepository {
     beforeJoinLocked?.(room);
 
     // 1. Idempotency check FIRST (ADR-003): return existing participant on retry/reconnect
-    const existing = this.db
+    const existingRow = this.db
       .prepare(
         `SELECT * FROM room_participants WHERE room_id = ? AND participant_id = ?`
       )
-      .get(roomId, participantId) as unknown as RoomParticipant | undefined;
+      .get(roomId, participantId) as Record<string, unknown> | undefined;
 
-    if (existing) {
+    if (existingRow) {
+      const existing = normalizeSqliteParticipant(existingRow);
+      const wasDisconnected = !existing.is_connected;
       // Update last_seen_at and renew activity
       const newExpiresAt = new Date(now.getTime() + room.inactivity_ttl_seconds * 1000).toISOString();
       this.db
@@ -432,11 +504,28 @@ export class SqliteRoomRepository {
           `UPDATE room_participants SET last_seen_at = ?, is_connected = 1 WHERE room_id = ? AND participant_id = ?`
         )
         .run(nowIso, roomId, participantId);
-      this.db
-        .prepare(
-          `UPDATE rooms SET last_activity_at = ?, expires_at = ?, updated_at = ? WHERE id = ?`
-        )
-        .run(nowIso, newExpiresAt, nowIso, roomId);
+
+      if (wasDisconnected) {
+        const nextVersion = room.state_version + 1;
+        this.db
+          .prepare(
+            `UPDATE rooms SET state_version = ?, last_activity_at = ?, expires_at = ?, updated_at = ? WHERE id = ?`
+          )
+          .run(nextVersion, nowIso, newExpiresAt, nowIso, roomId);
+        this.db
+          .prepare(
+            `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+             VALUES (?, ?, 'PARTICIPANT_RECONNECTED', ?, 0, 0, 0, ?)`
+          )
+          .run(roomId, nextVersion, JSON.stringify({ participantId }), nowIso);
+      } else {
+        this.db
+          .prepare(
+            `UPDATE rooms SET last_activity_at = ?, expires_at = ?, updated_at = ? WHERE id = ?`
+          )
+          .run(nowIso, newExpiresAt, nowIso, roomId);
+      }
+
       const updatedRoom = this.getRoomById(roomId)!;
       const updatedParticipant = this.getParticipant(roomId, participantId)!;
       return {
@@ -655,7 +744,7 @@ export class SqliteRoomRepository {
     participantId: string,
     beforeLeaveLocked?: (room: Room) => void
   ): LeaveLobbyResult {
-    const now = new Date();
+    const now = this.now();
     const nowIso = now.toISOString();
 
     const room = this.getRoomById(roomId);
@@ -687,7 +776,17 @@ export class SqliteRoomRepository {
     }
 
     const participants = this.getParticipantsByRoom(roomId);
-    if (participants.length <= 1) {
+    const hasVotes = Boolean(
+      this.db
+        .prepare(`SELECT 1 FROM votes WHERE room_id = ? AND participant_id = ? LIMIT 1;`)
+        .get(roomId, participantId)
+    );
+    const remaining = participants.filter(
+      (p) => p.participant_id.toLowerCase() !== participantId.toLowerCase()
+    );
+    const remainingConnected = remaining.filter((p) => Boolean(p.is_connected));
+
+    if (participants.length <= 1 || remainingConnected.length === 0) {
       assertValidTransition(room.status, "EXPIRED", "Last participant left lobby");
       const nextVersion = room.state_version + 1;
 
@@ -728,16 +827,26 @@ export class SqliteRoomRepository {
       };
     }
 
-    const remaining = participants.filter(
-      (p) => p.participant_id.toLowerCase() !== participantId.toLowerCase()
-    );
     const wasHost =
       room.host_participant_id?.toLowerCase() === participantId.toLowerCase();
-    const nextHost = wasHost ? remaining[0] ?? null : null;
+    const nextHost = wasHost
+      ? selectDeterministicHostSuccessor(participants, participantId, {
+          requireConnected: true,
+        })
+      : null;
 
-    this.db
-      .prepare(`DELETE FROM room_participants WHERE room_id = ? AND participant_id = ?;`)
-      .run(roomId, participantId);
+    if (hasVotes) {
+      // Preserve immutable round votes by keeping participant row disconnected rather than CASCADE-deleting votes.
+      this.db
+        .prepare(
+          `UPDATE room_participants SET is_connected = 0, role = 'MEMBER', last_seen_at = ? WHERE room_id = ? AND participant_id = ?;`
+        )
+        .run(nowIso, roomId, participantId);
+    } else {
+      this.db
+        .prepare(`DELETE FROM room_participants WHERE room_id = ? AND participant_id = ?;`)
+        .run(roomId, participantId);
+    }
 
     if (nextHost) {
       this.db
@@ -753,6 +862,7 @@ export class SqliteRoomRepository {
       now.getTime() + room.inactivity_ttl_seconds * 1000
     ).toISOString();
     const nextHostId = nextHost ? nextHost.participant_id : room.host_participant_id;
+    const nextParticipantCount = hasVotes ? participants.length : remaining.length;
 
     this.db
       .prepare(
@@ -763,7 +873,7 @@ export class SqliteRoomRepository {
       )
       .run(
         nextHostId,
-        remaining.length,
+        nextParticipantCount,
         finalVersion,
         nowIso,
         newExpiresAt,
@@ -781,7 +891,7 @@ export class SqliteRoomRepository {
         leaveVersion,
         JSON.stringify({
           displayName: participant.display_name,
-          participantCount: remaining.length,
+          participantCount: nextParticipantCount,
           hostTransferred: Boolean(nextHost),
         }),
         nowIso
@@ -798,7 +908,7 @@ export class SqliteRoomRepository {
           finalVersion,
           JSON.stringify({
             newHostDisplayName: nextHost.display_name,
-            participantCount: remaining.length,
+            participantCount: nextParticipantCount,
           }),
           nowIso
         );
@@ -841,7 +951,7 @@ export class SqliteRoomRepository {
     deckFilter: CanonicalRoomDeckFilter,
     beforeUpdateLocked?: (room: Room) => void
   ): UpdateDeckFilterResult {
-    const now = new Date();
+    const now = this.now();
     const nowIso = now.toISOString();
 
     const room = this.getRoomById(roomId);
@@ -887,6 +997,10 @@ export class SqliteRoomRepository {
     const newExpiresAt = new Date(
       now.getTime() + room.inactivity_ttl_seconds * 1000
     ).toISOString();
+
+    this.db
+      .prepare(`UPDATE room_participants SET last_seen_at = ?, is_connected = 1 WHERE room_id = ? AND participant_id = ?;`)
+      .run(nowIso, roomId, actorParticipantId);
 
     this.db
       .prepare(
@@ -946,7 +1060,7 @@ export class SqliteRoomRepository {
     beforeStartLocked?: (room: Room) => void,
     options?: StartLobbyRoundOptions
   ): StartLobbyRoundResult {
-    const now = new Date();
+    const now = this.now();
     const nowIso = now.toISOString();
 
     const room = this.getRoomById(roomId);
@@ -982,9 +1096,15 @@ export class SqliteRoomRepository {
     }
 
     if (room.status !== "LOBBY") {
+      const statusCode =
+        room.status === "MATCHED"
+          ? "ROOM_ALREADY_MATCHED"
+          : room.status === "EXHAUSTED"
+            ? "ROOM_ALREADY_EXHAUSTED"
+            : "ROOM_ALREADY_ACTIVE";
       throw new RoomCapacityError(
         `Cannot start round: room status is '${room.status}', but must be 'LOBBY'.`,
-        "ROOM_ALREADY_ACTIVE"
+        statusCode
       );
     }
 
@@ -997,15 +1117,21 @@ export class SqliteRoomRepository {
       );
     }
 
-    if (participants.length < MIN_PARTICIPANTS) {
+    const connectedParticipants = participants.filter(
+      (p) =>
+        Boolean(p.is_connected) ||
+        p.participant_id.toLowerCase() === actor.participant_id.toLowerCase()
+    );
+
+    if (connectedParticipants.length < MIN_PARTICIPANTS) {
       throw new RoomCapacityError(
-        `Cannot start round: at least ${MIN_PARTICIPANTS} participants required (current: ${participants.length}).`,
+        `Cannot start round: at least ${MIN_PARTICIPANTS} participants required (current: ${connectedParticipants.length}).`,
         "INSUFFICIENT_PARTICIPANTS"
       );
     }
-    if (participants.length > MAX_PARTICIPANTS) {
+    if (connectedParticipants.length > MAX_PARTICIPANTS) {
       throw new RoomCapacityError(
-        `Cannot start round: maximum allowed participants is ${MAX_PARTICIPANTS} (current: ${participants.length}).`,
+        `Cannot start round: maximum allowed participants is ${MAX_PARTICIPANTS} (current: ${connectedParticipants.length}).`,
         "ROOM_FULL"
       );
     }
@@ -1020,18 +1146,35 @@ export class SqliteRoomRepository {
       }
     }
 
+    const maxRoundRow = this.db
+      .prepare(`SELECT COALESCE(MAX(round_number), 0) AS max_round FROM rounds WHERE room_id = ?;`)
+      .get(roomId) as unknown as { max_round: number } | undefined;
+    const roundNumber = Number(maxRoundRow?.max_round ?? 0) + 1;
+
+    if (
+      options?.expectedRoundNumber !== undefined &&
+      roundNumber !== options.expectedRoundNumber
+    ) {
+      throw new RoomCapacityError(
+        `Round sequence changed before start (expected ${options.expectedRoundNumber}, current next ${roundNumber}).`,
+        "ROUND_CONFLICT"
+      );
+    }
+
     const candidatesInput = options?.candidates;
     if (!Array.isArray(candidatesInput)) {
       throw new DeckEmptyError(
         "Cannot start active round without validated deck candidates."
       );
     }
-    assertValidUniqueRoundCandidates(participants.length, candidatesInput);
+    assertValidUniqueRoundCandidates(connectedParticipants.length, candidatesInput);
 
-    const maxRoundRow = this.db
-      .prepare(`SELECT COALESCE(MAX(round_number), 0) AS max_round FROM rounds WHERE room_id = ?;`)
-      .get(roomId) as unknown as { max_round: number } | undefined;
-    const roundNumber = Number(maxRoundRow?.max_round ?? 0) + 1;
+    this.db
+      .prepare(
+        `UPDATE room_participants SET last_seen_at = ?, is_connected = 1 WHERE room_id = ? AND participant_id = ?;`
+      )
+      .run(nowIso, roomId, actor.participant_id);
+
     const roundId = crypto.randomUUID();
 
     this.db
@@ -1045,7 +1188,7 @@ export class SqliteRoomRepository {
       `INSERT INTO round_participants (room_id, round_id, participant_id, frozen_role, joined_at, frozen_at)
        VALUES (?, ?, ?, ?, ?, ?);`
     );
-    for (const member of participants) {
+    for (const member of connectedParticipants) {
       insertFrozenStmt.run(
         roomId,
         roundId,
@@ -1122,8 +1265,8 @@ export class SqliteRoomRepository {
         JSON.stringify({
           roundId,
           roundNumber,
-          frozenQuorum: participants.length,
-          frozenParticipantIds: participants.map((p) => p.participant_id),
+          frozenQuorum: connectedParticipants.length,
+          frozenParticipantIds: connectedParticipants.map((p) => p.participant_id),
         }),
         nowIso
       );
@@ -1139,7 +1282,7 @@ export class SqliteRoomRepository {
         JSON.stringify({
           roundId,
           roundNumber,
-          frozenQuorum: participants.length,
+          frozenQuorum: connectedParticipants.length,
           deckSize: candidatesInput.length,
           expectedDeckSize: DECK_SIZE,
           isShortage: candidatesInput.length < DECK_SIZE,
@@ -1197,6 +1340,7 @@ export class SqliteRoomRepository {
     roundParticipants: RoundParticipant[];
     candidates: Candidate[];
     votes: Vote[];
+    latestRound: Round | null;
   } | null {
     this.db.exec("BEGIN;");
     try {
@@ -1206,6 +1350,7 @@ export class SqliteRoomRepository {
         return null;
       }
       const participants = this.getParticipantsByRoom(roomId);
+      const latestRound = this.getLatestRound(roomId);
       const roundParticipants = room.current_round_id
         ? this.getRoundParticipantsInternal(roomId, room.current_round_id)
         : [];
@@ -1216,7 +1361,7 @@ export class SqliteRoomRepository {
         ? this.getVotesByRound(room.current_round_id, roomId)
         : [];
       this.db.exec("COMMIT;");
-      return { room, participants, roundParticipants, candidates, votes };
+      return { room, participants, roundParticipants, candidates, votes, latestRound };
     } catch (err) {
       try {
         this.db.exec("ROLLBACK;");
@@ -1233,7 +1378,7 @@ export class SqliteRoomRepository {
    */
   startRound(roomId: string, candidates: CandidateInput[]): { round: Round; candidates: Candidate[]; room: Room } {
     const roundId = crypto.randomUUID();
-    const now = new Date();
+    const now = this.now();
     const nowIso = now.toISOString();
 
     this.db.exec("BEGIN IMMEDIATE;");
@@ -1349,7 +1494,7 @@ export class SqliteRoomRepository {
     options?: RecordVoteOptions,
     beforeVoteLocked?: (room: Room) => void
   ): RecordVoteResult {
-    const now = new Date();
+    const now = this.now();
     const nowIso = now.toISOString();
     const operationId = normalizeOperationId(options?.operationId, "operationId");
 
@@ -1369,6 +1514,13 @@ export class SqliteRoomRepository {
       throw new RoomExpiredError(`Room '${room.code}' has expired.`);
     }
     if (room.status === "LOBBY" || !room.current_round_id) {
+      const targetRound = roundId !== null ? this.getRoundById(roundId) : null;
+      if (targetRound && targetRound.room_id === roomId && targetRound.status === "CANCELLED") {
+        throw new RoomCapacityError(
+          `Round ${roundId} was cancelled after participant reconnect grace expired and returned to lobby.`,
+          "ROUND_CANCELLED"
+        );
+      }
       throw new RoomCapacityError(
         `Cannot record vote: room status is '${room.status}', round has not started.`,
         "ROOM_NOT_ACTIVE"
@@ -1429,6 +1581,10 @@ export class SqliteRoomRepository {
           );
         }
 
+        this.db
+          .prepare(`UPDATE room_participants SET last_seen_at = ?, is_connected = 1 WHERE room_id = ? AND participant_id = ?;`)
+          .run(nowIso, roomId, participantId);
+
         const allCandidates = this.getCandidatesByRound(targetRoundId, roomId);
         const allVotes = this.getVotesByRound(targetRoundId, roomId);
         const progression = evaluateDeckProgression(
@@ -1481,6 +1637,10 @@ export class SqliteRoomRepository {
           `Participant ${participantId} has already voted ${existingVote.vote} on candidate ${candidateId}.`
         );
       }
+
+      this.db
+        .prepare(`UPDATE room_participants SET last_seen_at = ?, is_connected = 1 WHERE room_id = ? AND participant_id = ?;`)
+        .run(nowIso, roomId, participantId);
 
       const allCandidates = this.getCandidatesByRound(targetRoundId, roomId);
       const allVotes = this.getVotesByRound(targetRoundId, roomId);
@@ -1578,6 +1738,10 @@ export class SqliteRoomRepository {
     const newExpiresAt = new Date(
       now.getTime() + room.inactivity_ttl_seconds * 1000
     ).toISOString();
+
+    this.db
+      .prepare(`UPDATE room_participants SET last_seen_at = ?, is_connected = 1 WHERE room_id = ? AND participant_id = ?;`)
+      .run(nowIso, roomId, participantId);
 
     let isMatched = false;
     let isExhausted = false;
@@ -1759,7 +1923,7 @@ export class SqliteRoomRepository {
         this.db.exec("COMMIT;");
         return false;
       }
-      if (room.status === "MATCHED" || room.status === "EXPIRED" || room.status === "EXHAUSTED") {
+      if (room.status === "EXPIRED") {
         this.db.exec("COMMIT;");
         return false;
       }
@@ -1783,13 +1947,25 @@ export class SqliteRoomRepository {
       assertValidTransition(room.status, "EXPIRED", "Room expired due to inactivity");
       const nextVersion = room.state_version + 1;
 
+      this.db
+        .prepare(
+          `UPDATE rounds
+           SET status = 'CANCELLED', completed_at = COALESCE(completed_at, ?)
+           WHERE room_id = ? AND status = 'ACTIVE';`
+        )
+        .run(expiredAt, roomId);
+
+      const nextExpiresAt =
+        new Date(room.expires_at).getTime() <= nowTime ? room.expires_at : expiredAt;
+
       const result = this.db
         .prepare(
           `UPDATE rooms
-           SET status = 'EXPIRED', state_version = ?, updated_at = ?
-           WHERE id = ? AND state_version = ? AND status NOT IN ('MATCHED', 'EXPIRED', 'EXHAUSTED')`
+           SET status = 'EXPIRED', current_round_id = NULL, state_version = ?,
+               expires_at = ?, updated_at = ?
+           WHERE id = ? AND state_version = ? AND status <> 'EXPIRED'`
         )
-        .run(nextVersion, expiredAt, roomId, expectedVersion);
+        .run(nextVersion, nextExpiresAt, expiredAt, roomId, expectedVersion);
 
       if (result.changes === 0) {
         this.db.exec("COMMIT;");
@@ -1801,7 +1977,16 @@ export class SqliteRoomRepository {
           `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
            VALUES (?, ?, 'ROOM_EXPIRED', ?, 0, 0, 0, ?)`
         )
-        .run(roomId, nextVersion, JSON.stringify({ expiredAt }), expiredAt);
+        .run(
+          roomId,
+          nextVersion,
+          JSON.stringify({
+            expiredAt,
+            reason: "INACTIVITY_TTL_EXPIRED",
+            previousStatus: room.status,
+          }),
+          expiredAt
+        );
 
       this.db.exec("COMMIT;");
       return true;
@@ -1811,11 +1996,654 @@ export class SqliteRoomRepository {
     }
   }
 
-  findActiveRooms(): Room[] {
+  /**
+   * Idempotently purges expired rooms past retention window while respecting
+   * the database retention trigger (status='EXPIRED' AND expires_at <= CURRENT_TIMESTAMP).
+   */
+  purgeExpiredRooms(retentionBeforeIso: string): string[] {
+    return this.runInImmediateTransaction(() => {
+      const deletedRows = this.db
+        .prepare(
+          `DELETE FROM rooms
+           WHERE status = 'EXPIRED'
+             AND julianday(expires_at) <= julianday(?)
+             AND julianday(expires_at) <= julianday('now')
+           RETURNING id;`
+        )
+        .all(retentionBeforeIso) as Array<{ id: string }>;
+      return deletedRows.map((row) => String(row.id));
+    });
+  }
+
+  /**
+   * Authoritatively evaluates and persists 90-second reconnect grace timeouts
+   * (deterministic host handoff + cancelling incomplete ACTIVE rounds back to LOBBY).
+   */
+  sweepRoomGraceTimeouts(
+    roomId: string,
+    options?: {
+      nowIso?: string;
+      graceSeconds?: number;
+      heartbeatStaleSeconds?: number;
+    }
+  ): GraceRoomSweepOutcome {
+    return this.runInImmediateTransaction(() => {
+      const now = options?.nowIso ? new Date(options.nowIso) : this.now();
+      const nowIso = now.toISOString();
+      const room = this.getRoomById(roomId);
+      if (!room) {
+        return {
+          roomId,
+          changed: false,
+          hostTransferred: false,
+          roundCancelled: false,
+          nextHostParticipantId: null,
+          timedOutParticipantIds: [],
+        };
+      }
+
+      const participants = this.getParticipantsByRoom(roomId);
+      const legacy001Mode = this.isLegacy001OnlySchema();
+      const eligibleVoterIds =
+        room.status === "ACTIVE" && room.current_round_id
+          ? this.resolveEligibleVoterIds(roomId, room.current_round_id, legacy001Mode)
+          : null;
+
+      const plan = evaluateGraceTimeoutPlan({
+        room,
+        participants,
+        eligibleVoterIds,
+        now,
+        graceSeconds: options?.graceSeconds,
+        heartbeatStaleSeconds: options?.heartbeatStaleSeconds,
+      });
+
+      if (!plan.changed) {
+        return {
+          roomId,
+          changed: false,
+          hostTransferred: false,
+          roundCancelled: false,
+          nextHostParticipantId: null,
+          timedOutParticipantIds: plan.timedOutParticipantIds,
+        };
+      }
+
+      const markDisconnectedStmt = this.db.prepare(
+        `UPDATE room_participants SET is_connected = 0, last_seen_at = ? WHERE room_id = ? AND participant_id = ?;`
+      );
+      for (const staleId of plan.staleConnectedParticipantIds) {
+        markDisconnectedStmt.run(plan.staleDisconnectTimestamps[staleId]!, roomId, staleId);
+      }
+
+      if (plan.nextHost) {
+        if (plan.previousHostParticipantId) {
+          this.db
+            .prepare(
+              `UPDATE room_participants SET role = 'MEMBER' WHERE room_id = ? AND participant_id = ?;`
+            )
+            .run(roomId, plan.previousHostParticipantId);
+        }
+        this.db
+          .prepare(
+            `UPDATE room_participants SET role = 'HOST' WHERE room_id = ? AND participant_id = ?;`
+          )
+          .run(roomId, plan.nextHost.participant_id);
+      }
+
+      if (plan.cancelRound && plan.cancelledRoundId) {
+        this.db
+          .prepare(
+            `UPDATE rounds SET status = 'CANCELLED', completed_at = ? WHERE id = ? AND room_id = ? AND status = 'ACTIVE';`
+          )
+          .run(nowIso, plan.cancelledRoundId, roomId);
+      }
+
+      const nextHostId = plan.nextHost ? plan.nextHost.participant_id : room.host_participant_id;
+      const nextCurrentRoundId = plan.cancelRound ? null : room.current_round_id;
+      this.db
+        .prepare(
+          `UPDATE rooms
+           SET status = ?, host_participant_id = ?, current_round_id = ?,
+               state_version = ?, updated_at = ?
+           WHERE id = ?;`
+        )
+        .run(
+          plan.nextRoomStatus,
+          nextHostId,
+          nextCurrentRoundId,
+          plan.nextStateVersion,
+          nowIso,
+          roomId
+        );
+
+      const insertEventStmt = this.db.prepare(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES (?, ?, ?, ?, 0, 0, 0, ?);`
+      );
+      for (const evt of plan.events) {
+        insertEventStmt.run(roomId, evt.version, evt.eventType, JSON.stringify(evt.payload), nowIso);
+      }
+
+      return {
+        roomId,
+        changed: true,
+        hostTransferred: Boolean(plan.nextHost),
+        roundCancelled: plan.cancelRound,
+        nextHostParticipantId: plan.nextHost?.participant_id ?? null,
+        timedOutParticipantIds: plan.timedOutParticipantIds,
+      };
+    });
+  }
+
+  private updateParticipantPresenceCore(
+    roomId: string,
+    participantId: string,
+    connected: boolean,
+    beforePresenceLocked?: (room: Room) => void
+  ): UpdatePresenceResult {
+    const now = this.now();
+    const nowIso = now.toISOString();
+    const room = this.getRoomById(roomId);
+    if (!room) {
+      throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
+    }
+    if (isRoomRecordExpired(room, now)) {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+
+    beforePresenceLocked?.(room);
+
+    const participant = this.getParticipant(roomId, participantId);
+    if (!participant) {
+      throw new CapabilityAuthError(
+        403,
+        "PARTICIPANT_NOT_IN_ROOM",
+        "Guest is not a member of this room."
+      );
+    }
+
+    const wasConnected = Boolean(participant.is_connected);
+    this.db
+      .prepare(
+        `UPDATE room_participants
+         SET is_connected = ?, last_seen_at = ?
+         WHERE room_id = ? AND participant_id = ?;`
+      )
+      .run(connected ? 1 : 0, nowIso, roomId, participantId);
+
+    if (wasConnected !== connected && (room.status === "LOBBY" || room.status === "ACTIVE")) {
+      const nextVersion = room.state_version + 1;
+      if (connected) {
+        const newExpiresAt = new Date(
+          now.getTime() + room.inactivity_ttl_seconds * 1000
+        ).toISOString();
+        this.db
+          .prepare(
+            `UPDATE rooms
+             SET state_version = ?, last_activity_at = ?, expires_at = ?, updated_at = ?
+             WHERE id = ?;`
+          )
+          .run(nextVersion, nowIso, newExpiresAt, nowIso, roomId);
+        this.db
+          .prepare(
+            `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+             VALUES (?, ?, 'PARTICIPANT_RECONNECTED', ?, 0, 0, 0, ?);`
+          )
+          .run(roomId, nextVersion, JSON.stringify({ participantId }), nowIso);
+      } else {
+        const graceExpiresAt = calculateGraceExpiryTimestamp(
+          now,
+          DEFAULT_RECONNECT_GRACE_SECONDS
+        ).toISOString();
+        this.db
+          .prepare(
+            `UPDATE rooms
+             SET state_version = ?, updated_at = ?
+             WHERE id = ?;`
+          )
+          .run(nextVersion, nowIso, roomId);
+        this.db
+          .prepare(
+            `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+             VALUES (?, ?, 'PARTICIPANT_DISCONNECTED', ?, 0, 0, 0, ?);`
+          )
+          .run(
+            roomId,
+            nextVersion,
+            JSON.stringify({
+              participantId,
+              reason: "CLIENT_DISCONNECT",
+              graceSeconds: DEFAULT_RECONNECT_GRACE_SECONDS,
+              graceExpiresAt,
+            }),
+            nowIso
+          );
+      }
+
+      return {
+        room: this.getRoomById(roomId)!,
+        participants: this.getParticipantsByRoom(roomId),
+        participant: this.getParticipant(roomId, participantId)!,
+        changed: true,
+      };
+    }
+
+    if (connected && room.status !== "EXPIRED") {
+      const newExpiresAt = new Date(
+        now.getTime() + room.inactivity_ttl_seconds * 1000
+      ).toISOString();
+      this.db
+        .prepare(
+          `UPDATE rooms
+           SET last_activity_at = ?, expires_at = ?, updated_at = ?
+           WHERE id = ?;`
+        )
+        .run(nowIso, newExpiresAt, nowIso, roomId);
+    }
+
+    return {
+      room: this.getRoomById(roomId)!,
+      participants: this.getParticipantsByRoom(roomId),
+      participant: this.getParticipant(roomId, participantId)!,
+      changed: wasConnected !== connected,
+    };
+  }
+
+  updateParticipantPresence(
+    roomId: string,
+    participantId: string,
+    connected: boolean
+  ): UpdatePresenceResult {
+    return this.runInImmediateTransaction(() =>
+      this.updateParticipantPresenceCore(roomId, participantId, connected)
+    );
+  }
+
+  updateParticipantPresenceInTransaction<T>(
+    roomId: string,
+    participantId: string,
+    connected: boolean,
+    callbacks: {
+      beforePresenceLocked?: (room: Room) => void;
+      afterPresence: (updated: UpdatePresenceResult) => T;
+    }
+  ): T {
+    return this.runInImmediateTransaction(() => {
+      const updated = this.updateParticipantPresenceCore(
+        roomId,
+        participantId,
+        connected,
+        callbacks.beforePresenceLocked
+      );
+      return callbacks.afterPresence(updated);
+    });
+  }
+
+  private findReplayRetryEvent(roomId: string, operationId: string): {
+    event_type: string;
+    payload: Record<string, unknown>;
+  } | null {
     const rows = this.db
       .prepare(
-        `SELECT * FROM rooms WHERE status NOT IN ('MATCHED', 'EXHAUSTED', 'EXPIRED')`
+        `SELECT event_type, payload FROM room_events
+         WHERE room_id = ? AND event_type IN ('ROUND_RETRY_LOBBY', 'ROUND_STARTED')
+         ORDER BY version DESC;`
       )
+      .all(roomId) as unknown as Array<{ event_type: string; payload: string }>;
+
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(String(row.payload));
+        if (parsed && typeof parsed === "object" && parsed.operationId === operationId) {
+          return {
+            event_type: String(row.event_type),
+            payload: parsed as Record<string, unknown>,
+          };
+        }
+      } catch {
+        // ignore malformed event payload
+      }
+    }
+    return null;
+  }
+
+  private retryExhaustedRoundCore(
+    roomId: string,
+    actorParticipantId: string,
+    options: RetryRoundOptions = {},
+    beforeRetryLocked?: (room: Room) => void
+  ): RetryRoundResult {
+    const now = this.now();
+    const nowIso = now.toISOString();
+    const operationId = normalizeOperationId(options.operationId, "operationId");
+
+    const room = this.getRoomById(roomId);
+    if (!room) {
+      throw new RoomNotFoundError(`Room ${roomId} does not exist.`);
+    }
+    if (isRoomRecordExpired(room, now)) {
+      throw new RoomExpiredError(`Room '${room.code}' has expired.`);
+    }
+
+    beforeRetryLocked?.(room);
+
+    const actor = this.getParticipant(roomId, actorParticipantId);
+    if (!actor) {
+      throw new CapabilityAuthError(
+        403,
+        "PARTICIPANT_NOT_IN_ROOM",
+        "Guest is not a member of this room."
+      );
+    }
+
+    const authoritativeIsHost =
+      actor.role === "HOST" &&
+      room.host_participant_id?.toLowerCase() === actor.participant_id.toLowerCase();
+    if (!authoritativeIsHost) {
+      throw new CapabilityAuthError(
+        403,
+        "HOST_ONLY_ACTION",
+        "Only the room host can perform this action."
+      );
+    }
+
+    const startRound = Boolean(options.startRound);
+
+    if (operationId !== null) {
+      const prior = this.findReplayRetryEvent(roomId, operationId);
+      if (prior) {
+        const priorStart = prior.event_type === "ROUND_STARTED";
+        const expectedFilterJson = options.deckFilter
+          ? canonicalSerializeDeckFilter(options.deckFilter)
+          : null;
+        const priorFilterJson =
+          prior.payload.deckFilter && typeof prior.payload.deckFilter === "object"
+            ? canonicalSerializeDeckFilter(prior.payload.deckFilter as CanonicalRoomDeckFilter)
+            : null;
+        if (priorStart !== startRound || (expectedFilterJson && priorFilterJson !== expectedFilterJson)) {
+          throw new OperationConflictError(
+            `operationId '${operationId}' was already used for a different retry configuration.`
+          );
+        }
+
+        const participants = this.getParticipantsByRoom(roomId);
+        if (!priorStart || !room.current_round_id) {
+          return {
+            room,
+            participants,
+            round: null,
+            frozenParticipants: [],
+            candidates: [],
+            idempotentReplay: true,
+          };
+        }
+        return {
+          room,
+          participants,
+          round: this.getRoundById(room.current_round_id),
+          frozenParticipants: this.getRoundParticipantsInternal(roomId, room.current_round_id),
+          candidates: this.getCandidatesByRound(room.current_round_id, roomId),
+          idempotentReplay: true,
+        };
+      }
+    }
+
+    if (room.status !== "EXHAUSTED") {
+      throw new RoomNotExhaustedError(
+        `Cannot retry room: room status is '${room.status}', but must be 'EXHAUSTED'.`
+      );
+    }
+
+    if (
+      options.expectedRoundId !== undefined &&
+      options.expectedRoundId !== room.current_round_id
+    ) {
+      throw new RoomCapacityError(
+        "Exhausted round changed before retry could execute.",
+        "ROUND_CONFLICT"
+      );
+    }
+
+    const resolvedDeckFilter = options.deckFilter ?? resolveEffectiveRoomDeckFilter(room.deck_filter);
+    const serializedFilter = JSON.stringify(resolvedDeckFilter);
+    const newExpiresAt = new Date(
+      now.getTime() + room.inactivity_ttl_seconds * 1000
+    ).toISOString();
+
+    this.db
+      .prepare(
+        `UPDATE room_participants SET last_seen_at = ?, is_connected = 1 WHERE room_id = ? AND participant_id = ?;`
+      )
+      .run(nowIso, roomId, actor.participant_id);
+
+    if (!startRound) {
+      assertValidTransition(room.status, "LOBBY", "Returning exhausted room to lobby for retry");
+      const nextVersion = room.state_version + 1;
+      const previousRoundId = room.current_round_id;
+
+      this.db
+        .prepare(
+          `UPDATE rooms
+           SET status = 'LOBBY', current_round_id = NULL, matched_movie_id = NULL,
+               state_version = ?, deck_filter = ?, last_activity_at = ?, expires_at = ?, updated_at = ?
+           WHERE id = ?;`
+        )
+        .run(nextVersion, serializedFilter, nowIso, newExpiresAt, nowIso, roomId);
+
+      this.db
+        .prepare(
+          `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+           VALUES (?, ?, 'ROUND_RETRY_LOBBY', ?, 0, 0, 0, ?);`
+        )
+        .run(
+          roomId,
+          nextVersion,
+          JSON.stringify({
+            previousRoundId,
+            ...(options.deckFilter ? { deckFilter: resolvedDeckFilter } : {}),
+            ...(operationId ? { operationId } : {}),
+          }),
+          nowIso
+        );
+
+      return {
+        room: this.getRoomById(roomId)!,
+        participants: this.getParticipantsByRoom(roomId),
+        round: null,
+        frozenParticipants: [],
+        candidates: [],
+        idempotentReplay: false,
+      };
+    }
+
+    assertValidTransition(room.status, "ACTIVE", "Retrying exhausted room directly with new deck");
+    const participants = this.getParticipantsByRoom(roomId);
+    if (participants.length !== room.participant_count) {
+      throw new CapabilityAuthError(
+        500,
+        "SNAPSHOT_INCOHERENT",
+        `Incoherent room snapshot: participant_count (${room.participant_count}) does not match participant roster (${participants.length}).`
+      );
+    }
+
+    const connectedParticipants = participants.filter((p) => Boolean(p.is_connected));
+    if (connectedParticipants.length < MIN_PARTICIPANTS) {
+      throw new RoomCapacityError(
+        `Cannot start round: at least ${MIN_PARTICIPANTS} participants required (current: ${connectedParticipants.length}).`,
+        "INSUFFICIENT_PARTICIPANTS"
+      );
+    }
+    if (connectedParticipants.length > MAX_PARTICIPANTS) {
+      throw new RoomCapacityError(
+        `Cannot start round: maximum allowed participants is ${MAX_PARTICIPANTS} (current: ${connectedParticipants.length}).`,
+        "ROOM_FULL"
+      );
+    }
+
+    const candidatesInput = options.candidates;
+    if (!Array.isArray(candidatesInput)) {
+      throw new DeckEmptyError(
+        "Cannot start active round without validated deck candidates."
+      );
+    }
+    assertValidUniqueRoundCandidates(connectedParticipants.length, candidatesInput);
+
+    const maxRoundRow = this.db
+      .prepare(`SELECT COALESCE(MAX(round_number), 0) AS max_round FROM rounds WHERE room_id = ?;`)
+      .get(roomId) as unknown as { max_round: number } | undefined;
+    const roundNumber = Number(maxRoundRow?.max_round ?? 0) + 1;
+    if (
+      options.expectedRoundNumber !== undefined &&
+      roundNumber !== options.expectedRoundNumber
+    ) {
+      throw new RoomCapacityError(
+        `Round sequence changed before retry (expected ${options.expectedRoundNumber}, current next ${roundNumber}).`,
+        "ROUND_CONFLICT"
+      );
+    }
+
+    const previousRoundId = room.current_round_id;
+    const roundId = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO rounds (id, room_id, round_number, status, started_at)
+         VALUES (?, ?, ?, 'ACTIVE', ?);`
+      )
+      .run(roundId, roomId, roundNumber, nowIso);
+
+    const insertFrozenStmt = this.db.prepare(
+      `INSERT INTO round_participants (room_id, round_id, participant_id, frozen_role, joined_at, frozen_at)
+       VALUES (?, ?, ?, ?, ?, ?);`
+    );
+    for (const member of connectedParticipants) {
+      insertFrozenStmt.run(
+        roomId,
+        roundId,
+        member.participant_id,
+        member.role,
+        member.joined_at,
+        nowIso
+      );
+    }
+
+    const insertCandidateStmt = this.db.prepare(
+      `INSERT INTO candidates (
+        id, round_id, room_id, movie_id, position, title, poster_path, overview, release_date, vote_average
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+    );
+    for (let i = 0; i < candidatesInput.length; i += 1) {
+      const c = candidatesInput[i];
+      insertCandidateStmt.run(
+        crypto.randomUUID(),
+        roundId,
+        roomId,
+        c.movieId,
+        i,
+        c.title,
+        c.posterPath || null,
+        c.overview || null,
+        c.releaseDate || null,
+        c.voteAverage ?? null
+      );
+    }
+
+    const freezeVersion = room.state_version + 1;
+    const startVersion = room.state_version + 2;
+
+    this.db
+      .prepare(
+        `UPDATE rooms
+         SET status = 'ACTIVE', current_round_id = ?, matched_movie_id = NULL,
+             state_version = ?, deck_filter = ?, last_activity_at = ?, expires_at = ?, updated_at = ?
+         WHERE id = ?;`
+      )
+      .run(roundId, startVersion, serializedFilter, nowIso, newExpiresAt, nowIso, roomId);
+
+    this.db
+      .prepare(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES (?, ?, 'ROSTER_FROZEN', ?, 0, 0, 0, ?);`
+      )
+      .run(
+        roomId,
+        freezeVersion,
+        JSON.stringify({
+          roundId,
+          roundNumber,
+          frozenQuorum: connectedParticipants.length,
+          frozenParticipantIds: connectedParticipants.map((p) => p.participant_id),
+        }),
+        nowIso
+      );
+
+    this.db
+      .prepare(
+        `INSERT INTO room_events (room_id, version, event_type, payload, dispatched, retry_count, poison, created_at)
+         VALUES (?, ?, 'ROUND_STARTED', ?, 0, 0, 0, ?);`
+      )
+      .run(
+        roomId,
+        startVersion,
+        JSON.stringify({
+          roundId,
+          roundNumber,
+          previousRoundId,
+          retryFromExhausted: true,
+          frozenQuorum: connectedParticipants.length,
+          deckSize: candidatesInput.length,
+          expectedDeckSize: DECK_SIZE,
+          isShortage: candidatesInput.length < DECK_SIZE,
+          ...(options.deckFilter ? { deckFilter: resolvedDeckFilter } : {}),
+          ...(options.deckSeed ? { deckSeed: options.deckSeed } : {}),
+          ...(operationId ? { operationId } : {}),
+        }),
+        nowIso
+      );
+
+    return {
+      room: this.getRoomById(roomId)!,
+      participants: this.getParticipantsByRoom(roomId),
+      round: this.getRoundById(roundId)!,
+      frozenParticipants: this.getRoundParticipantsInternal(roomId, roundId),
+      candidates: this.getCandidatesByRound(roundId, roomId),
+      idempotentReplay: false,
+    };
+  }
+
+  retryExhaustedRound(
+    roomId: string,
+    actorParticipantId: string,
+    options?: RetryRoundOptions
+  ): RetryRoundResult {
+    return this.runInImmediateTransaction(() =>
+      this.retryExhaustedRoundCore(roomId, actorParticipantId, options)
+    );
+  }
+
+  retryExhaustedRoundInTransaction<T>(
+    roomId: string,
+    actorParticipantId: string,
+    callbacks: {
+      options: RetryRoundOptions;
+      beforeRetryLocked?: (room: Room) => void;
+      afterRetry: (retried: RetryRoundResult) => T;
+    }
+  ): T {
+    return this.runInImmediateTransaction(() => {
+      const retried = this.retryExhaustedRoundCore(
+        roomId,
+        actorParticipantId,
+        callbacks.options,
+        callbacks.beforeRetryLocked
+      );
+      return callbacks.afterRetry(retried);
+    });
+  }
+
+  findActiveRooms(): Room[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM rooms WHERE status <> 'EXPIRED'`)
       .all() as unknown as Array<Record<string, unknown>>;
     return rows.map(normalizeSqliteRoom);
   }
@@ -1830,24 +2658,42 @@ export class SqliteRoomRepository {
   getParticipant(roomId: string, participantId: string): RoomParticipant | null {
     const row = this.db
       .prepare(`SELECT * FROM room_participants WHERE room_id = ? AND participant_id = ?`)
-      .get(roomId, participantId);
-    return (row as unknown as RoomParticipant) || null;
+      .get(roomId, participantId) as Record<string, unknown> | undefined;
+    return row ? normalizeSqliteParticipant(row) : null;
   }
 
   getParticipantsByRoom(roomId: string): RoomParticipant[] {
     const rows = this.db
       .prepare(`SELECT * FROM room_participants WHERE room_id = ? ORDER BY joined_at ASC, participant_id ASC`)
-      .all(roomId);
-    return rows as unknown as RoomParticipant[];
+      .all(roomId) as unknown as Array<Record<string, unknown>>;
+    return rows.map(normalizeSqliteParticipant);
   }
 
   getRoundParticipants(roomId: string, roundId: string): RoundParticipant[] {
     return this.getRoundParticipantsInternal(roomId, roundId);
   }
 
+  getLatestRound(roomId: string): Round | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM rounds WHERE room_id = ? ORDER BY round_number DESC LIMIT 1;`
+      )
+      .get(roomId) as Record<string, unknown> | undefined;
+    return row ? normalizeSqliteRound(row) : null;
+  }
+
+  getNextRoundNumber(roomId: string): number {
+    const row = this.db
+      .prepare(`SELECT COALESCE(MAX(round_number), 0) AS max_round FROM rounds WHERE room_id = ?;`)
+      .get(roomId) as unknown as { max_round: number } | undefined;
+    return Number(row?.max_round ?? 0) + 1;
+  }
+
   getRoundById(id: string): Round | null {
-    const row = this.db.prepare(`SELECT * FROM rounds WHERE id = ?`).get(id);
-    return (row as unknown as Round) || null;
+    const row = this.db.prepare(`SELECT * FROM rounds WHERE id = ?`).get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? normalizeSqliteRound(row) : null;
   }
 
   getCandidatesByRound(roundId: string, roomId?: string): Candidate[] {
