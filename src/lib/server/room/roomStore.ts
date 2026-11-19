@@ -227,6 +227,17 @@ function isLoopbackHost(hostname: string): boolean {
   return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower === "[::1]";
 }
 
+function resolvePoolMax(host: string, port: number): number {
+  const configured = process.env.CINEMATCH_PG_POOL_MAX?.trim();
+  if (!configured) {
+    return host.toLowerCase().endsWith(".pooler.supabase.com") && port === 5432 ? 2 : 10;
+  }
+  if (!/^(?:[1-9]|10)$/.test(configured)) {
+    throw new CapabilityAuthError(500, "DATABASE_CONFIG_INVALID", "CINEMATCH_PG_POOL_MAX must be an integer from 1 to 10.");
+  }
+  return Number(configured);
+}
+
 /**
  * Resolves and validates PostgreSQL pool configuration from DATABASE_URL or SUPABASE_PG_*.
  * Returns null only when no PostgreSQL environment variables are configured.
@@ -262,9 +273,10 @@ export function resolvePostgresPoolConfig(): ResolvedPostgresConfig | null {
       sslMode !== "disable" &&
       (Boolean(caCert) || parsed.hostname.endsWith(".supabase.co") || parsed.hostname.endsWith(".supabase.com"));
 
+    const max = resolvePoolMax(parsed.hostname, Number(parsed.port || 5432));
     const poolConfig: PoolConfig = {
       connectionString: databaseUrl,
-      max: 10,
+      max,
       connectionTimeoutMillis: 10000,
       ...(shouldVerifyCa && caCert
         ? {
@@ -279,7 +291,7 @@ export function resolvePostgresPoolConfig(): ResolvedPostgresConfig | null {
           : {}),
     };
 
-    const fingerprint = crypto.createHash("sha256").update(`url:${databaseUrl}`).digest("hex");
+    const fingerprint = crypto.createHash("sha256").update(`url:${databaseUrl}:${max}`).digest("hex");
     return { poolConfig, source: "database_url", fingerprint };
   }
 
@@ -322,20 +334,21 @@ export function resolvePostgresPoolConfig(): ResolvedPostgresConfig | null {
         : { rejectUnauthorized: true, servername: pgHost };
     }
 
+    const max = resolvePoolMax(pgHost, pgPort);
     const poolConfig: PoolConfig = {
       host: pgHost,
       port: pgPort,
       user: pgUser,
       database: pgDatabase,
       password: pgPassword,
-      max: 10,
+      max,
       connectionTimeoutMillis: 10000,
       ...(ssl ? { ssl } : {}),
     };
 
     const fingerprint = crypto
       .createHash("sha256")
-      .update(`pg:${pgHost}:${pgPort}:${pgDatabase}:${pgUser}:${pgPassword}:${sslMode ?? ""}`)
+      .update(`pg:${pgHost}:${pgPort}:${pgDatabase}:${pgUser}:${pgPassword}:${sslMode ?? ""}:${max}`)
       .digest("hex");
 
     return { poolConfig, source: "supabase_pg_env", fingerprint };

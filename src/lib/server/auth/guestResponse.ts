@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { CapabilityAuthError, type CookieAttributes } from "./guestCapability";
 import { RoomRateLimitError } from "./roomRateLimit";
+import { isPostgresCapacityError } from "@/lib/server/room/postgresCapacity";
 import {
   LOCAL_RATE_LIMIT_RETRY_AFTER_SECONDS,
   LOCAL_SERVICE_UNAVAILABLE_RETRY_AFTER_SECONDS,
@@ -69,6 +70,13 @@ export function privateJsonResponse<T>(
 }
 
 export function handleGuestApiError(err: unknown): NextResponse {
+  if (isPostgresCapacityError(err)) {
+    console.warn("[CINEMATCH_DB_CAPACITY] Room database connection capacity reached.");
+    return NextResponse.json(
+      { error: "DATABASE_CAPACITY", message: "Room database is temporarily busy. Please retry." },
+      { status: 503, headers: { ...PRIVATE_NO_STORE_HEADERS, "Retry-After": "3" } },
+    );
+  }
   if (err instanceof RoomRateLimitError) {
     return NextResponse.json(
       { error: "RATE_LIMITED", message: err.message },

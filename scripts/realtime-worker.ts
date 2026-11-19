@@ -11,7 +11,7 @@ async function main() {
   if (!config) throw new Error("PostgreSQL is required; no SQLite fallback for realtime worker");
   const publish = createSupabasePublisher(process.env.SUPABASE_URL ?? "", process.env.SUPABASE_SECRET_KEY ?? "");
   const schema = process.env.CINEMATCH_OUTBOX_SCHEMA || "public";
-  const pool = new Pool({ ...config.poolConfig, max: 2, statement_timeout: 5000, query_timeout: 7000 });
+  const pool = new Pool({ ...config.poolConfig, max: Math.min(config.poolConfig.max ?? 2, 2), statement_timeout: 5000, query_timeout: 7000 });
   pool.on("error", () => console.warn("Realtime worker database connection failed; durable retry remains pending."));
   try {
     const store = postgresOutboxStore(pool, schema);

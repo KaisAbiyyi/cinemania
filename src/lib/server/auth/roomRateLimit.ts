@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { isIP } from "node:net";
 import { getRoomAuthorityStore, getRoomRateLimitPool } from "@/lib/server/room/roomStore";
+import { isPostgresCapacityError } from "@/lib/server/room/postgresCapacity";
 import {
   CapabilityAuthError,
   extractCookieValue,
@@ -101,7 +102,7 @@ export async function enforceRoomRateLimit(request: Request, operation: Operatio
       );
       if (!rows[0].allowed) throw new RoomRateLimitError(rows[0].retry_after);
     } catch (error) {
-      if (error instanceof RoomRateLimitError) throw error;
+      if (error instanceof RoomRateLimitError || isPostgresCapacityError(error)) throw error;
       console.error("[CINEMATCH_RATE_LIMIT_UNAVAILABLE] Check migration 006 and room database access.");
       throw new CapabilityAuthError(503, "RATE_LIMIT_UNAVAILABLE", "Room request validation is temporarily unavailable.");
     }
