@@ -11,8 +11,11 @@
  *
  *   node tests/local-supabase/cine019-recovery-qualification.cjs --app-commit <full SHA> [--evidence <file>] [--only A,C]
  *
- * Local synthetic data only. It never touches hosted staging. Refuses a stack that contains rooms
- * other than the two GH-52 seeds, exactly like the CINE-018 harness.
+ * Synthetic data only. Local by default (refuses a stack with rooms other than the two GH-52 seeds). With
+ * --hosted-staging it runs against the owner-designated staging project instead: that needs fresh consent in the
+ * invocation (CINE018_STAGING_PROJECT) exactly like the CINE-018 harness, refuses a non-empty application, never
+ * resets or reconfigures the project, and deletes only the rooms it created. Network loss is then injected by an
+ * in-process WebSocket wrapper (a TCP proxy cannot front TLS).
  */
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
@@ -28,6 +31,7 @@ const { assertLocalStack } = require("../../scripts/local-supabase/runtime.cjs")
 const { validateCommit, assertNoCloudTargetEnv } = require("../../scripts/local-supabase/safety.cjs");
 const { parseEnvFile, STACK_ENV_PATH } = require("../../scripts/local-supabase/generate-env.cjs");
 const base = require("./two-instance-qualification.cjs");
+const { loadHostedStaging, assertEmptyHostedApplication } = require("../hosted-supabase/environment.cjs");
 
 const PORT_1 = 3111;
 const PORT_2 = 3112;
@@ -71,6 +75,26 @@ function startProxy() {
   })));
 }
 
+/** In-process network fault injection for TLS endpoints: closes live sockets and fails new ones until restored. */
+function installWebSocketFaults() {
+  const Native = globalThis.WebSocket;
+  const sockets = new Set();
+  let blocked = false;
+  class FaultySocket extends Native {
+    constructor(url, protocols) {
+      super(blocked ? "ws://127.0.0.1:9/cine019-blocked" : url, protocols);
+      sockets.add(this);
+      this.addEventListener("close", () => sockets.delete(this));
+    }
+  }
+  globalThis.WebSocket = FaultySocket;
+  return {
+    cut() { blocked = true; for (const socket of [...sockets]) { try { socket.close(); } catch { /* already closing */ } } },
+    restore() { blocked = false; },
+    close: async () => { blocked = false; globalThis.WebSocket = Native; },
+  };
+}
+
 function bundleClient(instDir, tempRoot, format, platform, name) {
   const entry = path.join(instDir, `cine019-entry-${name}.ts`);
   fs.writeFileSync(entry, 'export * from "./src/lib/realtime/roomRealtime";\nexport * from "./src/lib/realtime/roomActions";\n');
@@ -90,16 +114,17 @@ function assertStrictlyIncreasing(versions, label) {
 }
 
 async function main() {
-  assertNoCloudTargetEnv();
-  assertLocalStack();
+  const hosted = argv.includes("--hosted-staging") ? loadHostedStaging() : null;
+  if (!hosted) { assertNoCloudTargetEnv(); assertLocalStack(); }
   const appCommit = flag("--app-commit") || execFileSync("git", ["-C", REPO_ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   validateCommit(appCommit);
   execFileSync("git", ["-C", REPO_ROOT, "cat-file", "-e", `${appCommit}^{commit}`]);
 
-  const stackEnv = parseEnvFile(STACK_ENV_PATH);
-  const databaseUrl = `postgresql://supabase_admin:${stackEnv.POSTGRES_PASSWORD}@127.0.0.1:55432/postgres`;
-  const realSupabaseUrl = `http://127.0.0.1:${REAL_GATEWAY_PORT}`;
-  const proxiedSupabaseUrl = `http://127.0.0.1:${PROXY_PORT}`;
+  const stackEnv = hosted ? hosted.stackEnv : parseEnvFile(STACK_ENV_PATH);
+  const databaseUrl = hosted ? "" : `postgresql://supabase_admin:${stackEnv.POSTGRES_PASSWORD}@127.0.0.1:55432/postgres`;
+  const realSupabaseUrl = hosted ? hosted.url : `http://127.0.0.1:${REAL_GATEWAY_PORT}`;
+  const proxiedSupabaseUrl = hosted ? hosted.url : `http://127.0.0.1:${PROXY_PORT}`;
+  const hostedHostname = hosted ? new URL(hosted.url).hostname : "";
   const capabilitySecret = crypto.randomBytes(32).toString("hex");
   // --keep-dir reuses an already prepared exact-commit copy (debugging only; never deleted).
   const keepDir = flag("--keep-dir");
@@ -113,8 +138,8 @@ async function main() {
   const preloadPath = path.join(tempRoot, "tmdb-offline-preload.cjs");
   const tarPath = path.join(tempRoot, "app.tar");
 
-  const db = new Client({ host: "127.0.0.1", port: 55432, user: "supabase_admin", password: stackEnv.POSTGRES_PASSWORD, database: "postgres", connectionTimeoutMillis: 5000 });
-  const evidence = { appCommit, environment: "local Docker (GH-52 stack, synthetic data)", startedAt: new Date().toISOString(), scenarios: [] };
+  const db = new Client(hosted ? hosted.pgConfig : { host: "127.0.0.1", port: 55432, user: "supabase_admin", password: stackEnv.POSTGRES_PASSWORD, database: "postgres", connectionTimeoutMillis: 5000 });
+  const evidence = { appCommit, environment: hosted ? `hosted staging ${hosted.project} (synthetic data)` : "local Docker (GH-52 stack, synthetic data)", startedAt: new Date().toISOString(), scenarios: [] };
   const createdRoomIds = [];
   const liveMembers = new Set();
   let proc1 = null, proc2 = null, worker1 = null, worker2 = null, proxy = null, browser = null;
@@ -143,7 +168,7 @@ async function main() {
       fs.renameSync(buildDir, inst1Dir);
       fs.cpSync(inst1Dir, inst2Dir, { recursive: true });
     } else log("reusing prepared copy", tempRoot);
-    base.writeHermeticTmdbPreload(preloadPath, "");
+    base.writeHermeticTmdbPreload(preloadPath, hostedHostname);
     const bundleRoot = debugClientFromWorktree ? REPO_ROOT : inst1Dir;
     const clientCjs = bundleClient(bundleRoot, tempRoot, "cjs", "node", "node");
     const clientIife = bundleClient(bundleRoot, tempRoot, "iife", "browser", "browser");
@@ -157,16 +182,18 @@ async function main() {
       TMDB_API_RAT: "synthetic-local-tmdb-rat", IPINFO_TOKEN: "synthetic-local-ipinfo", YOUTUBE_API_KEY: "synthetic-local-youtube",
       NEXT_PUBLIC_TMDB_POSTER_URL: "https://image.tmdb.org/t/p", NEXT_PUBLIC_IMAGE_BASE_URL: "https://image.tmdb.org/t/p",
       NODE_OPTIONS: `--require ${preloadPath}`, ALLOW_DESTRUCTIVE_PG_TESTS: "false",
+      ...(hosted ? hosted.appEnv : {}),
     };
     origin1 = `http://127.0.0.1:${PORT_1}`;
     origin2 = `http://127.0.0.1:${PORT_2}`;
     startInstance(1); startInstance(2);
     await Promise.all([base.waitForServer(origin1, 120000), base.waitForServer(origin2, 120000)]);
     await db.connect();
+    if (hosted) await assertEmptyHostedApplication(db);
     const unknown = await db.query("SELECT count(*)::int AS n FROM public.rooms WHERE id <> ALL($1::uuid[])", [SEED_ROOMS]);
     assert.equal(unknown.rows[0].n, 0, "Synthetic-only qualification refused: unknown existing rooms (another run may be using the stack)");
     await Promise.all([startWorker(1), startWorker(2)]);
-    proxy = await startProxy();
+    proxy = hosted ? installWebSocketFaults() : await startProxy();
 
     // ---------- helpers bound to the running stack ----------
     const post = (origin, cookie, url, body) => fetch(`${origin}${url}`, { method: "POST", headers: { origin, cookie: cookie ?? "", "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
@@ -402,7 +429,7 @@ async function main() {
       const round = await startRound(room);
       browser = await require(path.join(REPO_ROOT, "node_modules/@playwright/test")).chromium.launch({ headless: true });
       const context = await browser.newContext();
-      await context.route("**/*", (route) => { const u = new URL(route.request().url()); return u.hostname === "127.0.0.1" ? route.continue() : route.abort(); });
+      await context.route("**/*", (route) => { const u = new URL(route.request().url()); return u.hostname === "127.0.0.1" || (hostedHostname && u.hostname === hostedHostname) ? route.continue() : route.abort(); });
       const member = room.members[1];
       await context.addCookies(member.cookie.split("; ").map((item) => { const k = item.indexOf("="); return { name: item.slice(0, k), value: item.slice(k + 1), url: member.origin }; }));
       const page = await context.newPage();
