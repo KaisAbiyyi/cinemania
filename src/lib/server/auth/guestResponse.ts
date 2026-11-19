@@ -27,8 +27,10 @@ import {
 } from "@/lib/server/room/votingEngine";
 import {
   DeckEmptyError,
+  InvalidPresencePayloadError,
   InvalidStateTransitionError,
   RoomCapacityError as StateMachineRoomCapacityError,
+  RoomNotExhaustedError,
 } from "@/lib/server/room/stateMachine";
 import {
   TmdbApiError,
@@ -168,6 +170,18 @@ export function handleGuestApiError(err: unknown): NextResponse {
     return NextResponse.json(
       { error: err.code, message: err.message },
       { status: 422, headers: PRIVATE_NO_STORE_HEADERS }
+    );
+  }
+  if (err instanceof InvalidPresencePayloadError) {
+    return NextResponse.json(
+      { error: err.code, message: err.message },
+      { status: 400, headers: PRIVATE_NO_STORE_HEADERS }
+    );
+  }
+  if (err instanceof RoomNotExhaustedError) {
+    return NextResponse.json(
+      { error: err.code, message: err.message },
+      { status: 409, headers: PRIVATE_NO_STORE_HEADERS }
     );
   }
   if (err instanceof RoomCapacityError || err instanceof StateMachineRoomCapacityError) {

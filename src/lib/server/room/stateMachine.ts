@@ -1,4 +1,13 @@
-import { Room, RoomStatus, DEFAULT_INACTIVITY_TTL_SECONDS, MIN_PARTICIPANTS, MAX_PARTICIPANTS, DECK_SIZE } from "../../../db/schema";
+import {
+  Room,
+  RoomParticipant,
+  RoomStatus,
+  DEFAULT_INACTIVITY_TTL_SECONDS,
+  DEFAULT_RECONNECT_GRACE_SECONDS,
+  MIN_PARTICIPANTS,
+  MAX_PARTICIPANTS,
+  DECK_SIZE,
+} from "../../../db/schema";
 
 export class InvalidStateTransitionError extends Error {
   readonly status = 409;
@@ -41,15 +50,39 @@ export class DeckEmptyError extends Error {
   }
 }
 
+export class RoomNotExhaustedError extends Error {
+  readonly status = 409;
+  readonly code = "ROOM_NOT_EXHAUSTED";
+
+  constructor(
+    message = "Retry is only available after a round finishes without a match (EXHAUSTED)."
+  ) {
+    super(message);
+    this.name = "RoomNotExhaustedError";
+    Object.setPrototypeOf(this, RoomNotExhaustedError.prototype);
+  }
+}
+
+export class InvalidPresencePayloadError extends Error {
+  readonly status = 400;
+  readonly code = "INVALID_PRESENCE_PAYLOAD";
+
+  constructor(message = "Presence payload must include boolean 'connected'.") {
+    super(message);
+    this.name = "InvalidPresencePayloadError";
+    Object.setPrototypeOf(this, InvalidPresencePayloadError.prototype);
+  }
+}
+
 /**
  * Authoritative Transition Table:
  * Maps each current state to its strictly permitted target states.
  */
 const VALID_TRANSITIONS: Record<RoomStatus, readonly RoomStatus[]> = {
   LOBBY: ["ACTIVE", "EXPIRED"],
-  ACTIVE: ["MATCHED", "EXHAUSTED", "EXPIRED"],
+  ACTIVE: ["MATCHED", "EXHAUSTED", "LOBBY", "EXPIRED"],
   MATCHED: ["EXPIRED"],
-  EXHAUSTED: ["EXPIRED"],
+  EXHAUSTED: ["LOBBY", "ACTIVE", "EXPIRED"],
   EXPIRED: [], // Terminal state: no outbound transitions permitted
 };
 
@@ -152,4 +185,58 @@ export function isRoomRecordExpired(
   }
   const expiresAtMs = new Date(room.expires_at).getTime();
   return Number.isFinite(expiresAtMs) && expiresAtMs <= now.getTime();
+}
+
+/**
+ * Calculates the 90-second reconnect grace deadline from disconnect timestamp.
+ */
+export function calculateGraceExpiryTimestamp(
+  disconnectedAt: Date,
+  graceSeconds: number = DEFAULT_RECONNECT_GRACE_SECONDS
+): Date {
+  return new Date(disconnectedAt.getTime() + graceSeconds * 1000);
+}
+
+/**
+ * Returns true once a disconnected participant has reached or passed the reconnect grace window.
+ */
+export function isGraceExpired(
+  lastSeenAt: string | Date,
+  graceSeconds: number = DEFAULT_RECONNECT_GRACE_SECONDS,
+  now: Date = new Date()
+): boolean {
+  const lastSeenMs =
+    lastSeenAt instanceof Date ? lastSeenAt.getTime() : new Date(lastSeenAt).getTime();
+  if (!Number.isFinite(lastSeenMs)) {
+    return false;
+  }
+  return now.getTime() >= lastSeenMs + graceSeconds * 1000;
+}
+
+/**
+ * Deterministically selects the next host participant ordered by joined_at ASC, participant_id ASC.
+ * Prefers connected members first; when requireConnected is true (timeout handoff), returns null
+ * if no connected member exists.
+ */
+export function selectDeterministicHostSuccessor(
+  participants: readonly RoomParticipant[],
+  excludeParticipantId: string | null,
+  options: { requireConnected?: boolean } = {}
+): RoomParticipant | null {
+  const normalizedExclude = excludeParticipantId?.toLowerCase() ?? null;
+  const candidates = participants
+    .filter((p) => p.participant_id.toLowerCase() !== normalizedExclude)
+    .sort((a, b) => {
+      const timeDiff = new Date(a.joined_at).getTime() - new Date(b.joined_at).getTime();
+      if (Number.isFinite(timeDiff) && timeDiff !== 0) {
+        return timeDiff;
+      }
+      return a.participant_id.localeCompare(b.participant_id);
+    });
+
+  const connectedCandidate = candidates.find((p) => Boolean(p.is_connected));
+  if (connectedCandidate) {
+    return connectedCandidate;
+  }
+  return options.requireConnected ? null : candidates[0] ?? null;
 }

@@ -6,16 +6,28 @@ import {
   validateStartRoundPrerequisites,
   RoomCapacityError,
   calculateExpiryTimestamp,
+  calculateGraceExpiryTimestamp,
+  isGraceExpired,
   isRoomExpired,
+  selectDeterministicHostSuccessor,
 } from "@/lib/server/room/stateMachine";
 import { RoomExpiryWorker, SyntheticClock } from "@/lib/server/room/expiryWorker";
-import { Room, RoomStatus, DEFAULT_INACTIVITY_TTL_SECONDS } from "@/db/schema";
+import {
+  Room,
+  RoomParticipant,
+  RoomStatus,
+  DEFAULT_INACTIVITY_TTL_SECONDS,
+  DEFAULT_RECONNECT_GRACE_SECONDS,
+} from "@/db/schema";
 
-describe("CINE-012: Authoritative Room State Machine Transitions", () => {
+describe("CINE-012 / CINE-020: Authoritative Room State Machine Transitions", () => {
   it.each([
     ["LOBBY", "ACTIVE"],
     ["ACTIVE", "MATCHED"],
     ["ACTIVE", "EXHAUSTED"],
+    ["ACTIVE", "LOBBY"],
+    ["EXHAUSTED", "LOBBY"],
+    ["EXHAUSTED", "ACTIVE"],
     ["LOBBY", "EXPIRED"],
     ["ACTIVE", "EXPIRED"],
     ["MATCHED", "EXPIRED"],
@@ -28,8 +40,7 @@ describe("CINE-012: Authoritative Room State Machine Transitions", () => {
   it.each([
     ["MATCHED", "ACTIVE"],
     ["MATCHED", "LOBBY"],
-    ["EXHAUSTED", "ACTIVE"],
-    ["EXHAUSTED", "LOBBY"],
+    ["MATCHED", "EXHAUSTED"],
     ["EXPIRED", "LOBBY"],
     ["EXPIRED", "ACTIVE"],
     ["EXPIRED", "MATCHED"],
@@ -188,5 +199,117 @@ describe("CINE-012: Inactivity TTL & Expiry Worker with Synthetic Clock", () => 
     // Running again is idempotent and processes 0 rooms
     const resultIdempotent = await worker.processExpiredRooms(mockAdapter);
     expect(resultIdempotent.processedCount).toBe(0);
+  });
+
+  it("calculates 90s reconnect grace deadlines and selects deterministic connected host successors", () => {
+    const disconnectAt = new Date("2026-11-11T12:00:00.000Z");
+    const deadline = calculateGraceExpiryTimestamp(disconnectAt, DEFAULT_RECONNECT_GRACE_SECONDS);
+    expect(deadline.toISOString()).toBe("2026-11-11T12:01:30.000Z");
+
+    expect(isGraceExpired(disconnectAt, 90, new Date("2026-11-11T12:01:29.999Z"))).toBe(false);
+    expect(isGraceExpired(disconnectAt, 90, new Date("2026-11-11T12:01:30.000Z"))).toBe(true);
+
+    const roster: RoomParticipant[] = [
+      {
+        room_id: "r1",
+        participant_id: "host-a",
+        display_name: "Host A",
+        role: "HOST",
+        is_connected: false,
+        joined_at: "2026-11-11T12:00:00.000Z",
+        last_seen_at: "2026-11-11T12:00:10.000Z",
+      },
+      {
+        room_id: "r1",
+        participant_id: "guest-b-disconnected",
+        display_name: "Guest B",
+        role: "MEMBER",
+        is_connected: false,
+        joined_at: "2026-11-11T12:00:01.000Z",
+        last_seen_at: "2026-11-11T12:00:10.000Z",
+      },
+      {
+        room_id: "r1",
+        participant_id: "guest-c-connected",
+        display_name: "Guest C",
+        role: "MEMBER",
+        is_connected: true,
+        joined_at: "2026-11-11T12:00:02.000Z",
+        last_seen_at: "2026-11-11T12:01:00.000Z",
+      },
+      {
+        room_id: "r1",
+        participant_id: "guest-d-tiebreak",
+        display_name: "Guest D",
+        role: "MEMBER",
+        is_connected: true,
+        joined_at: "2026-11-11T12:00:02.000Z",
+        last_seen_at: "2026-11-11T12:01:00.000Z",
+      },
+    ];
+
+    const successor = selectDeterministicHostSuccessor(roster, "host-a", {
+      requireConnected: true,
+    });
+    expect(successor?.participant_id).toBe("guest-c-connected");
+  });
+
+  it("expires MATCHED and EXHAUSTED rooms once 24h TTL elapses", async () => {
+    const startTime = new Date("2026-11-11T12:00:00.000Z").getTime();
+    const clock = new TestSyntheticClock(startTime);
+    const worker = new RoomExpiryWorker(DEFAULT_INACTIVITY_TTL_SECONDS, clock);
+
+    const testRooms: Room[] = [
+      {
+        id: "room-matched",
+        code: "MAT123",
+        status: "MATCHED",
+        host_participant_id: "host-1",
+        state_version: 10,
+        participant_count: 2,
+        matched_movie_id: 555,
+        current_round_id: "round-1",
+        deck_filter: null,
+        inactivity_ttl_seconds: 86400,
+        last_activity_at: "2026-11-11T12:00:00.000Z",
+        expires_at: "2026-11-12T12:00:00.000Z",
+        created_at: "2026-11-11T12:00:00.000Z",
+        updated_at: "2026-11-11T12:00:00.000Z",
+      },
+      {
+        id: "room-exhausted",
+        code: "EXH456",
+        status: "EXHAUSTED",
+        host_participant_id: "host-2",
+        state_version: 22,
+        participant_count: 2,
+        matched_movie_id: null,
+        current_round_id: "round-2",
+        deck_filter: null,
+        inactivity_ttl_seconds: 86400,
+        last_activity_at: "2026-11-11T12:00:00.000Z",
+        expires_at: "2026-11-12T12:00:00.000Z",
+        created_at: "2026-11-11T12:00:00.000Z",
+        updated_at: "2026-11-11T12:00:00.000Z",
+      },
+    ];
+
+    const adapter = {
+      findActiveRooms: () => testRooms,
+      expireRoom: (roomId: string, expectedVersion: number) => {
+        const room = testRooms.find((r) => r.id === roomId);
+        if (!room || room.state_version !== expectedVersion || room.status === "EXPIRED") {
+          return false;
+        }
+        room.status = "EXPIRED";
+        room.state_version += 1;
+        return true;
+      },
+    };
+
+    clock.advance(86400);
+    const result = await worker.processExpiredRooms(adapter);
+    expect(result.processedCount).toBe(2);
+    expect(result.expiredRoomIds).toEqual(["room-matched", "room-exhausted"]);
   });
 });

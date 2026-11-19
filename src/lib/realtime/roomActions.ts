@@ -39,11 +39,22 @@ export interface RoomActionsOptions {
 }
 
 const RETRYABLE_STATUS = new Set([500, 502, 503, 504]);
-const STALE_CODES = new Set(["ROUND_NOT_FOUND", "CANDIDATE_NOT_FOUND"]);
+const STALE_CODES = new Set([
+  "ROUND_NOT_FOUND",
+  "CANDIDATE_NOT_FOUND",
+  "ROOM_NOT_EXHAUSTED",
+  "ROUND_CANCELLED",
+  "ROOM_ALREADY_EXHAUSTED",
+  "ROUND_CONFLICT",
+]);
 
 /** A stable, bounded operation id: the same intent always maps to the same id (server limit is 128). */
 export function voteOperationId(candidateId: string, roundId?: string | null): string {
   return `vote:${roundId ?? "-"}:${candidateId}`;
+}
+
+export function retryOperationId(roundId?: string | null): string {
+  return `retry:${roundId ?? "-"}`;
 }
 
 /**
@@ -152,6 +163,40 @@ export function createRoomActions(options: RoomActionsOptions) {
      */
     startRound(body: Record<string, unknown> = {}): Promise<RoomActionResult> {
       return singleFlight("start", "start", () => send("POST", "/start", body, {}, { idempotent: false, acceptSnapshot: true }));
+    },
+    /**
+     * Retries an EXHAUSTED room (back to LOBBY or directly into a fresh filtered round).
+     * Uses an operationId so transient network retries never create duplicate rounds.
+     */
+    retryRound(input: {
+      startRound?: boolean;
+      deckFilter?: Record<string, unknown>;
+      roundId?: string | null;
+      operationId?: string;
+    } = {}): Promise<RoomActionResult> {
+      const startRound = Boolean(input.startRound);
+      const operationId =
+        input.operationId ??
+        (input.roundId
+          ? retryOperationId(input.roundId)
+          : `retry-ad-hoc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
+      const signature = JSON.stringify({ startRound, deckFilter: input.deckFilter ?? null, operationId });
+      const payload = {
+        startRound,
+        operationId,
+        ...(input.deckFilter ? { deckFilter: input.deckFilter } : {}),
+      };
+      return singleFlight("retry", signature, () =>
+        send("POST", "/retry", payload, { "idempotency-key": operationId }, { idempotent: true, acceptSnapshot: true })
+      );
+    },
+    /**
+     * Reports explicit client presence / disconnect state so the server manages 90s reconnect grace.
+     */
+    reportPresence(connected: boolean): Promise<RoomActionResult> {
+      return singleFlight("presence", connected ? "on" : "off", () =>
+        send("POST", "/presence", { connected }, {}, { idempotent: true, acceptSnapshot: true })
+      );
     },
     /**
      * Filter edits are serialized so the server applies them in the order the host made them. Replacement

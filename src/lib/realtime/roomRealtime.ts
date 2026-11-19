@@ -173,6 +173,10 @@ export async function startRoomRealtime(options: {
   fetcher?: typeof fetch;
   environment?: RealtimeEnvironment;
   tuning?: Partial<RealtimeTuning>;
+  /** Opt-in presence keepalive interval in ms (0 disables automatic heartbeats). */
+  presenceHeartbeatMs?: number;
+  /** Opt-in best-effort disconnect presence notification on clean shutdown / unload. */
+  sendPresenceOnDisconnect?: boolean;
 }): Promise<RoomRealtimeHandle> {
   const get = options.fetcher ?? fetch;
   const env = options.environment ?? defaultEnvironment();
@@ -585,6 +589,14 @@ export async function startRoomRealtime(options: {
     }
     if (throttled) wakeSleepers();
     if (throttled || now - lastSync >= tuning.pollMs) void syncNow();
+    if (
+      options.presenceHeartbeatMs &&
+      options.presenceHeartbeatMs > 0 &&
+      now - lastPresence >= options.presenceHeartbeatMs
+    ) {
+      lastPresence = now;
+      void sendPresence(true);
+    }
   }
 
   function scheduleTick() {
@@ -594,11 +606,40 @@ export async function startRoomRealtime(options: {
     tickTimer = env.setTimeout(() => { tickTimer = null; void tick("timer").finally(scheduleTick); }, delay);
   }
 
+  async function sendPresence(connected: boolean): Promise<void> {
+    if (terminal) return;
+    try {
+      const response = await get(`/api/rooms/${encodeURIComponent(options.roomId)}/presence`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ connected }),
+        keepalive: !connected,
+      });
+      if (response && PERMANENT_HTTP_STATUS.has(response.status)) {
+        terminate(
+          new RoomRealtimeError("UNAUTHORIZED", `Presence rejected (${response.status}).`, {
+            status: response.status,
+            permanent: true,
+          })
+        );
+      }
+    } catch {
+      // Best-effort heartbeat / disconnect signal; authoritative timeout remains server-side.
+    }
+  }
+
+  let lastPresence = env.now();
+
   async function shutdown() {
+    const shouldReportDisconnect = options.sendPresenceOnDisconnect && !closed && !terminal;
     closed = true;
     stopBackground();
     disposeAllSlots();
     setStatus("closed");
+    if (shouldReportDisconnect) {
+      await sendPresence(false);
+    }
   }
 
   setStatus("connecting");

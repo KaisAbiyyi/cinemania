@@ -15,10 +15,14 @@ export type RoomEventType =
   | "ROOM_CREATED"
   | "PARTICIPANT_JOINED"
   | "PARTICIPANT_LEFT"
+  | "PARTICIPANT_DISCONNECTED"
+  | "PARTICIPANT_RECONNECTED"
   | "HOST_TRANSFERRED"
   | "DECK_FILTER_UPDATED"
   | "ROSTER_FROZEN"
   | "ROUND_STARTED"
+  | "ROUND_CANCELLED"
+  | "ROUND_RETRY_LOBBY"
   | "VOTE_RECORDED"
   | "MATCH_ANNOUNCED"
   | "DECK_EXHAUSTED"
@@ -120,6 +124,8 @@ export const ROUND_STATUSES: readonly RoundStatus[] = ["ACTIVE", "COMPLETED", "C
 export const VOTE_TYPES: readonly VoteType[] = ["LIKE", "SKIP"] as const;
 
 export const DEFAULT_INACTIVITY_TTL_SECONDS = 86400; // 24 hours
+export const DEFAULT_RECONNECT_GRACE_SECONDS = 90; // 90 seconds during ACTIVE / host grace
+export const DEFAULT_EXPIRED_ROOM_RETENTION_SECONDS = 0;
 export const MAX_PARTICIPANTS = 5;
 export const MIN_PARTICIPANTS = 2;
 export const DECK_SIZE = 20;

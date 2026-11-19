@@ -3,6 +3,7 @@ import { readBoundedJson } from "@/lib/server/auth/requestBody";
 import {
   Candidate,
   DECK_SIZE,
+  DEFAULT_RECONNECT_GRACE_SECONDS,
   MAX_PARTICIPANTS,
   MIN_PARTICIPANTS,
   ParticipantRole,
@@ -10,6 +11,7 @@ import {
   RoomParticipant,
   RoomStatus,
   RoundParticipant,
+  RoundStatus,
   Vote,
   VoteType,
 } from "@/db/schema";
@@ -34,6 +36,13 @@ import {
   verifyGuestCapabilityToken,
 } from "@/lib/server/auth/guestCapability";
 import { requireRoomActor, resolveGuestTokenFromRequest } from "@/lib/server/auth/roomAuth";
+import { notifyAfterCommit } from "@/lib/server/realtime/notifyAfterCommit";
+import {
+  buildRoomFinishState,
+  parsePresencePayload,
+  parseRetryRoundPayload,
+  type RoomFinishState,
+} from "./finishPolicy";
 import { buildRoomInvitePath, normalizeRoomCodeInput } from "./roomCode";
 import {
   fetchAndBuildDeterministicDeck,
@@ -43,10 +52,13 @@ import {
 import {
   RoomCapacityError,
   RoomExpiredError,
+  RoomNotExhaustedError,
   RoomNotFoundError,
   computeCanonicalLobbyFilterJson,
   type LeaveLobbyResult,
+  type RetryRoundResult,
   type StartLobbyRoundResult,
+  type UpdatePresenceResult,
 } from "./roomRepository";
 import {
   getRoomAuthorityStore,
@@ -55,7 +67,11 @@ import {
   type RoomAuthorityStore,
   type RoomMutationHooks,
 } from "./roomStore";
-import { isRoomRecordExpired } from "./stateMachine";
+import {
+  calculateGraceExpiryTimestamp,
+  isGraceExpired,
+  isRoomRecordExpired,
+} from "./stateMachine";
 import {
   evaluateDeckProgression,
   extractOperationIdFromHeaders,
@@ -70,10 +86,12 @@ export interface SafeRoomParticipant {
   joinedAt: string;
   isSelf: boolean;
   isEligibleVoter?: boolean;
+  graceExpiresAt?: string;
 }
 
 export interface RoomSessionMutationOptions {
   hooks?: RoomMutationHooks;
+  nowMs?: number;
 }
 
 export interface SafeRoomSnapshot {
@@ -83,10 +101,14 @@ export interface SafeRoomSnapshot {
   status: RoomStatus;
   stateVersion: number;
   participantCount: number;
+  connectedParticipantCount: number;
   maxParticipants: number;
   minParticipantsToStart: number;
+  reconnectGraceSeconds: number;
   canStart: boolean;
+  canRetry: boolean;
   currentRoundId: string | null;
+  latestRoundStatus: RoundStatus | null;
   frozenQuorum: number | null;
   deckFilter: CanonicalRoomDeckFilter;
   deckSize: number;
@@ -97,6 +119,7 @@ export interface SafeRoomSnapshot {
   matchedCandidate: SafeDeckCandidate | null;
   currentCandidateIndex: number | null;
   currentCandidate: SafeDeckCandidate | null;
+  finishState: RoomFinishState;
   expiresAt: string;
   createdAt: string;
   participants: SafeRoomParticipant[];
@@ -124,8 +147,24 @@ export interface RoomSessionViewer {
   displayName: string;
   role: ParticipantRole;
   isEligibleVoter: boolean;
+  canStart?: boolean;
+  canRetry?: boolean;
   userVotes?: Record<string, VoteType>;
   nextCandidateIndex?: number | null;
+}
+
+export interface RoomRetryResult {
+  retried: true;
+  idempotentReplay: boolean;
+  room: SafeRoomSnapshot;
+  viewer: RoomSessionViewer;
+}
+
+export interface RoomPresenceResult {
+  updated: true;
+  changed: boolean;
+  room: SafeRoomSnapshot;
+  viewer: RoomSessionViewer;
 }
 
 export interface RoomVoteSubmissionResult {
@@ -260,7 +299,8 @@ export function buildSafeRoomSnapshot(
   now: Date = new Date(),
   roundParticipants: RoundParticipant[] = [],
   candidates: Candidate[] = [],
-  votes: Vote[] = []
+  votes: Vote[] = [],
+  options?: { latestRoundStatus?: RoundStatus | null }
 ): SafeRoomSnapshot {
   if (room.participant_count !== participants.length) {
     throw new CapabilityAuthError(
@@ -274,6 +314,8 @@ export function buildSafeRoomSnapshot(
   const expired = isRoomRecordExpired(room, now);
   const status: RoomStatus = expired ? "EXPIRED" : room.status;
   const participantCount = room.participant_count;
+  const connectedParticipantCount = participants.filter((p) => Boolean(p.is_connected)).length;
+  const latestRoundStatus: RoundStatus | null = options?.latestRoundStatus ?? null;
   if (room.current_round_id !== null && roundParticipants.length < MIN_PARTICIPANTS) {
     throw new FrozenRosterMissingError(
       `Frozen voter roster for round ${room.current_round_id} has ${roundParticipants.length} participant(s); expected at least ${MIN_PARTICIPANTS}.`
@@ -336,13 +378,20 @@ export function buildSafeRoomSnapshot(
     status,
     stateVersion: room.state_version,
     participantCount,
+    connectedParticipantCount,
     maxParticipants: MAX_PARTICIPANTS,
     minParticipantsToStart: MIN_PARTICIPANTS,
+    reconnectGraceSeconds: DEFAULT_RECONNECT_GRACE_SECONDS,
     canStart:
       status === "LOBBY" &&
-      participantCount >= MIN_PARTICIPANTS &&
-      participantCount <= MAX_PARTICIPANTS,
+      connectedParticipantCount >= MIN_PARTICIPANTS &&
+      connectedParticipantCount <= MAX_PARTICIPANTS,
+    canRetry:
+      status === "EXHAUSTED" &&
+      connectedParticipantCount >= MIN_PARTICIPANTS &&
+      connectedParticipantCount <= MAX_PARTICIPANTS,
     currentRoundId: room.current_round_id,
+    latestRoundStatus,
     frozenQuorum: hasFrozenRoster ? roundParticipants.length : null,
     deckFilter,
     deckSize: deck.length,
@@ -353,17 +402,33 @@ export function buildSafeRoomSnapshot(
     matchedCandidate,
     currentCandidateIndex,
     currentCandidate,
+    finishState: buildRoomFinishState({
+      roomStatus: status,
+      roomId: room.id,
+      connectedParticipantCount,
+      matchedMovieId,
+      latestRoundStatus,
+    }),
     expiresAt: room.expires_at,
     createdAt: room.created_at,
     participants: participants.map((participant) => {
       const normalizedPid = participant.participant_id.toLowerCase();
+      const isConnected = Boolean(participant.is_connected);
+      const graceExpiresAt =
+        !isConnected && (status === "LOBBY" || status === "ACTIVE")
+          ? calculateGraceExpiryTimestamp(
+              new Date(participant.last_seen_at),
+              DEFAULT_RECONNECT_GRACE_SECONDS
+            ).toISOString()
+          : undefined;
       return {
         displayName: participant.display_name,
         role: participant.role,
-        isConnected: Boolean(participant.is_connected),
+        isConnected,
         joinedAt: participant.joined_at,
         isSelf: normalizedPid === normalizedViewerId,
         ...(hasFrozenRoster ? { isEligibleVoter: frozenIds.has(normalizedPid) } : {}),
+        ...(graceExpiresAt ? { graceExpiresAt } : {}),
       };
     }),
   };
@@ -374,6 +439,59 @@ function resolveAuthoritativeRole(room: Room, participant: RoomParticipant): Par
     room.host_participant_id?.toLowerCase() === participant.participant_id.toLowerCase()
     ? "HOST"
     : "MEMBER";
+}
+
+async function reconcileExpiredGraceIfNeeded(
+  store: RoomAuthorityStore,
+  roomId: string,
+  evalNow: Date,
+  roomStatus?: RoomStatus
+): Promise<boolean> {
+  if (roomStatus && roomStatus !== "LOBBY" && roomStatus !== "ACTIVE") {
+    return false;
+  }
+  const participants = await store.getParticipantsByRoom(roomId);
+  const hasExpiredDisconnected = participants.some(
+    (p) =>
+      !Boolean(p.is_connected) &&
+      isGraceExpired(p.last_seen_at, DEFAULT_RECONNECT_GRACE_SECONDS, evalNow)
+  );
+  if (!hasExpiredDisconnected) {
+    return false;
+  }
+  const outcome = await store.sweepRoomGraceTimeouts(roomId, {
+    nowIso: evalNow.toISOString(),
+    graceSeconds: DEFAULT_RECONNECT_GRACE_SECONDS,
+  });
+  if (outcome.changed) {
+    await notifyAfterCommit(store, roomId);
+  }
+  return outcome.changed;
+}
+
+async function requireAuthorizedRoomActor(
+  request: Request,
+  roomId: string,
+  store: RoomAuthorityStore,
+  options: { requireHost?: boolean; nowMs?: number } = {}
+) {
+  const evalNow = options.nowMs !== undefined ? new Date(options.nowMs) : new Date();
+  const initialActor = await requireRoomActor(request, roomId, store, {
+    nowMs: options.nowMs,
+  });
+  const swept = await reconcileExpiredGraceIfNeeded(
+    store,
+    initialActor.room.id,
+    evalNow,
+    initialActor.room.status
+  );
+  if (swept || options.requireHost) {
+    return requireRoomActor(request, roomId, store, {
+      requireHost: options.requireHost,
+      nowMs: options.nowMs,
+    });
+  }
+  return initialActor;
 }
 
 function createPreCommitMintHooks(
@@ -399,7 +517,9 @@ function createPreCommitMintHooks(
 function buildAtomicSnapshotResult(
   request: Request,
   result: AtomicRoomSessionResult,
-  mintedToken: string
+  mintedToken: string,
+  evalNow: Date = new Date(),
+  latestRoundStatus: RoundStatus | null = null
 ): RoomSnapshotResult {
   const role = resolveAuthoritativeRole(result.room, result.participant);
   const roundParticipants = result.roundParticipants ?? [];
@@ -408,9 +528,11 @@ function buildAtomicSnapshotResult(
     result.room,
     result.participants,
     result.participant.participant_id,
-    new Date(),
+    evalNow,
     roundParticipants,
-    candidates
+    candidates,
+    [],
+    { latestRoundStatus }
   );
   const isEligibleVoter = Boolean(
     safeRoom.frozenQuorum !== null &&
@@ -425,6 +547,8 @@ function buildAtomicSnapshotResult(
       displayName: result.participant.display_name,
       role,
       isEligibleVoter,
+      canStart: role === "HOST" && safeRoom.canStart,
+      canRetry: role === "HOST" && safeRoom.canRetry,
     },
     cookie: buildGuestCookieAttributes(request, result.room.id, mintedToken),
   };
@@ -444,6 +568,7 @@ export async function createRoomWithSession(
   // Preflight signing secret before writing durable state (L-045)
   getCapabilitySecret();
 
+  const evalNow = options?.nowMs !== undefined ? new Date(options.nowMs) : new Date();
   const hostDisplayName = normalizeDisplayName(body.displayName, "Host");
   const deckFilter = parseOptionalDeckFilterFromBody(body);
   let mintedToken = "";
@@ -456,7 +581,7 @@ export async function createRoomWithSession(
     }),
   });
 
-  return buildAtomicSnapshotResult(request, result, mintedToken);
+  return buildAtomicSnapshotResult(request, result, mintedToken, evalNow);
 }
 
 /**
@@ -471,6 +596,7 @@ export async function joinRoomWithSession(
   // Preflight signing secret before writing durable state (L-045)
   getCapabilitySecret();
 
+  const evalNow = options?.nowMs !== undefined ? new Date(options.nowMs) : new Date();
   const target = resolveJoinLookup(body);
   const displayName = normalizeDisplayName(body.displayName, "Guest");
   if (target.type === "roomId") {
@@ -488,7 +614,7 @@ export async function joinRoomWithSession(
     throw new RoomNotFoundError("Target room does not exist.");
   }
 
-  if (isRoomRecordExpired(targetRoom)) {
+  if (isRoomRecordExpired(targetRoom, evalNow)) {
     throw new RoomExpiredError("Target room has expired.");
   }
 
@@ -502,6 +628,7 @@ export async function joinRoomWithSession(
   if (existingToken !== null) {
     const preliminary = verifyGuestCapabilityToken(existingToken, {
       expectedRoomId: targetRoom.id,
+      nowMs: options?.nowMs,
     });
     participantId = preliminary.pid;
     requireExistingParticipant = true;
@@ -509,8 +636,10 @@ export async function joinRoomWithSession(
       verifyGuestCapabilityToken(existingToken, {
         expectedRoomId: targetRoom.id,
         minGeneration,
+        nowMs: options?.nowMs,
       });
     };
+    await reconcileExpiredGraceIfNeeded(store, targetRoom.id, evalNow, targetRoom.status);
   } else {
     participantId = crypto.randomUUID();
   }
@@ -527,7 +656,18 @@ export async function joinRoomWithSession(
     }),
   });
 
-  return buildAtomicSnapshotResult(request, result, mintedToken);
+  const latestRound =
+    result.rejoined && result.room.status === "LOBBY"
+      ? await store.getLatestRound(result.room.id)
+      : null;
+
+  return buildAtomicSnapshotResult(
+    request,
+    result,
+    mintedToken,
+    evalNow,
+    latestRound?.status ?? null
+  );
 }
 
 /**
@@ -537,14 +677,18 @@ export async function joinRoomWithSession(
 export async function getAuthenticatedRoomSnapshot(
   request: Request,
   roomId: string,
-  store: RoomAuthorityStore = getRoomAuthorityStore()
+  store: RoomAuthorityStore = getRoomAuthorityStore(),
+  options?: { nowMs?: number }
 ): Promise<RoomSnapshotResult> {
-  const actor = await requireRoomActor(request, roomId, store);
+  const evalNow = options?.nowMs !== undefined ? new Date(options.nowMs) : new Date();
+  const actor = await requireAuthorizedRoomActor(request, roomId, store, {
+    nowMs: options?.nowMs,
+  });
   const consistent = await store.getConsistentRoomSnapshot(actor.room.id);
   if (!consistent) {
     throw new RoomNotFoundError(`Room ${actor.room.id} does not exist.`);
   }
-  if (isRoomRecordExpired(consistent.room)) {
+  if (isRoomRecordExpired(consistent.room, evalNow)) {
     throw new RoomExpiredError(`Room '${consistent.room.code}' has expired.`);
   }
 
@@ -565,10 +709,11 @@ export async function getAuthenticatedRoomSnapshot(
     consistent.room,
     consistent.participants,
     viewerParticipant.participant_id,
-    new Date(),
+    evalNow,
     consistent.roundParticipants,
     consistent.candidates,
-    consistent.votes
+    consistent.votes,
+    { latestRoundStatus: consistent.latestRound?.status ?? null }
   );
   const isEligibleVoter = Boolean(
     safeRoom.frozenQuorum !== null &&
@@ -591,6 +736,8 @@ export async function getAuthenticatedRoomSnapshot(
       displayName: viewerParticipant.display_name,
       role,
       isEligibleVoter,
+      canStart: role === "HOST" && safeRoom.canStart,
+      canRetry: role === "HOST" && safeRoom.canRetry,
       userVotes: viewerVoteSummary.userVotes,
       nextCandidateIndex: viewerVoteSummary.nextCandidateIndex,
     },
@@ -648,10 +795,14 @@ export async function updateRoomFiltersWithSession(
   roomId: string,
   body: Record<string, unknown>,
   store: RoomAuthorityStore = getRoomAuthorityStore(),
-  options?: { beforeCommit?: () => void | Promise<void> }
+  options?: { beforeCommit?: () => void | Promise<void>; nowMs?: number }
 ): Promise<RoomSnapshotResult> {
   getCapabilitySecret();
-  const actor = await requireRoomActor(request, roomId, store, { requireHost: true });
+  const evalNow = options?.nowMs !== undefined ? new Date(options.nowMs) : new Date();
+  const actor = await requireAuthorizedRoomActor(request, roomId, store, {
+    requireHost: true,
+    nowMs: options?.nowMs,
+  });
   const token = resolveGuestTokenFromRequest(request, actor.room.id);
   const deckFilter = parseFilterUpdatePayload(body);
 
@@ -663,6 +814,7 @@ export async function updateRoomFiltersWithSession(
       verifyGuestCapabilityToken(token, {
         expectedRoomId: actor.room.id,
         minGeneration,
+        nowMs: options?.nowMs,
       });
     },
     beforeCommit: options?.beforeCommit ? () => options.beforeCommit!() : undefined,
@@ -679,14 +831,17 @@ export async function updateRoomFiltersWithSession(
     );
   }
 
+  const latestRound = await store.getLatestRound(updated.room.id);
   const role = resolveAuthoritativeRole(updated.room, viewerParticipant);
   const safeRoom = buildSafeRoomSnapshot(
     updated.room,
     updated.participants,
     viewerParticipant.participant_id,
-    new Date(),
+    evalNow,
     [],
-    []
+    [],
+    [],
+    { latestRoundStatus: latestRound?.status ?? null }
   );
 
   return {
@@ -696,6 +851,8 @@ export async function updateRoomFiltersWithSession(
       displayName: viewerParticipant.display_name,
       role,
       isEligibleVoter: false,
+      canStart: role === "HOST" && safeRoom.canStart,
+      canRetry: role === "HOST" && safeRoom.canRetry,
     },
   };
 }
@@ -714,30 +871,48 @@ export async function startRoomRoundWithSession(
     beforeCommit?: (started: StartLobbyRoundResult) => void | Promise<void>;
     discoverFetcher?: TmdbDiscoverMovieFetcher;
     maxPages?: number;
+    nowMs?: number;
   }
 ): Promise<RoomSnapshotResult> {
   getCapabilitySecret();
-  const actor = await requireRoomActor(request, roomId, store, { requireHost: true });
+  const evalNow = options?.nowMs !== undefined ? new Date(options.nowMs) : new Date();
+  const actor = await requireAuthorizedRoomActor(request, roomId, store, {
+    requireHost: true,
+    nowMs: options?.nowMs,
+  });
   const token = resolveGuestTokenFromRequest(request, actor.room.id);
 
-  if (isRoomRecordExpired(actor.room)) {
+  if (isRoomRecordExpired(actor.room, evalNow)) {
     throw new RoomExpiredError(`Room '${actor.room.code}' has expired.`);
   }
   if (actor.room.status !== "LOBBY") {
+    const statusCode =
+      actor.room.status === "MATCHED"
+        ? "ROOM_ALREADY_MATCHED"
+        : actor.room.status === "EXHAUSTED"
+          ? "ROOM_ALREADY_EXHAUSTED"
+          : "ROOM_ALREADY_ACTIVE";
     throw new RoomCapacityError(
       `Cannot start round: room status is '${actor.room.status}', but must be 'LOBBY'.`,
-      "ROOM_ALREADY_ACTIVE"
+      statusCode
     );
   }
-  if (actor.room.participant_count < MIN_PARTICIPANTS) {
+
+  const preflightParticipants = await store.getParticipantsByRoom(actor.room.id);
+  const connectedCount = preflightParticipants.filter(
+    (p) =>
+      Boolean(p.is_connected) ||
+      p.participant_id.toLowerCase() === actor.participant.participant_id.toLowerCase()
+  ).length;
+  if (connectedCount < MIN_PARTICIPANTS) {
     throw new RoomCapacityError(
-      `Cannot start round: at least ${MIN_PARTICIPANTS} participants required (current: ${actor.room.participant_count}).`,
+      `Cannot start round: at least ${MIN_PARTICIPANTS} participants required (current: ${connectedCount}).`,
       "INSUFFICIENT_PARTICIPANTS"
     );
   }
-  if (actor.room.participant_count > MAX_PARTICIPANTS) {
+  if (connectedCount > MAX_PARTICIPANTS) {
     throw new RoomCapacityError(
-      `Cannot start round: maximum allowed participants is ${MAX_PARTICIPANTS} (current: ${actor.room.participant_count}).`,
+      `Cannot start round: maximum allowed participants is ${MAX_PARTICIPANTS} (current: ${connectedCount}).`,
       "ROOM_FULL"
     );
   }
@@ -747,21 +922,12 @@ export async function startRoomRoundWithSession(
   const expectedLobbyFilterJson =
     inlineFilter !== undefined ? undefined : computeCanonicalLobbyFilterJson(actor.room.deck_filter);
 
-  if (actor.room.current_round_id !== null) {
-    throw new RoomCapacityError(
-      "Round restart / multi-round deck seeding is out of CINE-016 scope and requires reserved roundNumber derivation (CINE-025).",
-      "ROOM_ALREADY_ACTIVE"
-    );
-  }
-
-  // CINE-016 MVP scope: initial LOBBY -> ACTIVE start only (roundNumber === 1).
-  // When CINE-025 enables round restarts, reserve/derive next roundNumber before seed generation.
-  const initialRoundNumber = 1;
+  const nextRoundNumber = await store.getNextRoundNumber(actor.room.id);
 
   // Fetch and deterministically order candidate deck outside DB transaction locks (L-053)
   const builtDeck = await fetchAndBuildDeterministicDeck({
     roomId: actor.room.id,
-    roundNumber: initialRoundNumber,
+    roundNumber: nextRoundNumber,
     filter: effectiveFilter,
     maxPages: options?.maxPages,
     discoverFetcher: options?.discoverFetcher,
@@ -774,12 +940,14 @@ export async function startRoomRoundWithSession(
       candidates: builtDeck.candidates,
       deckFilter: effectiveFilter,
       expectedLobbyFilterJson,
+      expectedRoundNumber: nextRoundNumber,
       deckSeed: builtDeck.deckSeed,
     },
     verifyLockedSession: ({ minGeneration }) => {
       verifyGuestCapabilityToken(token, {
         expectedRoomId: actor.room.id,
         minGeneration,
+        nowMs: options?.nowMs,
       });
     },
     beforeCommit: options?.beforeCommit,
@@ -801,9 +969,11 @@ export async function startRoomRoundWithSession(
     started.room,
     started.participants,
     viewerParticipant.participant_id,
-    new Date(),
+    evalNow,
     started.frozenParticipants,
-    started.candidates
+    started.candidates,
+    [],
+    { latestRoundStatus: started.round.status }
   );
 
   return {
@@ -815,8 +985,254 @@ export async function startRoomRoundWithSession(
       isEligibleVoter: started.frozenParticipants.some(
         (rp) => rp.participant_id.toLowerCase() === viewerParticipant.participant_id.toLowerCase()
       ),
+      canStart: role === "HOST" && safeRoom.canStart,
+      canRetry: role === "HOST" && safeRoom.canRetry,
       userVotes: {},
       nextCandidateIndex: safeRoom.status === "ACTIVE" && safeRoom.deckSize > 0 ? 0 : null,
+    },
+  };
+}
+
+/**
+ * Host-only action to recover an EXHAUSTED room back to LOBBY (`startRound: false`)
+ * or directly into a fresh filtered round (`startRound: true`).
+ */
+export async function retryRoomRoundWithSession(
+  request: Request,
+  roomId: string,
+  store: RoomAuthorityStore = getRoomAuthorityStore(),
+  options?: {
+    body?: Record<string, unknown>;
+    beforeCommit?: (retried: RetryRoundResult) => void | Promise<void>;
+    discoverFetcher?: TmdbDiscoverMovieFetcher;
+    maxPages?: number;
+    nowMs?: number;
+  }
+): Promise<RoomRetryResult> {
+  getCapabilitySecret();
+  const evalNow = options?.nowMs !== undefined ? new Date(options.nowMs) : new Date();
+  const actor = await requireAuthorizedRoomActor(request, roomId, store, {
+    requireHost: true,
+    nowMs: options?.nowMs,
+  });
+  const token = resolveGuestTokenFromRequest(request, actor.room.id);
+
+  if (isRoomRecordExpired(actor.room, evalNow)) {
+    throw new RoomExpiredError(`Room '${actor.room.code}' has expired.`);
+  }
+
+  const headerOperationId = extractOperationIdFromHeaders(request.headers);
+  const parsed = parseRetryRoundPayload(options?.body ?? {}, headerOperationId);
+
+  if (actor.room.status !== "EXHAUSTED" && parsed.operationId === null) {
+    throw new RoomNotExhaustedError(
+      `Cannot retry room: room status is '${actor.room.status}', but must be 'EXHAUSTED'.`
+    );
+  }
+
+  let builtDeck: Awaited<ReturnType<typeof fetchAndBuildDeterministicDeck>> | undefined;
+  let nextRoundNumber: number | undefined;
+  if (parsed.startRound && actor.room.status === "EXHAUSTED") {
+    const preflightParticipants = await store.getParticipantsByRoom(actor.room.id);
+    const connectedCount = preflightParticipants.filter(
+      (p) =>
+        Boolean(p.is_connected) ||
+        p.participant_id.toLowerCase() === actor.participant.participant_id.toLowerCase()
+    ).length;
+    if (connectedCount < MIN_PARTICIPANTS) {
+      throw new RoomCapacityError(
+        `Cannot start round: at least ${MIN_PARTICIPANTS} participants required (current: ${connectedCount}).`,
+        "INSUFFICIENT_PARTICIPANTS"
+      );
+    }
+    if (connectedCount > MAX_PARTICIPANTS) {
+      throw new RoomCapacityError(
+        `Cannot start round: maximum allowed participants is ${MAX_PARTICIPANTS} (current: ${connectedCount}).`,
+        "ROOM_FULL"
+      );
+    }
+
+    const effectiveFilter = parsed.deckFilter ?? resolveEffectiveRoomDeckFilter(actor.room.deck_filter);
+    nextRoundNumber = await store.getNextRoundNumber(actor.room.id);
+    builtDeck = await fetchAndBuildDeterministicDeck({
+      roomId: actor.room.id,
+      roundNumber: nextRoundNumber,
+      filter: effectiveFilter,
+      maxPages: options?.maxPages,
+      discoverFetcher: options?.discoverFetcher,
+    });
+  }
+
+  const retried = await store.retryExhaustedRoundWithSession({
+    roomId: actor.room.id,
+    actorParticipantId: actor.participant.participant_id,
+    options: {
+      deckFilter: parsed.deckFilter,
+      startRound: parsed.startRound,
+      ...(builtDeck ? { candidates: builtDeck.candidates, deckSeed: builtDeck.deckSeed } : {}),
+      expectedRoundId: actor.room.current_round_id,
+      ...(nextRoundNumber !== undefined ? { expectedRoundNumber: nextRoundNumber } : {}),
+      operationId: parsed.operationId,
+    },
+    verifyLockedSession: ({ minGeneration }) => {
+      verifyGuestCapabilityToken(token, {
+        expectedRoomId: actor.room.id,
+        minGeneration,
+        nowMs: options?.nowMs,
+      });
+    },
+    beforeCommit: options?.beforeCommit,
+  });
+
+  const initialViewerParticipant = retried.participants.find(
+    (p) => p.participant_id.toLowerCase() === actor.participant.participant_id.toLowerCase()
+  );
+  if (!initialViewerParticipant) {
+    throw new CapabilityAuthError(
+      403,
+      "PARTICIPANT_NOT_IN_ROOM",
+      "Host capability no longer matches an active participant."
+    );
+  }
+
+  const consistent = await store.getConsistentRoomSnapshot(retried.room.id);
+  const snapshotRoom = consistent?.room ?? retried.room;
+  const snapshotParticipants = consistent?.participants ?? retried.participants;
+  const viewerParticipant =
+    snapshotParticipants.find(
+      (p) => p.participant_id.toLowerCase() === actor.participant.participant_id.toLowerCase()
+    ) ?? initialViewerParticipant;
+  const roundParticipants = consistent?.roundParticipants ?? retried.frozenParticipants;
+  const candidates = consistent?.candidates ?? retried.candidates;
+  const votes = consistent?.votes ?? [];
+  const latestRoundStatus = consistent?.latestRound?.status ?? retried.round?.status ?? null;
+  const role = resolveAuthoritativeRole(snapshotRoom, viewerParticipant);
+  const safeRoom = buildSafeRoomSnapshot(
+    snapshotRoom,
+    snapshotParticipants,
+    viewerParticipant.participant_id,
+    evalNow,
+    roundParticipants,
+    candidates,
+    votes,
+    { latestRoundStatus }
+  );
+  const isEligibleVoter = Boolean(
+    safeRoom.frozenQuorum !== null &&
+      roundParticipants.some(
+        (rp) => rp.participant_id.toLowerCase() === viewerParticipant.participant_id.toLowerCase()
+      )
+  );
+  const viewerVoteSummary = buildViewerVoteSummary(
+    viewerParticipant.participant_id,
+    safeRoom.currentCandidateIndex,
+    safeRoom.currentCandidate?.candidateId ?? null,
+    isEligibleVoter,
+    votes
+  );
+
+  return {
+    retried: true,
+    idempotentReplay: retried.idempotentReplay,
+    room: safeRoom,
+    viewer: {
+      participantId: viewerParticipant.participant_id,
+      displayName: viewerParticipant.display_name,
+      role,
+      isEligibleVoter,
+      canStart: role === "HOST" && safeRoom.canStart,
+      canRetry: role === "HOST" && safeRoom.canRetry,
+      userVotes: viewerVoteSummary.userVotes,
+      nextCandidateIndex: viewerVoteSummary.nextCandidateIndex,
+    },
+  };
+}
+
+/**
+ * Updates the authenticated participant's server-authoritative presence / disconnect state
+ * so the 90-second reconnect grace timer runs strictly from persisted timestamps.
+ */
+export async function updateParticipantPresenceWithSession(
+  request: Request,
+  roomId: string,
+  store: RoomAuthorityStore = getRoomAuthorityStore(),
+  options?: {
+    body?: Record<string, unknown>;
+    beforeCommit?: (updated: UpdatePresenceResult) => void | Promise<void>;
+    nowMs?: number;
+  }
+): Promise<RoomPresenceResult> {
+  getCapabilitySecret();
+  const evalNow = options?.nowMs !== undefined ? new Date(options.nowMs) : new Date();
+  const actor = await requireAuthorizedRoomActor(request, roomId, store, {
+    nowMs: options?.nowMs,
+  });
+  const token = resolveGuestTokenFromRequest(request, actor.room.id);
+  const body = options?.body ?? (await readBoundedJson(request));
+  const parsed = parsePresencePayload(body);
+
+  const updated = await store.updateParticipantPresenceWithSession({
+    roomId: actor.room.id,
+    participantId: actor.participant.participant_id,
+    connected: parsed.connected,
+    verifyLockedSession: ({ minGeneration }) => {
+      verifyGuestCapabilityToken(token, {
+        expectedRoomId: actor.room.id,
+        minGeneration,
+        nowMs: options?.nowMs,
+      });
+    },
+    beforeCommit: options?.beforeCommit,
+  });
+
+  const consistent = await store.getConsistentRoomSnapshot(updated.room.id);
+  const snapshotRoom = consistent?.room ?? updated.room;
+  const snapshotParticipants = consistent?.participants ?? updated.participants;
+  const viewerParticipant =
+    snapshotParticipants.find(
+      (p) => p.participant_id.toLowerCase() === actor.participant.participant_id.toLowerCase()
+    ) ?? updated.participant;
+  const roundParticipants = consistent?.roundParticipants ?? [];
+  const candidates = consistent?.candidates ?? [];
+  const votes = consistent?.votes ?? [];
+  const role = resolveAuthoritativeRole(snapshotRoom, viewerParticipant);
+  const safeRoom = buildSafeRoomSnapshot(
+    snapshotRoom,
+    snapshotParticipants,
+    viewerParticipant.participant_id,
+    evalNow,
+    roundParticipants,
+    candidates,
+    votes,
+    { latestRoundStatus: consistent?.latestRound?.status ?? null }
+  );
+  const isEligibleVoter = Boolean(
+    safeRoom.frozenQuorum !== null &&
+      roundParticipants.some(
+        (rp) => rp.participant_id.toLowerCase() === viewerParticipant.participant_id.toLowerCase()
+      )
+  );
+  const viewerVoteSummary = buildViewerVoteSummary(
+    viewerParticipant.participant_id,
+    safeRoom.currentCandidateIndex,
+    safeRoom.currentCandidate?.candidateId ?? null,
+    isEligibleVoter,
+    votes
+  );
+
+  return {
+    updated: true,
+    changed: updated.changed,
+    room: safeRoom,
+    viewer: {
+      participantId: viewerParticipant.participant_id,
+      displayName: viewerParticipant.display_name,
+      role,
+      isEligibleVoter,
+      canStart: role === "HOST" && safeRoom.canStart,
+      canRetry: role === "HOST" && safeRoom.canRetry,
+      userVotes: viewerVoteSummary.userVotes,
+      nextCandidateIndex: viewerVoteSummary.nextCandidateIndex,
     },
   };
 }
@@ -829,9 +1245,11 @@ export async function leaveRoomWithSession(
   request: Request,
   roomId: string,
   store: RoomAuthorityStore = getRoomAuthorityStore(),
-  options?: { beforeCommit?: (left: LeaveLobbyResult) => void | Promise<void> }
+  options?: { beforeCommit?: (left: LeaveLobbyResult) => void | Promise<void>; nowMs?: number }
 ): Promise<LeaveRoomResult> {
-  const actor = await requireRoomActor(request, roomId, store);
+  const actor = await requireAuthorizedRoomActor(request, roomId, store, {
+    nowMs: options?.nowMs,
+  });
   const token = resolveGuestTokenFromRequest(request, actor.room.id);
 
   const left = await store.leaveLobbyWithSession({
@@ -841,6 +1259,7 @@ export async function leaveRoomWithSession(
       verifyGuestCapabilityToken(token, {
         expectedRoomId: actor.room.id,
         minGeneration,
+        nowMs: options?.nowMs,
       });
     },
     beforeCommit: options?.beforeCommit,
@@ -866,10 +1285,13 @@ export async function submitRoomVoteWithSession(
   request: Request,
   roomId: string,
   store: RoomAuthorityStore = getRoomAuthorityStore(),
-  options?: { beforeCommit?: (result: RecordVoteSessionResult) => void | Promise<void> }
+  options?: { beforeCommit?: (result: RecordVoteSessionResult) => void | Promise<void>; nowMs?: number }
 ): Promise<RoomVoteSubmissionResult> {
   getCapabilitySecret();
-  const actor = await requireRoomActor(request, roomId, store);
+  const evalNow = options?.nowMs !== undefined ? new Date(options.nowMs) : new Date();
+  const actor = await requireAuthorizedRoomActor(request, roomId, store, {
+    nowMs: options?.nowMs,
+  });
   const token = resolveGuestTokenFromRequest(request, actor.room.id);
   const headerOperationId = extractOperationIdFromHeaders(request.headers);
   const body = await readBoundedJson(request);
@@ -887,6 +1309,7 @@ export async function submitRoomVoteWithSession(
       verifyGuestCapabilityToken(token, {
         expectedRoomId: actor.room.id,
         minGeneration,
+        nowMs: options?.nowMs,
       });
     },
     beforeCommit: options?.beforeCommit,
@@ -903,15 +1326,17 @@ export async function submitRoomVoteWithSession(
     );
   }
 
+  const latestRound = await store.getLatestRound(recorded.room.id);
   const role = resolveAuthoritativeRole(recorded.room, viewerParticipant);
   const safeRoom = buildSafeRoomSnapshot(
     recorded.room,
     recorded.participants,
     viewerParticipant.participant_id,
-    new Date(),
+    evalNow,
     recorded.roundParticipants,
     recorded.candidates,
-    recorded.votes
+    recorded.votes,
+    { latestRoundStatus: latestRound?.status ?? null }
   );
   const isEligibleVoter = Boolean(
     safeRoom.frozenQuorum !== null &&
@@ -948,6 +1373,8 @@ export async function submitRoomVoteWithSession(
       displayName: viewerParticipant.display_name,
       role,
       isEligibleVoter,
+      canStart: role === "HOST" && safeRoom.canStart,
+      canRetry: role === "HOST" && safeRoom.canRetry,
       userVotes: viewerVoteSummary.userVotes,
       nextCandidateIndex: viewerVoteSummary.nextCandidateIndex,
     },
