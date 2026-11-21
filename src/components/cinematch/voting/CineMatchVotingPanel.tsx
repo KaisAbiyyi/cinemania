@@ -68,7 +68,7 @@ export function CineMatchVotingPanel({
   const connected = connection === "live" && !offline;
   const eligible = active && Boolean(viewer?.isEligibleVoter) && Boolean(candidate) &&
     viewer?.nextCandidateIndex === room?.currentCandidateIndex && !recordedChoice;
-  const canVote = Boolean(eligible && connected && !loading && !currentSubmission && !inFlight.current);
+  const canVote = Boolean(eligible && connected && !loading && !currentSubmission);
   const waiting = Boolean(active && candidate && (recordedChoice || (viewer?.isEligibleVoter && viewer.nextCandidateIndex === null)));
   const cardNumber = typeof room?.currentCandidateIndex === "number" ? room.currentCandidateIndex + 1 : 0;
 
