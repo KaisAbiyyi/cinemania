@@ -270,7 +270,11 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
     }
   });
 
-  test("WebSocket interruption reconnects and resyncs the Supabase Realtime room", async ({ browser }, testInfo) => {
+  test("WebSocket interruption reconnects and resyncs the Supabase Realtime room", async ({ browser, browserName }, testInfo) => {
+    test.skip(
+      browserName === "webkit",
+      "Playwright WebSocket routing does not intercept this WebKit Supabase socket; hosted WebKit interruption remains NOT VERIFIED."
+    );
     const interruption: {
       connections: number;
       closes: number;
