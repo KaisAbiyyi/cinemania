@@ -64,6 +64,55 @@ test.describe("CINE-024 — simulated interaction preview (NOT live backend cert
     await expect(page.getByTestId("cine024-waiting")).toContainText("SKIP vote is locked");
   });
 
+  test("explicit 429 rejection unlocks only after successful server snapshot resync, then accepts one vote", async ({ page }) => {
+    await page.getByRole("checkbox", { name: "Simulate 429 rejection" }).check();
+    await page.getByTestId("cine024-like").click();
+    await expect(page.getByTestId("cine024-submission")).toContainText("rate-limited");
+    await expect(page.getByTestId("cine024-preview-calls")).toHaveText("Requests: 1");
+    await expect(page.getByTestId("cine024-like")).toBeDisabled();
+    await expect(page.getByTestId("cine024-skip")).toBeDisabled();
+
+    // Failed GET may not authorize any new decision.
+    await page.getByRole("checkbox", { name: "Simulate failed resync" }).check();
+    await page.getByRole("button", { name: "Resync", exact: true }).click();
+    await expect(page.getByTestId("cine024-like")).toBeDisabled();
+    await expect(page.getByText("Could not retrieve the latest authoritative room snapshot", { exact: false })).toBeVisible();
+
+    await page.getByRole("checkbox", { name: "Simulate failed resync" }).uncheck();
+    await page.getByRole("button", { name: "Resync", exact: true }).click();
+    await expect(page.getByTestId("cine024-submission")).toHaveCount(0);
+    await expect(page.getByTestId("cine024-skip")).toBeEnabled();
+
+    await page.getByTestId("cine024-skip").evaluate((button: HTMLButtonElement) => {
+      button.click();
+      button.click();
+    });
+    await expect(page.getByTestId("cine024-preview-calls")).toHaveText("Requests: 2");
+    await expect(page.getByTestId("cine024-waiting")).toContainText("SKIP vote is locked");
+  });
+
+  test("a resynced server-recorded vote is never unlocked or submitted again", async ({ page }) => {
+    await page.getByRole("checkbox", { name: "Simulate 429 rejection" }).check();
+    await page.getByTestId("cine024-like").click();
+    await expect(page.getByTestId("cine024-submission")).toContainText("rate-limited");
+    await page.getByRole("checkbox", { name: "Server recorded vote on resync" }).check();
+    await page.getByRole("button", { name: "Resync", exact: true }).click();
+    await expect(page.getByTestId("cine024-waiting")).toContainText("LIKE vote is locked");
+    await expect(page.getByTestId("cine024-preview-calls")).toHaveText("Requests: 1");
+    await expect(page.getByTestId("cine024-like")).toHaveCount(0);
+    await expect(page.getByTestId("cine024-skip")).toHaveCount(0);
+  });
+
+  test("definitive 403 permission denial cannot be unlocked by an unchanged room snapshot", async ({ page }) => {
+    await page.getByRole("checkbox", { name: "Simulate 403 denial" }).check();
+    await page.getByTestId("cine024-like").click();
+    await expect(page.getByTestId("cine024-submission")).toContainText("Vote rejected by server");
+    await expect(page.getByTestId("cine024-preview-calls")).toHaveText("Requests: 1");
+    await page.getByRole("button", { name: "Resync", exact: true }).click();
+    await expect(page.getByTestId("cine024-like")).toBeDisabled();
+    await expect(page.getByTestId("cine024-preview-calls")).toHaveText("Requests: 1");
+  });
+
   test("reduced motion, screen-reader labels, minimum 44px targets and mobile overflow", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.setViewportSize({ width: 375, height: 812 });
