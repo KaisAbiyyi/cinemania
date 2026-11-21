@@ -30,6 +30,8 @@ const cardStyle =
 export function RoomResultExperience({ roomId }: { roomId: string }) {
   const [payload, setPayload] = useState<ResultPayload | null>(null);
   const payloadRef = useRef<ResultPayload | null>(null);
+  const accessRevokedRef = useRef(false);
+  const [expired, setExpired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [online, setOnline] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +43,7 @@ export function RoomResultExperience({ roomId }: { roomId: string }) {
 
   const acceptSnapshot = useCallback(
     (value: unknown): boolean => {
+      if (accessRevokedRef.current) return false;
       const parsed = parseResultPayload(value, roomId);
       if (!parsed) return false;
       const prior = payloadRef.current;
@@ -64,6 +67,8 @@ export function RoomResultExperience({ roomId }: { roomId: string }) {
       if (!response.ok) {
         if ([401, 403, 404, 410].includes(response.status)) {
           // Do not keep rendering sensitive stale results after access is revoked.
+          accessRevokedRef.current = true;
+          setExpired(response.status === 410);
           payloadRef.current = null;
           setPayload(null);
           setError("Room access is unavailable or this room has expired.");
@@ -77,6 +82,7 @@ export function RoomResultExperience({ roomId }: { roomId: string }) {
         throw new Error("Invalid authoritative snapshot");
       }
       acceptSnapshot(responseBody);
+      setExpired(false);
       setError(null);
     } catch {
       // Keep the last authorized snapshot visible, but never call it live.
@@ -219,8 +225,13 @@ export function RoomResultExperience({ roomId }: { roomId: string }) {
       )}
       {!loading && !room && (
         <section className={cardStyle}>
-          <h1 className="text-2xl font-bold">Result unavailable</h1>
-          <p className="mt-2 text-[var(--cm-ink-muted)]">Only members of this room can see its result. Refresh to try again.</p>
+          <h1 className="text-2xl font-bold">{expired ? "Room expired" : "Result unavailable"}</h1>
+          <p className="mt-2 text-[var(--cm-ink-muted)]">
+            {expired
+              ? "This room cannot be rejoined. Create or join a new CineMatch room."
+              : "Only members of this room can see its result. Refresh to try again."}
+          </p>
+          {expired && <Link href="/cinematch" className="mt-3 inline-flex min-h-[44px] items-center text-[var(--cm-brand-text)] underline">Start another movie night</Link>}
         </section>
       )}
 
