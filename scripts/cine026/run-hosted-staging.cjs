@@ -2,8 +2,13 @@
 "use strict";
 
 const { spawnSync } = require("node:child_process");
+const { randomBytes } = require("node:crypto");
 const { Pool } = require("pg");
 const { loadHostedStaging, assertEmptyHostedApplication } = require("../../tests/hosted-supabase/environment.cjs");
+
+function createCapabilitySecret() {
+  return randomBytes(32).toString("hex");
+}
 
 function run(program, args, env, shell = process.platform === "win32") {
   const result = spawnSync(program, args, { env, stdio: "inherit", shell });
@@ -38,7 +43,9 @@ async function main() {
   // One application process serves up to five browser contexts. Keep its pool at
   // five and leave room in the hosted session-pooler budget for the inspector.
   env.CINEMATCH_PG_POOL_MAX = "5";
-  env.CINEMATCH_CAPABILITY_SECRET = "cine026-staging-only-synthetic-capability-secret-32-bytes";
+  // A new signing key per invocation prevents cross-run capability reuse.
+  // Never print or persist this value.
+  env.CINEMATCH_CAPABILITY_SECRET = createCapabilitySecret();
   env.NEXT_PUBLIC_SUPABASE_URL = staging.url;
   env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = staging.stackEnv.ANON_KEY;
   env.TMDB_API_RAT = "cine026-staging-offline-mock-provider";
@@ -67,8 +74,12 @@ async function main() {
   process.exit(e2e);
 }
 
-main().catch((error) => {
-  // Keep database error details, but never serialize environment or connection config.
-  console.error("CINE-026 hosted staging qualification BLOCKED/FAILED:", error.code || error.message);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    // Keep database error details, but never serialize environment or connection config.
+    console.error("CINE-026 hosted staging qualification BLOCKED/FAILED:", error.code || error.message);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { createCapabilitySecret };
