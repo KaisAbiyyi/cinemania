@@ -144,8 +144,11 @@ jobs:
       - name: Build Next.js application
         run: npm run build
 
-      - name: Run Playwright E2E Tests
-        run: npm run test:e2e
+      - name: Run existing Playwright E2E tests (isolated service quota)
+        run: npm run test:e2e -- --grep-invert "CINE-023 real create / invite / lobby workflow"
+
+      - name: Run CINE-023 2-to-5 browser E2E tests (fresh service quota)
+        run: npm run test:e2e -- --grep "CINE-023 real create / invite / lobby workflow"
 
       - name: Upload Playwright Test Report Artifact
         if: always()
