@@ -7,7 +7,6 @@ import { ArrowLeft, Clapperboard, LogOut, Play, RefreshCw, Share2, SlidersHorizo
 import type { RealtimeStatus } from "@/lib/realtime/roomRealtime";
 import {
   CineMatchAlertCard,
-  ConnectionStatusBanner,
   ParticipantRosterList,
   RoomCodeChip,
 } from "@/components/cinematch/CineMatchPrimitives";
@@ -173,7 +172,20 @@ export function RoomLobby({ roomId }: { roomId: string }) {
         <h1 className="text-3xl font-extrabold text-[var(--cm-ink)]">{room?.status === "LOBBY" ? "The Screening Lobby" : "Your Screening Room"}</h1>
         <p className="text-[var(--cm-ink-muted)]">{room ? "Welcome, " + viewer?.displayName + ". Your membership: " + (isHost ? "Host" : "Guest") + "." : "Checking your private room membership…"}</p>
       </header>
-      <ConnectionStatusBanner status={connection} isOffline={offline} onResync={() => void refresh()} />
+      <div role="status" aria-live="polite" data-testid="cm-connection-banner"
+        className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--cm-border)] bg-[var(--cm-surface-subtle)] px-4 py-3 text-sm text-[var(--cm-ink)]">
+        <p>{offline
+          ? "Offline — room actions are paused. Your last known roster is preserved."
+          : connection === "degraded"
+            ? "Snapshot polling every 3 seconds. A Realtime channel is not connected."
+            : connection === "reconnecting"
+              ? "Room state could not be refreshed. Retrying when connectivity returns."
+              : "Connecting to the room authority…"}</p>
+        <button type="button" onClick={() => void refresh()} disabled={offline}
+          className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-[var(--cm-border)] bg-[var(--cm-surface)] px-3 font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-50">
+          <RefreshCw className="h-4 w-4" aria-hidden="true" /> Refresh snapshot
+        </button>
+      </div>
       {error && <CineMatchAlertCard code={error.code} message={roomErrorMessage(error)} retryAfterSeconds={error.retryAfterSeconds} onRetry={() => void refresh()} />}
       {!room && (
         <section role="status" aria-live="polite" className="rounded-2xl border border-[var(--cm-border)] bg-[var(--cm-surface)] p-8 text-[var(--cm-ink)]">
