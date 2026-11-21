@@ -276,8 +276,9 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       closes: number;
       routes: number;
       broadcasts: number;
+      snapshotReads: number;
       activeRoute?: { close: (options?: { code?: number; reason?: string }) => Promise<void> };
-    } = { connections: 0, closes: 0, routes: 0, broadcasts: 0 };
+    } = { connections: 0, closes: 0, routes: 0, broadcasts: 0, snapshotReads: 0 };
     const room = await makeRoom(browser, testInfo, 2, async (context, index) => {
       if (index !== 1 || browserName !== "webkit") return;
       // WebKit exposes the real Supabase socket but Playwright's routeWebSocket
@@ -317,6 +318,10 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
     });
     try {
       await startVoting(room);
+      room.pages[1]!.on("request", (request) => {
+        const url = new URL(request.url());
+        if (request.method() === "GET" && url.pathname === `/api/rooms/${room.roomId}`) interruption.snapshotReads += 1;
+      });
       await expect.poll(() => interruption.connections, { timeout: 20000 }).toBeGreaterThan(0);
       if (browserName !== "webkit") await expect.poll(() => interruption.routes, { timeout: 20000 }).toBeGreaterThan(0);
       if (browserName === "webkit") {
@@ -355,8 +360,13 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       await expect.poll(() => interruption.connections, { timeout: 30000 }).toBeGreaterThan(connectionsWhileOffline);
       await expectLive(room.pages[1]!);
       await expect(room.pages[1]!.getByTestId("cine024-progress")).toHaveText("Card 02 / 20");
+      const broadcastsBeforeSecondHostVote = interruption.broadcasts;
+      const snapshotsBeforeSecondHostVote = interruption.snapshotReads;
       const secondHostVote = await clickVote(room.pages[0]!, room.roomId, "SKIP");
       expect(secondHostVote.room.currentCandidateIndex).toBe(1);
+      await expect.poll(() => interruption.broadcasts, { timeout: 30000 }).toBeGreaterThan(broadcastsBeforeSecondHostVote);
+      await expect.poll(() => interruption.snapshotReads, { timeout: 30000 }).toBeGreaterThan(snapshotsBeforeSecondHostVote);
+      await expect(room.pages[1]!.getByTestId("cine024-progress")).toHaveText("Card 02 / 20");
       const secondGuestVote = await clickVote(room.pages[1]!, room.roomId, "SKIP");
       expect(secondGuestVote.room.currentCandidateIndex).toBe(2);
       await expect(room.pages[1]!.getByTestId("cine024-progress")).toHaveText("Card 03 / 20");
