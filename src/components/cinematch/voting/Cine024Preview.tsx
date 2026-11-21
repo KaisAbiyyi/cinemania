@@ -81,7 +81,7 @@ function fixture(round: number): VotingSnapshot {
  */
 export function Cine024Preview() {
   const round = useRef(1);
-  const [snapshot, setSnapshot] = useState<VotingSnapshot>(() => fixture(round.current));
+  const [snapshot, setSnapshot] = useState<VotingSnapshot>(() => fixture(1));
   const [connection, setConnection] = useState<RealtimeStatus>("live");
   const [calls, setCalls] = useState(0);
   const [delayMs, setDelayMs] = useState(450);
