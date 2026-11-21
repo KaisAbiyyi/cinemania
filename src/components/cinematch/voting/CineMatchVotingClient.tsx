@@ -69,6 +69,17 @@ export function CineMatchVotingClient({ roomId }: { roomId: string }) {
     else await fetchSnapshot();
   }, [fetchSnapshot]);
 
+  // The voting panel must not infer a safe retry from a transport-only success.
+  // Force a real authenticated GET after realtime reconciliation before reporting
+  // the exact snapshot on which a rejected vote can be reconsidered.
+  const resyncWithSnapshot = useCallback(async (): Promise<VotingSnapshot> => {
+    await resync();
+    await fetchSnapshot();
+    const latest = currentRef.current;
+    if (!latest) throw new Error("No authoritative snapshot after resync");
+    return latest;
+  }, [resync, fetchSnapshot]);
+
   useEffect(() => {
     actionsRef.current = createRoomActions({ roomId, accept, resync });
     return () => { actionsRef.current = null; };
@@ -160,7 +171,7 @@ export function CineMatchVotingClient({ roomId }: { roomId: string }) {
           if (!actionsRef.current) throw new Error("Room action layer is not initialized");
           return actionsRef.current.vote(input);
         }}
-        onResync={resync}
+        onResync={resyncWithSnapshot}
       />
     </div>
   );
