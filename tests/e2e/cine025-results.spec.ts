@@ -165,6 +165,18 @@ test.describe("CINE-025 private result UI (seeded, browser-level transport fixtu
     await expect(alert).not.toContainText(ROOM_ID);
   });
 
+  test("HTTP 410 produces an explicit expired state and never leaks prior results", async ({ page, context }) => {
+    await context.route(`**/api/rooms/${ROOM_ID}`, (route) => route.fulfill({
+      status: 410,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "ROOM_EXPIRED" }),
+    }));
+    await page.goto(PATH);
+    await expect(page.getByRole("heading", { name: "Room expired" })).toBeVisible();
+    await expect(page.getByTestId("cine025-match")).toHaveCount(0);
+    await expect(page.getByTestId("cine025-start-fresh")).toHaveCount(0);
+  });
+
   test("keyboard and reduced motion remain usable at mobile width", async ({ page, context }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.emulateMedia({ reducedMotion: "reduce" });
