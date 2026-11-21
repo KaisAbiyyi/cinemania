@@ -173,7 +173,7 @@ export function RoomLobby({ roomId }: { roomId: string }) {
         <h1 className="text-3xl font-extrabold text-[var(--cm-ink)]">{room?.status === "LOBBY" ? "The Screening Lobby" : "Your Screening Room"}</h1>
         <p className="text-[var(--cm-ink-muted)]">{room ? "Welcome, " + viewer?.displayName + ". Your membership: " + (isHost ? "Host" : "Guest") + "." : "Checking your private room membership…"}</p>
       </header>
-      <ConnectionStatusBanner status={connection} isOffline={offline} onResync={() => void refresh()} resyncing={inFlight.current} />
+      <ConnectionStatusBanner status={connection} isOffline={offline} onResync={() => void refresh()} />
       {error && <CineMatchAlertCard code={error.code} message={roomErrorMessage(error)} retryAfterSeconds={error.retryAfterSeconds} onRetry={() => void refresh()} />}
       {!room && (
         <section role="status" aria-live="polite" className="rounded-2xl border border-[var(--cm-border)] bg-[var(--cm-surface)] p-8 text-[var(--cm-ink)]">
