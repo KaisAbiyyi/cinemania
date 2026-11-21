@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Copy, Film, RefreshCw, Sparkles, Ticket, WifiOff } from "lucide-react";
 import {
   CandidatePosterStage,
@@ -92,15 +92,6 @@ export function RoomResultExperience({ roomId }: { roomId: string }) {
     }
   }, [roomId, acceptSnapshot]);
 
-  const roomActions = useMemo(
-    () => createRoomActions({
-      roomId,
-      accept: (snapshot) => acceptSnapshot(snapshot),
-      resync,
-    }),
-    [roomId, acceptSnapshot, resync]
-  );
-
   useEffect(() => {
     void resync();
     const refreshIfVisible = () => {
@@ -161,6 +152,13 @@ export function RoomResultExperience({ roomId }: { roomId: string }) {
     setError(null);
     setFeedback(null);
     try {
+      // Construct the mutation handler in the event, not during React render.
+      // It captures the authoritative snapshot gate without reading refs in render.
+      const roomActions = createRoomActions({
+        roomId,
+        accept: (snapshot) => acceptSnapshot(snapshot),
+        resync,
+      });
       const result = await roomActions.retryRound({
         roundId: payload.room.currentRoundId,
         startRound: mode === "fresh",
