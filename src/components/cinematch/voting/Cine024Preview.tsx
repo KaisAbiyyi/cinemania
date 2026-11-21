@@ -86,10 +86,22 @@ export function Cine024Preview() {
   const [calls, setCalls] = useState(0);
   const [delayMs, setDelayMs] = useState(450);
   const [dropAck, setDropAck] = useState(false);
+  const [rejectNext, setRejectNext] = useState(false);
+  const [denyNext, setDenyNext] = useState(false);
+  const [failResync, setFailResync] = useState(false);
+  const [recordOnResync, setRecordOnResync] = useState(false);
 
   async function vote(input: { candidateId: string; movieId: number; vote: VoteChoice; roundId: string | null }): Promise<RoomActionResult> {
     setCalls((n) => n + 1);
     await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    if (rejectNext) {
+      setRejectNext(false);
+      return { ok: false, status: 429, code: "RATE_LIMITED", message: "Simulated explicit rate-limit rejection", stale: false, transient: false };
+    }
+    if (denyNext) {
+      setDenyNext(false);
+      return { ok: false, status: 403, code: "FORBIDDEN", message: "Simulated permission denial", stale: false, transient: false };
+    }
     if (dropAck) {
       return { ok: false, status: 0, code: "NETWORK_ERROR", message: "Simulated lost acknowledgement", stale: false, transient: true };
     }
@@ -139,6 +151,10 @@ export function Cine024Preview() {
     setConnection("live");
     setCalls(0);
     setDropAck(false);
+    setRejectNext(false);
+    setDenyNext(false);
+    setFailResync(false);
+    setRecordOnResync(false);
   }
 
   return (
@@ -158,9 +174,27 @@ export function Cine024Preview() {
           </select>
         </label>
         <label className="flex min-h-[44px] items-center gap-2"><input type="checkbox" checked={dropAck} onChange={(event) => setDropAck(event.target.checked)} /> Simulate lost ack</label>
+        <label className="flex min-h-[44px] items-center gap-2"><input type="checkbox" checked={rejectNext} onChange={(event) => setRejectNext(event.target.checked)} /> Simulate 429 rejection</label>
+        <label className="flex min-h-[44px] items-center gap-2"><input type="checkbox" checked={denyNext} onChange={(event) => setDenyNext(event.target.checked)} /> Simulate 403 denial</label>
+        <label className="flex min-h-[44px] items-center gap-2"><input type="checkbox" checked={failResync} onChange={(event) => setFailResync(event.target.checked)} /> Simulate failed resync</label>
+        <label className="flex min-h-[44px] items-center gap-2"><input type="checkbox" checked={recordOnResync} onChange={(event) => setRecordOnResync(event.target.checked)} /> Server recorded vote on resync</label>
         <span data-testid="cine024-preview-calls" className="font-mono tabular-nums">Requests: {calls}</span>
       </div>
-      <CineMatchVotingPanel snapshot={snapshot} connection={connection} onVote={vote} onResync={async () => undefined} />
+      <CineMatchVotingPanel snapshot={snapshot} connection={connection} onVote={vote} onResync={async () => {
+        if (failResync) throw new Error("Simulated snapshot GET failure");
+        if (!recordOnResync || !snapshot.room.currentCandidate) return snapshot;
+        const candidateId = snapshot.room.currentCandidate.candidateId;
+        const latest: VotingSnapshot = {
+          room: { ...snapshot.room, stateVersion: snapshot.room.stateVersion + 1 },
+          viewer: {
+            ...snapshot.viewer,
+            userVotes: { ...snapshot.viewer.userVotes, [candidateId]: "LIKE" },
+            nextCandidateIndex: null,
+          },
+        };
+        setSnapshot(latest);
+        return latest;
+      }} />
     </div>
   );
 }
