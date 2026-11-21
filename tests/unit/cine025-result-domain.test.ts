@@ -67,7 +67,7 @@ describe("CINE-025 authoritative room outcome", () => {
     expect(payload && matchRevealKey(payload.room)).toBe(
       `${roomId}:${roundId}:27205`
     );
-    expect(parseResultPayload({ ...matchPayload(), room: { ...matchPayload().room, status: "ACTIVE" } }, roomId)?.room.status).toBe("ACTIVE");
+    expect(parseResultPayload({ ...matchPayload(), room: { ...matchPayload().room, status: "ACTIVE" } }, roomId)).toBeNull();
   });
 
   it("fails closed for wrong room, missing identity or mismatched committed movie", () => {
