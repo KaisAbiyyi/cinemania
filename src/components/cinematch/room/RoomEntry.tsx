@@ -96,7 +96,7 @@ export function RoomEntry({ initialCode = "" }: { initialCode?: string }) {
         <aside className="min-w-0 space-y-4 rounded-2xl border border-[var(--cm-border)] bg-[var(--cm-surface-subtle)] p-5 sm:p-7">
           <Users className="h-7 w-7 text-[var(--cm-brand-text)]" aria-hidden="true" />
           <h2 className="text-xl font-bold text-[var(--cm-ink)]">Movie night, minus the debate.</h2>
-          <p className="text-sm leading-relaxed text-[var(--cm-ink-muted)]">Share a code with friends. The lobby shows who's connected, and the host can start with 2–5 participants. Film selections are decided by the server.</p>
+          <p className="text-sm leading-relaxed text-[var(--cm-ink-muted)]">Share a code with friends. The lobby shows who is connected, and the host can start with 2–5 participants. Film selections are decided by the server.</p>
           <p className="text-sm font-semibold text-[var(--cm-ink)]">Private room access uses secure browser cookies. Never share a browser session.</p>
         </aside>
       </div>
