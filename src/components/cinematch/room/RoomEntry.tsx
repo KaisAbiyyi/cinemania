@@ -68,7 +68,7 @@ export function RoomEntry({ initialCode = "" }: { initialCode?: string }) {
               <LogIn className="mr-1 inline h-4 w-4" aria-hidden="true" /> Join
             </button>
           </div>
-          <h2 className="text-xl font-bold text-[var(--cm-ink)]">{mode === "create" ? "Create a screening room" : "Join a friend's room"}</h2>
+          <h2 className="text-xl font-bold text-[var(--cm-ink)]">{mode === "create" ? "Create a screening room" : "Join a friend&apos;s room"}</h2>
           <form onSubmit={(event) => void submit(event)} className="space-y-5" noValidate>
             <div className="space-y-2">
               <label htmlFor="cm-display-name" className="block text-sm font-semibold text-[var(--cm-ink)]">Your display name</label>
