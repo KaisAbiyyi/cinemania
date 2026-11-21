@@ -276,9 +276,10 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       closes: number;
       routes: number;
       broadcasts: number;
-      snapshotReads: number;
+      broadcastVersions: number[];
+      snapshotVersions: number[];
       activeRoute?: { close: (options?: { code?: number; reason?: string }) => Promise<void> };
-    } = { connections: 0, closes: 0, routes: 0, broadcasts: 0, snapshotReads: 0 };
+    } = { connections: 0, closes: 0, routes: 0, broadcasts: 0, broadcastVersions: [], snapshotVersions: [] };
     const room = await makeRoom(browser, testInfo, 2, async (context, index) => {
       if (index !== 1 || browserName !== "webkit") return;
       // WebKit exposes the real Supabase socket but Playwright's routeWebSocket
@@ -312,15 +313,23 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
         socket.on("close", () => { interruption.closes += 1; });
         socket.on("framereceived", ({ payload }) => {
           const frame = decodeRealtimeFrame(payload);
-          if (frame?.topic?.includes(room.roomId) && frame.event === "broadcast" && frame.payload?.event === "room_changed") interruption.broadcasts += 1;
+          const hint = frame?.payload?.payload ?? frame?.payload;
+          if (frame?.topic?.includes(room.roomId) && frame.event === "broadcast" && frame.payload?.event === "room_changed" && hint?.roomId === room.roomId && Number.isSafeInteger(hint.version)) {
+            interruption.broadcasts += 1;
+            interruption.broadcastVersions.push(hint.version!);
+          }
         });
       });
     });
     try {
       await startVoting(room);
-      room.pages[1]!.on("request", (request) => {
-        const url = new URL(request.url());
-        if (request.method() === "GET" && url.pathname === `/api/rooms/${room.roomId}`) interruption.snapshotReads += 1;
+      room.pages[1]!.on("response", (response) => {
+        const request = response.request();
+        const url = new URL(response.url());
+        if (request.method() !== "GET" || url.pathname !== `/api/rooms/${room.roomId}`) return;
+        void response.json().then((value: { room?: { stateVersion?: number } }) => {
+          if (Number.isSafeInteger(value.room?.stateVersion)) interruption.snapshotVersions.push(value.room!.stateVersion!);
+        }).catch(() => undefined);
       });
       await expect.poll(() => interruption.connections, { timeout: 20000 }).toBeGreaterThan(0);
       if (browserName !== "webkit") await expect.poll(() => interruption.routes, { timeout: 20000 }).toBeGreaterThan(0);
@@ -361,11 +370,15 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       await expectLive(room.pages[1]!);
       await expect(room.pages[1]!.getByTestId("cine024-progress")).toHaveText("Card 02 / 20");
       const broadcastsBeforeSecondHostVote = interruption.broadcasts;
-      const snapshotsBeforeSecondHostVote = interruption.snapshotReads;
+      const broadcastVersionsBeforeSecondHostVote = interruption.broadcastVersions.length;
+      const snapshotVersionsBeforeSecondHostVote = interruption.snapshotVersions.length;
       const secondHostVote = await clickVote(room.pages[0]!, room.roomId, "SKIP");
       expect(secondHostVote.room.currentCandidateIndex).toBe(1);
       await expect.poll(() => interruption.broadcasts, { timeout: 30000 }).toBeGreaterThan(broadcastsBeforeSecondHostVote);
-      await expect.poll(() => interruption.snapshotReads, { timeout: 30000 }).toBeGreaterThan(snapshotsBeforeSecondHostVote);
+      const expectedVersion = secondHostVote.room.stateVersion;
+      expect(Number.isSafeInteger(expectedVersion)).toBe(true);
+      await expect.poll(() => interruption.broadcastVersions.slice(broadcastVersionsBeforeSecondHostVote), { timeout: 30000 }).toContain(expectedVersion);
+      await expect.poll(() => interruption.snapshotVersions.slice(snapshotVersionsBeforeSecondHostVote), { timeout: 30000 }).toContain(expectedVersion);
       await expect(room.pages[1]!.getByTestId("cine024-progress")).toHaveText("Card 02 / 20");
       const secondGuestVote = await clickVote(room.pages[1]!, room.roomId, "SKIP");
       expect(secondGuestVote.room.currentCandidateIndex).toBe(2);
@@ -494,12 +507,19 @@ async function makeContext(browser: Browser, testInfo: TestInfo, storageState?: 
 function decodeRealtimeFrame(message: string | Buffer): {
   topic?: string;
   event?: string;
-  payload?: { event?: string; status?: string; response?: Record<string, unknown> };
+  payload?: {
+    event?: string;
+    status?: string;
+    response?: Record<string, unknown>;
+    roomId?: string;
+    version?: number;
+    payload?: { roomId?: string; version?: number };
+  };
 } | null {
   if (typeof message === "string") {
     const decoded = JSON.parse(message) as unknown;
     if (Array.isArray(decoded) && decoded.length >= 5) {
-      return { topic: String(decoded[0]), event: String(decoded[3]), payload: decoded[4] as { event?: string; status?: string; response?: Record<string, unknown> } };
+      return { topic: String(decoded[2]), event: String(decoded[3]), payload: decoded[4] as { event?: string; status?: string; response?: Record<string, unknown>; roomId?: string; version?: number; payload?: { roomId?: string; version?: number } } };
     }
     return decoded as { event?: string; payload?: { event?: string; status?: string; response?: Record<string, unknown> } };
   }
@@ -509,14 +529,22 @@ function decodeRealtimeFrame(message: string | Buffer): {
   if (message.length >= 5 && message[0] === 4) {
     const topicLength = message[1]!;
     const eventLength = message[2]!;
+    const metadataLength = message[3]!;
+    const payloadEncoding = message[4]!;
     const topic = message.subarray(5, 5 + topicLength).toString("utf8");
     const eventStart = 5 + topicLength;
     const event = message.subarray(eventStart, eventStart + eventLength).toString("utf8");
-    return { topic, event: "broadcast", payload: { event } };
+    const payloadStart = eventStart + eventLength + metadataLength;
+    let body: { roomId?: string; version?: number } | undefined;
+    if (payloadEncoding === 1) {
+      try { body = JSON.parse(message.subarray(payloadStart).toString("utf8")) as { roomId?: string; version?: number }; }
+      catch { /* Ignore malformed or non-JSON frames in this test observer. */ }
+    }
+    return { topic, event: "broadcast", payload: { event, payload: body } };
   }
   const decoded = JSON.parse(message.toString("utf8")) as unknown;
   if (Array.isArray(decoded) && decoded.length >= 5) {
-    return { topic: String(decoded[0]), event: String(decoded[3]), payload: decoded[4] as { event?: string; status?: string; response?: Record<string, unknown> } };
+    return { topic: String(decoded[2]), event: String(decoded[3]), payload: decoded[4] as { event?: string; status?: string; response?: Record<string, unknown>; roomId?: string; version?: number; payload?: { roomId?: string; version?: number } } };
   }
   return decoded as { event?: string; payload?: { event?: string; status?: string; response?: Record<string, unknown> } };
 }
@@ -594,7 +622,7 @@ async function clickVote(page: Page, roomId: string, choice: "LIKE" | "SKIP") {
   await page.getByTestId(choice === "LIKE" ? "cine024-like" : "cine024-skip").click();
   const response = await responsePromise;
   expect(response.status()).toBe(200);
-  return response.json() as Promise<{ isMatched: boolean; idempotentReplay: boolean; room: { status: string; currentCandidateIndex: number | null } }>;
+  return response.json() as Promise<{ isMatched: boolean; idempotentReplay: boolean; room: { status: string; currentCandidateIndex: number | null; stateVersion: number } }>;
 }
 
 async function expectResultForAll(pages: Page[]) {
