@@ -18,6 +18,12 @@ import {
   type RoomPayload,
 } from "./clientApi";
 
+const MEMBERSHIP_REVOKED_STATUSES = new Set([401, 403, 404, 410]);
+
+function isMembershipRevoked(error: RoomClientError) {
+  return MEMBERSHIP_REVOKED_STATUSES.has(error.status);
+}
+
 const SORT_CHOICES = [
   { value: "popularity.desc", label: "Most popular first" },
   { value: "vote_average.desc", label: "Highest rated first" },
@@ -29,13 +35,16 @@ export function RoomLobby({ roomId }: { roomId: string }) {
   const [data, setData] = useState<RoomPayload | null>(null);
   const [connection, setConnection] = useState<RealtimeStatus>("connecting");
   const [offline, setOffline] = useState(false);
+  const [membershipLost, setMembershipLost] = useState(false);
   const [error, setError] = useState<RoomClientError | null>(null);
   const [busy, setBusy] = useState<"start" | "leave" | "filter" | "share" | null>(null);
-  const [sortChoice, setSortChoice] = useState<string>("popularity.desc");
+  const [sortChoice, setSortChoice] = useState<string | null>(null);
   const [shareMessage, setShareMessage] = useState("");
   const inFlight = useRef(false);
   const mutationInFlight = useRef(false);
   const mounted = useRef(false);
+  const accessEpoch = useRef(0);
+  const membershipLostRef = useRef(false);
 
   const accept = useCallback((payload: unknown): boolean => {
     if (!isRoomPayload(payload)) return false;
@@ -47,38 +56,60 @@ export function RoomLobby({ roomId }: { roomId: string }) {
     return true;
   }, []);
 
+  const invalidateMembership = useCallback((failure: RoomClientError) => {
+    // Invalidate every previously issued async response before removing private room data.
+    accessEpoch.current += 1;
+    membershipLostRef.current = true;
+    setData(null);
+    setMembershipLost(true);
+    setShareMessage("");
+    setConnection("reconnecting");
+    setError(failure);
+  }, []);
+
   const refresh = useCallback(async () => {
     if (inFlight.current || !mounted.current) return;
     inFlight.current = true;
+    const requestEpoch = accessEpoch.current;
     try {
       const fresh = await roomRequest<unknown>("/api/rooms/" + encodeURIComponent(roomId));
+      // A GET started before revocation must never restore a previously cleared roster.
+      if (!mounted.current || requestEpoch !== accessEpoch.current) return;
       if (!accept(fresh)) throw new RoomClientError("INVALID_RESPONSE", "Invalid room snapshot.", 502);
       if (mounted.current) {
+        membershipLostRef.current = false;
+        setMembershipLost(false);
         setError(null);
         // No browser Realtime configuration is published; never label polling as "Live".
         setConnection("degraded");
       }
     } catch (cause) {
-      if (mounted.current) {
-        setConnection("reconnecting");
-        setError(cause instanceof RoomClientError ? cause : new RoomClientError("NETWORK_ERROR", "Room synchronization failed.", 0));
+      if (mounted.current && requestEpoch === accessEpoch.current) {
+        const failure = cause instanceof RoomClientError ? cause : new RoomClientError("NETWORK_ERROR", "Room synchronization failed.", 0);
+        if (isMembershipRevoked(failure)) {
+          invalidateMembership(failure);
+        } else {
+          setConnection("reconnecting");
+          setError(failure);
+        }
       }
     } finally {
       inFlight.current = false;
     }
-  }, [roomId, accept]);
+  }, [roomId, accept, invalidateMembership]);
 
   useEffect(() => {
     mounted.current = true;
-    const checkOnline = () => setOffline(!navigator.onLine);
-    checkOnline();
+    const checkOnline = () => { if (mounted.current) setOffline(!navigator.onLine); };
+    // Run browser connectivity detection after effect setup, not as an effect-time state cascade.
+    window.queueMicrotask(checkOnline);
     void refresh();
     const timer = window.setInterval(() => {
-      if (document.visibilityState !== "hidden" && navigator.onLine) void refresh();
+      if (!membershipLostRef.current && document.visibilityState !== "hidden" && navigator.onLine) void refresh();
     }, 3000);
     const wake = () => {
       checkOnline();
-      if (navigator.onLine) void refresh();
+      if (navigator.onLine && !membershipLostRef.current) void refresh();
     };
     window.addEventListener("online", wake);
     window.addEventListener("offline", checkOnline);
@@ -94,12 +125,9 @@ export function RoomLobby({ roomId }: { roomId: string }) {
     };
   }, [refresh]);
 
-  useEffect(() => {
-    if (data?.room.deckFilter.sort_by) setSortChoice(data.room.deckFilter.sort_by);
-  }, [data?.room.deckFilter.sort_by]);
-
   async function perform(type: "start" | "leave" | "filter") {
-    if (mutationInFlight.current || !data || offline) return;
+    if (mutationInFlight.current || !data || offline || membershipLostRef.current || connection !== "degraded") return;
+    const requestEpoch = accessEpoch.current;
     const { room, viewer } = data;
     if (type === "start" && (room.status !== "LOBBY" || viewer.role !== "HOST" || viewer.canStart !== true || !room.canStart)) return;
     if (type === "filter" && (room.status !== "LOBBY" || viewer.role !== "HOST")) return;
@@ -116,15 +144,22 @@ export function RoomLobby({ roomId }: { roomId: string }) {
       }
       const path = type === "start" ? "/start" : "/filters";
       const body = type === "start" ? {} : {
-        deckFilter: { ...room.deckFilter, sort_by: sortChoice, include_adult: false },
+        deckFilter: { ...room.deckFilter, sort_by: sortChoice ?? room.deckFilter.sort_by, include_adult: false },
       };
       const response = await roomRequest<unknown>(base + path, {
         method: type === "start" ? "POST" : "PATCH", body,
       });
+      if (requestEpoch !== accessEpoch.current || membershipLostRef.current) return;
       if (type === "start" && !accept(response)) throw new RoomClientError("INVALID_RESPONSE", "Invalid round response.", 502);
       await refresh();
     } catch (cause) {
-      setError(cause instanceof RoomClientError ? cause : new RoomClientError("NETWORK_ERROR", "Room action failed.", 0));
+      if (!mounted.current || requestEpoch !== accessEpoch.current) return;
+      const failure = cause instanceof RoomClientError ? cause : new RoomClientError("NETWORK_ERROR", "Room action failed.", 0);
+      if (isMembershipRevoked(failure)) {
+        invalidateMembership(failure);
+        return;
+      }
+      setError(failure);
       // Start and leave are non-idempotent; never blindly repeat after an ambiguous response.
       void refresh();
     } finally {
@@ -159,6 +194,7 @@ export function RoomLobby({ roomId }: { roomId: string }) {
   const room = data?.room;
   const viewer = data?.viewer;
   const isHost = viewer?.role === "HOST";
+  const selectedSort = sortChoice ?? room?.deckFilter.sort_by ?? "popularity.desc";
   const canStart = Boolean(isHost && viewer?.canStart && room?.canStart && !offline && !busy && connection === "degraded");
 
   return (
@@ -170,11 +206,13 @@ export function RoomLobby({ roomId }: { roomId: string }) {
           <span className="text-xs font-bold uppercase tracking-[0.2em]">CineMatch Movie Night</span>
         </div>
         <h1 className="text-3xl font-extrabold text-[var(--cm-ink)]">{room?.status === "LOBBY" ? "The Screening Lobby" : "Your Screening Room"}</h1>
-        <p className="text-[var(--cm-ink-muted)]">{room ? "Welcome, " + viewer?.displayName + ". Your membership: " + (isHost ? "Host" : "Guest") + "." : "Checking your private room membership…"}</p>
+        <p className="text-[var(--cm-ink-muted)]">{room ? "Welcome, " + viewer?.displayName + ". Your membership: " + (isHost ? "Host" : "Guest") + "." : membershipLost ? "Your private room membership has ended." : "Checking your private room membership…"}</p>
       </header>
       <div role="status" aria-live="polite" data-testid="cm-connection-banner"
         className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--cm-border)] bg-[var(--cm-surface-subtle)] px-4 py-3 text-sm text-[var(--cm-ink)]">
-        <p>{offline
+        <p>{membershipLost
+          ? "Room access ended. Private membership details were cleared. Use an invitation to rejoin."
+          : offline
           ? "Offline — room actions are paused. Your last known roster is preserved."
           : connection === "degraded"
             ? "Snapshot polling every 3 seconds. A Realtime channel is not connected."
@@ -189,7 +227,7 @@ export function RoomLobby({ roomId }: { roomId: string }) {
       {error && <CineMatchAlertCard code={error.code} message={roomErrorMessage(error)} retryAfterSeconds={error.retryAfterSeconds} onRetry={() => void refresh()} />}
       {!room && (
         <section role="status" aria-live="polite" className="rounded-2xl border border-[var(--cm-border)] bg-[var(--cm-surface)] p-8 text-[var(--cm-ink)]">
-          {error ? "Room access unavailable. Check your invitation or try again." : "Loading the room snapshot…"}
+          {membershipLost ? "Room access ended. Your private room roster and controls have been cleared." : error ? "Room access unavailable. Check your invitation or try again." : "Loading the room snapshot…"}
           {error && <p className="mt-3 text-sm"><Link href="/cinematch/room" className="underline">Create or join another room</Link></p>}
         </section>
       )}
@@ -244,11 +282,11 @@ export function RoomLobby({ roomId }: { roomId: string }) {
               {isHost && room.status === "LOBBY" ? (
                 <div className="space-y-3">
                   <label htmlFor="cm-sort" className="block text-sm font-semibold text-[var(--cm-ink)]">Movie ordering</label>
-                  <select id="cm-sort" value={sortChoice} onChange={(event) => setSortChoice(event.target.value)} disabled={Boolean(busy) || offline}
+                  <select id="cm-sort" value={selectedSort} onChange={(event) => setSortChoice(event.target.value)} disabled={Boolean(busy) || offline}
                     className="min-h-[44px] w-full rounded-lg border border-[var(--cm-border)] bg-[var(--cm-surface)] px-3 text-sm text-[var(--cm-ink)]">
                     {SORT_CHOICES.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
                   </select>
-                  <button type="button" onClick={() => void perform("filter")} disabled={Boolean(busy) || offline || sortChoice === room.deckFilter.sort_by}
+                  <button type="button" onClick={() => void perform("filter")} disabled={Boolean(busy) || offline || selectedSort === room.deckFilter.sort_by}
                     className="min-h-[44px] w-full rounded-lg border border-[var(--cm-border)] bg-[var(--cm-surface)] px-4 text-sm font-semibold text-[var(--cm-ink)] disabled:opacity-50"> {busy === "filter" ? "Saving…" : "Save film preferences"} </button>
                 </div>
               ) : <p className="text-sm text-[var(--cm-ink-muted)]">Movie ordering: {room.deckFilter.sort_by}. Only the host can change preferences in the lobby.</p>}
