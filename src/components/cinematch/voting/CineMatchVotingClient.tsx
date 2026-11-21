@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { CineMatchVotingPanel, type VotingSnapshot } from "@/components/cinematch/voting/CineMatchVotingPanel";
 import { CineMatchAlertCard } from "@/components/cinematch/CineMatchPrimitives";
 import { createRoomActions } from "@/lib/realtime/roomActions";
@@ -280,7 +281,7 @@ export function CineMatchVotingClient({ roomId }: { roomId: string }) {
         <p>{accessLoss.message}</p>
         <p className="text-sm text-[var(--cm-ink-muted)]">Private voting details have been cleared. Rejoin through the room invitation to restore a valid session.</p>
         <div className="flex flex-wrap gap-3">
-          <a href="/cinematch" className="inline-flex min-h-[44px] items-center rounded-lg border border-[var(--cm-border)] px-4 font-semibold">Return to CineMatch</a>
+          <Link href="/cinematch" className="inline-flex min-h-[44px] items-center rounded-lg border border-[var(--cm-border)] px-4 font-semibold">Return to CineMatch</Link>
           <button type="button" disabled={checkingAccess} onClick={() => void retryAuthorization()}
             className="min-h-[44px] rounded-lg border border-[var(--cm-border)] px-4 font-semibold disabled:opacity-50">
             {checkingAccess ? "Verifying..." : "Verify current room access"}
