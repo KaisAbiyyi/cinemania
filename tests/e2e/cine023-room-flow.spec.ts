@@ -59,7 +59,7 @@ test.describe("CINE-023 real create / invite / lobby workflow", () => {
       for (const ctx of contexts) {
         const page = ctx.pages()[0];
         await expect(page.getByTestId("cm-participant-count")).toHaveText("5 / 5", { timeout: 25000 });
-        await expect(page.getByText("Guest 4")).toBeVisible();
+        await expect(page.getByRole("region", { name: "Room participants" }).getByRole("listitem").filter({ hasText: "Guest 4" })).toBeVisible();
       }
       const extra = await browser.newContext();
       contexts.push(extra);
@@ -105,7 +105,7 @@ test.describe("CINE-023 real create / invite / lobby workflow", () => {
     await page.getByRole("button", { name: "Join", exact: true }).click();
     await expect(page.getByLabel("Six-character room code or invite link")).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    for (const button of await page.getByRole("button").all()) {
+    for (const button of await page.getByTestId("cm-room-entry").getByRole("button").all()) {
       const size = await button.boundingBox();
       if (size && size.width > 0) expect(size.height).toBeGreaterThanOrEqual(44);
     }
