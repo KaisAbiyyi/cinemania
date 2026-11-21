@@ -271,10 +271,6 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
   });
 
   test("WebSocket interruption reconnects and resyncs the Supabase Realtime room", async ({ browser, browserName }, testInfo) => {
-    test.skip(
-      browserName === "webkit",
-      "Playwright WebSocket routing does not intercept this WebKit Supabase socket; hosted WebKit interruption remains NOT VERIFIED."
-    );
     const interruption: {
       connections: number;
       closes: number;
@@ -282,13 +278,33 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       broadcasts: number;
       activeRoute?: { close: (options?: { code?: number; reason?: string }) => Promise<void> };
     } = { connections: 0, closes: 0, routes: 0, broadcasts: 0 };
-    const room = await makeRoom(browser, testInfo, 2, undefined, async (page, index) => {
-      if (index !== 1) return;
-      await page.routeWebSocket(/\/realtime\/v1\/websocket/, (route) => {
-        interruption.routes += 1;
-        route.connectToServer();
-        interruption.activeRoute = route;
+    const room = await makeRoom(browser, testInfo, 2, async (context, index) => {
+      if (index !== 1 || browserName !== "webkit") return;
+      // WebKit exposes the real Supabase socket but Playwright's routeWebSocket
+      // callback does not run for it. Keep the native transport and expose its
+      // live socket so the test can perform a real client-side interruption.
+      await context.addInitScript(() => {
+        const original = window.WebSocket;
+        const registry: WebSocket[] = [];
+        const tracked = function (url: string | URL, protocols?: string | string[]) {
+          const socket = protocols === undefined ? new original(url) : new original(url, protocols);
+          registry.push(socket);
+          return socket;
+        } as unknown as typeof WebSocket;
+        Object.setPrototypeOf(tracked, original);
+        tracked.prototype = original.prototype;
+        Object.defineProperty(window, "WebSocket", { value: tracked, configurable: true, writable: true });
+        Object.defineProperty(window, "__cine026SocketRegistry", { value: registry, configurable: false });
       });
+    }, async (page, index) => {
+      if (index !== 1) return;
+      if (browserName !== "webkit") {
+        await page.routeWebSocket(/\/realtime\/v1\/websocket/, (route) => {
+          interruption.routes += 1;
+          route.connectToServer();
+          interruption.activeRoute = route;
+        });
+      }
       page.on("websocket", (socket) => {
         if (new URL(socket.url()).pathname !== "/realtime/v1/websocket") return;
         interruption.connections += 1;
@@ -302,9 +318,18 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
     try {
       await startVoting(room);
       await expect.poll(() => interruption.connections, { timeout: 20000 }).toBeGreaterThan(0);
-      await expect.poll(() => interruption.routes, { timeout: 20000 }).toBeGreaterThan(0);
+      if (browserName !== "webkit") await expect.poll(() => interruption.routes, { timeout: 20000 }).toBeGreaterThan(0);
       const connectionsBeforeInterruption = interruption.connections;
-      await interruption.activeRoute!.close({ code: 1011, reason: "CINE-026 simulated Realtime interruption" });
+      if (browserName === "webkit") {
+        await room.pages[1]!.evaluate(() => {
+          const registry = (window as Window & { __cine026SocketRegistry?: WebSocket[] }).__cine026SocketRegistry;
+          const socket = registry?.find((item) => new URL(item.url).pathname === "/realtime/v1/websocket" && item.readyState === WebSocket.OPEN);
+          if (!socket) throw new Error("Open WebKit Supabase socket was not found for interruption.");
+          socket.close(1011, "CINE-026 simulated Realtime interruption");
+        });
+      } else {
+        await interruption.activeRoute!.close({ code: 1011, reason: "CINE-026 simulated Realtime interruption" });
+      }
       await expect.poll(() => interruption.closes, { timeout: 15000 }).toBeGreaterThan(0);
       const broadcastsBeforeInterruptedVote = interruption.broadcasts;
       const offlineVote = await clickVote(room.pages[0]!, room.roomId, "SKIP");

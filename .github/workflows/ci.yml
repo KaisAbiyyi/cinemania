@@ -93,6 +93,9 @@ jobs:
       - name: Install application dependencies
         run: npm ci
 
+      - name: Install Chromium for the two-instance qualification probe
+        run: npx playwright install --with-deps chromium
+
       - name: Install isolated local Supabase harness
         run: npm ci --prefix scripts/local-supabase
 
