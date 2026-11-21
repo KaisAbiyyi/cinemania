@@ -3,6 +3,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
+const { loadMigrationsFromCommit } = require("../../scripts/local-supabase/apply-migrations.cjs");
 
 for (const args of [["--reseed"], ["--database", "postgres"], ["--yes"]]) {
   test(`roundtrip refuses unsafe/obsolete options before Docker: ${args.join(" ")}`, () => {
@@ -11,6 +12,21 @@ for (const args of [["--reseed"], ["--database", "postgres"], ["--yes"]]) {
     assert.match(result.stderr, /Unsupported roundtrip option/);
   });
 }
+
+test("migration loader follows the exact files present at each commit", () => {
+  const currentHead = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: path.resolve(__dirname, "../.."), encoding: "utf8",
+  });
+  assert.equal(currentHead.status, 0, currentHead.stderr);
+  const current = loadMigrationsFromCommit(currentHead.stdout.trim(), [
+    "src/db/migrations/005_realtime_authorization.sql",
+    "src/db/migrations/006_cinematch_security_hardening.sql",
+  ]);
+  assert.deepEqual(current.map(({ file }) => file), [
+    "src/db/migrations/005_realtime_authorization.sql",
+    "src/db/migrations/006_cinematch_security_hardening.sql",
+  ]);
+});
 
 test("disposable database rejects shared, malformed and injected names without invoking Docker", async () => {
   const { withDisposableDatabase } = require("./disposable-migration-db.cjs");

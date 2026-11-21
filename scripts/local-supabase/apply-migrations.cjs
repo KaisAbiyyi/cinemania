@@ -3,19 +3,22 @@
 // Run pinned Git SQL only inside our loopback-verified local Compose database.
 const { execFileSync, spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
+const path = require("node:path");
 const { validateCommit, migrationPaths, downMigrationPaths, assertNoCloudTargetEnv } = require("./safety.cjs");
 const { assertLocalStack } = require("./runtime.cjs");
 
 const run = (program, args, options = {}) =>
   execFileSync(program, args, { encoding: "utf8", ...options }).trim();
+const REPO_ROOT = path.resolve(__dirname, "../..");
 
 function loadMigrationsFromCommit(commit, paths = migrationPaths()) {
   validateCommit(commit);
-  run("git", ["cat-file", "-e", commit + "^{commit}"]);
-  const existing = run("git", ["ls-tree", "-r", "--name-only", commit, "--", "src/db/migrations"]).split("\n");
-  const hardened = existing.includes(migrationPaths().at(-1));
-  return paths.filter(file => hardened || !file.startsWith("src/db/migrations/006_")).map((file) => {
-    const sql = run("git", ["show", commit + ":" + file], { maxBuffer: 10 * 1024 * 1024 });
+  run("git", ["cat-file", "-e", commit + "^{commit}"], { cwd: REPO_ROOT });
+  const existing = new Set(
+    run("git", ["ls-tree", "-r", "--name-only", commit, "--", "src/db/migrations"], { cwd: REPO_ROOT }).split("\n")
+  );
+  return paths.filter(file => existing.has(file)).map((file) => {
+    const sql = run("git", ["show", commit + ":" + file], { cwd: REPO_ROOT, maxBuffer: 10 * 1024 * 1024 });
     return { file, sql, hash: crypto.createHash("sha256").update(sql).digest("hex") };
   });
 }
