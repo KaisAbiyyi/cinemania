@@ -43,47 +43,7 @@ test.describe("CINE-023 real create / invite / lobby workflow", () => {
       const roomId = new URL(hostPage.url()).pathname.split("/").at(-1);
       await expect(hostPage.getByTestId("cm-continue-voting")).toHaveAttribute("href", `/cinematch/vote/${roomId}`);
       await hostPage.getByTestId("cm-continue-voting").click();
-      await expect(hostPage).toHaveURL(new RegExp(`/cinematch/vote/${roomId}import { expect, test, type BrowserContext, type Page } from "@playwright/test";
-
-async function createHost(page: Page, displayName = "Host") {
-  await page.goto("/cinematch/room");
-  await page.getByLabel("Your display name").fill(displayName);
-  await page.getByRole("button", { name: "Create Screening Room" }).click();
-  await expect(page).toHaveURL(/\/cinematch\/room\/[a-f0-9-]{36}$/i);
-  return (await page.getByTestId("cm-room-code").innerText()).trim();
-}
-
-async function joinByLink(page: Page, code: string, displayName: string) {
-  await page.goto("/join/" + code);
-  await expect(page.getByLabel("Six-character room code or invite link")).toHaveValue(code);
-  await page.getByLabel("Your display name").fill(displayName);
-  await page.getByRole("button", { name: "Join Screening Room" }).click();
-  await expect(page).toHaveURL(/\/cinematch\/room\/[a-f0-9-]{36}$/i);
-}
-
-test.describe("CINE-023 real create / invite / lobby workflow", () => {
-  test("two distinct browser contexts can join; host-only start and refresh preserve membership", async ({ browser }) => {
-    test.setTimeout(90000);
-    const contexts: BrowserContext[] = [];
-    try {
-      const host = await browser.newContext();
-      const guest = await browser.newContext();
-      contexts.push(host, guest);
-      const hostPage = await host.newPage();
-      const guestPage = await guest.newPage();
-      const code = await createHost(hostPage);
-      await expect(hostPage.getByTestId("cm-start-round")).toBeDisabled();
-      await joinByLink(guestPage, code, "Guest two");
-      await expect(hostPage.getByTestId("cm-participant-count")).toHaveText("2 / 5", { timeout: 20000 });
-      await expect(guestPage.getByTestId("cm-participant-count")).toHaveText("2 / 5", { timeout: 20000 });
-      await expect(hostPage.getByTestId("cm-start-round")).toBeEnabled({ timeout: 20000 });
-      await expect(guestPage.getByTestId("cm-start-round")).toHaveCount(0);
-      await expect(guestPage.getByTestId("cm-guest-wait")).toBeVisible();
-      await guestPage.reload();
-      await expect(guestPage.getByText("Guest two (You)")).toBeVisible({ timeout: 20000 });
-      await expect(guestPage.getByTestId("cm-participant-count")).toHaveText("2 / 5");
-      await hostPage.getByTestId("cm-start-round").click();
-));
+      await expect(hostPage).toHaveURL(new RegExp(`/cinematch/vote/${roomId}$`));
       await expect(hostPage.getByTestId("cine024-voting-panel")).toBeVisible({ timeout: 20000 });
     } finally {
       await Promise.all(contexts.map((c) => c.close()));
