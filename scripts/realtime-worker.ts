@@ -42,7 +42,14 @@ async function main() {
   }
 }
 
-void main().catch(() => {
-  console.error("Realtime worker startup failed; check server-only configuration, schema and database access.");
+void main().catch((error: unknown) => {
+  const safeName = error instanceof Error && /^[A-Za-z][A-Za-z0-9]*$/.test(error.name) ? error.name : "UnknownError";
+  const rawCode = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  const safeCode = typeof rawCode === "string" && /^[A-Z0-9_]{2,32}$/.test(rawCode) ? rawCode : undefined;
+  console.error(
+    "Realtime worker startup failed; check server-only configuration, schema and database access.",
+    safeName,
+    ...(safeCode ? [safeCode] : [])
+  );
   process.exitCode = 1;
 });

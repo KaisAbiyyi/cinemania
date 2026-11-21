@@ -171,7 +171,7 @@ async function waitForWorker(proc) {
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     if (proc.getLogs().includes("Realtime outbox worker ready")) return;
-    assert.equal(proc.child.exitCode, null, "Worker exited before readiness");
+    assert.equal(proc.child.exitCode, null, `Worker exited before readiness. Redacted startup logs: ${proc.getLogs()}`);
     await new Promise(r => setTimeout(r, 50));
   }
   throw new Error("Worker readiness timed out");
