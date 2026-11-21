@@ -98,6 +98,46 @@ test.describe("CINE-023 real create / invite / lobby workflow", () => {
     await expect(page.getByTestId("cm-scoped-alert")).toContainText("expired");
   });
 
+
+  for (const { status, code } of [
+    { status: 401, code: "SESSION_REQUIRED" },
+    { status: 403, code: "ROOM_FORBIDDEN" },
+    { status: 410, code: "ROOM_EXPIRED" },
+  ]) {
+    test(`revoked membership ${status} clears authorized roster and disables actions on resync`, async ({ page }) => {
+      const displayName = "Privacy host " + status;
+      await createHost(page, displayName);
+      await expect(page.getByRole("region", { name: "Room participants" })).toBeVisible();
+      await expect(page.getByText(displayName + " (You)")).toBeVisible();
+      await expect(page.getByTestId("cm-room-code")).toBeVisible();
+      const roomId = new URL(page.url()).pathname.split("/").at(-1);
+      await page.route("**/api/rooms/*", (route) => {
+        const request = route.request();
+        if (request.method() === "GET" && new URL(request.url()).pathname === "/api/rooms/" + roomId) {
+          return route.fulfill({
+            status,
+            contentType: "application/json",
+            body: JSON.stringify({ error: code, message: "Membership no longer valid" }),
+          });
+        }
+        return route.continue();
+      });
+      await page.getByRole("button", { name: "Refresh snapshot" }).click();
+      await expect(page.getByText("Your private room membership has ended.")).toBeVisible();
+      await expect(page.getByRole("region", { name: "Room participants" })).toHaveCount(0);
+      await expect(page.getByTestId("cm-room-code")).toHaveCount(0);
+      await expect(page.getByTestId("cm-start-round")).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Share invitation" })).toHaveCount(0);
+      await expect(page.getByRole("link", { name: "Create or join another room" })).toBeVisible();
+      await expect(page.getByTestId("cm-scoped-alert")).toBeVisible();
+      // An explicit successful re-authorization can restore the room; polling must not do so blindly.
+      await page.unroute("**/api/rooms/*");
+      await page.getByRole("button", { name: "Refresh snapshot" }).click();
+      await expect(page.getByRole("region", { name: "Room participants" })).toBeVisible();
+      await expect(page.getByText(displayName + " (You)")).toBeVisible();
+    });
+  }
+
   test("mobile keyboard flow has visible controls and no horizontal overflow", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/cinematch/room");
