@@ -46,10 +46,12 @@ void main().catch((error: unknown) => {
   const safeName = error instanceof Error && /^[A-Za-z][A-Za-z0-9]*$/.test(error.name) ? error.name : "UnknownError";
   const rawCode = error && typeof error === "object" && "code" in error ? error.code : undefined;
   const safeCode = typeof rawCode === "string" && /^[A-Z0-9_]{2,32}$/.test(rawCode) ? rawCode : undefined;
+  const missingColumn = error instanceof Error ? error.message.match(/column "([A-Za-z_][A-Za-z0-9_]*)" does not exist/i)?.[1] : undefined;
   console.error(
     "Realtime worker startup failed; check server-only configuration, schema and database access.",
     safeName,
-    ...(safeCode ? [safeCode] : [])
+    ...(safeCode ? [safeCode] : []),
+    ...(missingColumn ? [`column=${missingColumn}`] : [])
   );
   process.exitCode = 1;
 });
