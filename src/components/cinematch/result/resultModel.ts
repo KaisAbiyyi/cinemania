@@ -45,6 +45,17 @@ export function parseResultPayload(
   }
 
   // A result must be internally consistent with the server's committed state.
+  const expectedFinishCode: Record<string, string[]> = {
+    LOBBY: ["LOBBY_READY", "ROUND_CANCELLED"],
+    ACTIVE: ["ROUND_ACTIVE"],
+    MATCHED: ["MATCH_FOUND"],
+    EXHAUSTED: ["DECK_EXHAUSTED"],
+    EXPIRED: ["ROOM_EXPIRED"],
+  };
+  if (!expectedFinishCode[String(room.status)].includes(room.finishState.code)) {
+    return null;
+  }
+
   if (room.status === "MATCHED") {
     if (
       room.finishState.code !== "MATCH_FOUND" ||
