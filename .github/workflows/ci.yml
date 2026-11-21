@@ -86,7 +86,12 @@ jobs:
         with:
           node-version-file: ".nvmrc"
           cache: "npm"
-          cache-dependency-path: scripts/local-supabase/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            scripts/local-supabase/package-lock.json
+
+      - name: Install application dependencies
+        run: npm ci
 
       - name: Install isolated local Supabase harness
         run: npm ci --prefix scripts/local-supabase
