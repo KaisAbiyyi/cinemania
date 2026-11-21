@@ -48,9 +48,20 @@ async function subscribeChannel(clients, jwt, topic, { privateChannel = true, ti
   clients.push(client);
   await client.realtime.setAuth(jwt);
   const messages = [];
+  const messageWaiters = [];
   const channel = client.channel(topic, { config: { private: privateChannel, broadcast: { ack: true } } });
   let diagnostic = "";
-  channel.on("broadcast", { event: "room_changed" }, (msg) => messages.push(msg.payload));
+  channel.on("broadcast", { event: "room_changed" }, (msg) => {
+    messages.push(msg.payload);
+    for (let index = messageWaiters.length - 1; index >= 0; index -= 1) {
+      const waiter = messageWaiters[index];
+      if (waiter.predicate(msg.payload)) {
+        clearTimeout(waiter.timer);
+        messageWaiters.splice(index, 1);
+        waiter.resolve(msg.payload);
+      }
+    }
+  });
   const status = await new Promise((resolve) => {
     const timer = setTimeout(() => resolve("TIMEOUT"), timeoutMs);
     channel.subscribe((state, error) => {
@@ -61,7 +72,24 @@ async function subscribeChannel(clients, jwt, topic, { privateChannel = true, ti
       }
     });
   });
-  return { client, channel, messages, status, diagnostic };
+  function waitForMessage(predicate, timeoutMs = 6000) {
+    const prior = messages.find(predicate);
+    if (prior) return Promise.resolve(prior);
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        predicate,
+        resolve,
+        timer: setTimeout(() => {
+          const index = messageWaiters.indexOf(waiter);
+          if (index >= 0) messageWaiters.splice(index, 1);
+          reject(new Error(`Timed out waiting ${timeoutMs}ms for a Realtime broadcast on ${topic}.`));
+        }, timeoutMs),
+      };
+      messageWaiters.push(waiter);
+    });
+  }
+
+  return { client, channel, messages, status, diagnostic, waitForMessage };
 }
 
 async function main() {
@@ -192,6 +220,7 @@ async function main() {
     assert.notEqual(forgedResult, "ok", "Client-forged broadcast must be denied under competing permissive INSERT");
 
     // 8. Server-only REST broadcast delivers ONLY to authorized Room A private WebSocket
+    const aliceRoomHint = aliceSub.waitForMessage((message) => message.version === 42 && message.roomId === roomA);
     const broadcastRes = await fetch(
       `${supabaseUrl}/realtime/v1/api/broadcast/${encodeURIComponent(`room:${roomA}`)}/events/room_changed?private=true`,
       {
@@ -202,7 +231,7 @@ async function main() {
     );
     assert.equal(broadcastRes.ok, true, `Server REST broadcast expected 2xx, got ${broadcastRes.status}`);
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await aliceRoomHint;
     assert.equal(aliceSub.messages.some((m) => m.version === 42 && m.roomId === roomA), true, "Alice must receive server hint");
     assert.equal(aliceSub.messages.some((m) => m.version === 999), false, "Forged hint must never reach Alice");
     assert.equal(bobSub.messages.length, 0, "Bob in Room B must receive zero Room A broadcasts");

@@ -432,11 +432,13 @@ async function main() {
     }
 
     // 2. Negative control: verify PR #51 supabasePublisher rejects http://127.0.0.1:54321 in NODE_ENV=production
-    const tsxBin = path.join(buildDir, "node_modules", "tsx", "dist", "cli.mjs");
     const negRes = execFileSync(
       process.execPath,
       [
-        tsxBin,
+        "--conditions=react-server",
+        "--import",
+        "tsx",
+        "--input-type=module",
         "-e",
         `import { createSupabasePublisher } from "./src/lib/server/realtime/supabasePublisher";
          let threw = false;

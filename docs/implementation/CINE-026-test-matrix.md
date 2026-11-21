@@ -41,6 +41,7 @@ This hosted suite is a staging check, never production validation. Its credentia
 ## Qualification limits to keep explicit
 
 - The routed real Supabase WebSocket interruption and recovery currently passes in Chromium and Firefox. Playwright's WebSocket routing callback is not invoked for the WebKit connection, and offline toggling did not produce a client socket-close event within 15 seconds. WebKit's direct interruption criterion remains **NOT VERIFIED**; do not count `navigator.onLine` or later application refresh as proof of a socket interruption.
-- Authenticated REST isolation is checked between two rooms. A separate test that attempts an unauthorized Supabase Realtime channel subscription and observes cross-room broadcast isolation is still needed before claiming Realtime authorization isolation.
+- Hosted staging checks authenticated REST isolation between two rooms. The GitHub local Supabase qualification separately attempts a Room A token on Room B's private channel, then verifies a Room A server broadcast reaches only Room A's authorized WebSocket. Do not collapse these into a single mocked or hosted claim.
 - The 90-second grace test creates a controlled stale participant by backdating only the exact run-owned staging row, verifies the row is older than the grace interval, and then reads the server-authoritative transition. It does not measure a naturally elapsed 90-second interval.
 - Local Supabase RLS/WebSocket and two-instance recovery are exercised in the GitHub-hosted disposable Docker job. The developer workstation had no Docker Desktop daemon during this run, so no local Compose run is claimed.
+- Local Supabase broadcast delivery is awaited by a bounded event-driven waiter; the suite does not rely on a fixed post-publish sleep.
