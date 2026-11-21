@@ -23,7 +23,8 @@ interface VotingPanelProps {
   offline?: boolean;
   loading?: boolean;
   onVote: (input: { candidateId: string; movieId: number; vote: VoteChoice; roundId: string | null }) => Promise<RoomActionResult>;
-  onResync: () => Promise<void>;
+  /** Returns the latest server-read snapshot, never merely a successful transport status. */
+  onResync: () => Promise<VotingSnapshot>;
 }
 
 type Submission = {
@@ -31,6 +32,8 @@ type Submission = {
   choice: VoteChoice;
   phase: "sending" | "confirmed" | "unknown" | "failed";
   error?: { code: string; message: string };
+  /** Only an explicit, non-ambiguous rate-limit rejection can be cleared by a fresh GET. */
+  recoverable?: boolean;
 };
 
 /** Only the server snapshot is allowed to declare a match, advance a card or lock a vote. */
@@ -68,16 +71,33 @@ export function CineMatchVotingPanel({
   const connected = connection === "live" && !offline;
   const eligible = active && Boolean(viewer?.isEligibleVoter) && Boolean(candidate) &&
     viewer?.nextCandidateIndex === room?.currentCandidateIndex && !recordedChoice;
-  const canVote = Boolean(eligible && connected && !loading && !currentSubmission);
+  const canVote = Boolean(eligible && connected && !loading && !resyncing && !currentSubmission);
   const waiting = Boolean(active && candidate && (recordedChoice || (viewer?.isEligibleVoter && viewer.nextCandidateIndex === null)));
   const cardNumber = typeof room?.currentCandidateIndex === "number" ? room.currentCandidateIndex + 1 : 0;
 
   async function resync() {
-    if (resyncing) return;
+    if (resyncing || inFlight.current) return;
     setResyncing(true);
     setResyncError(null);
     try {
-      await onResync();
+      const latest = await onResync();
+      // Never release ambiguous ACKs or definitive authorization/validation denials.
+      // A rejected 429 is known not to have committed; only a fresh, affirmative
+      // server snapshot of this exact viewer/round/candidate can unlock a new vote.
+      setSubmission((previous) => {
+        if (!previous || previous.key !== key || previous.phase !== "failed" || !previous.recoverable) return previous;
+        const latestRoom = latest.room;
+        const latestViewer = latest.viewer;
+        const sameTarget = latestRoom.roomId === room?.roomId &&
+          latestRoom.currentRoundId === room?.currentRoundId &&
+          latestRoom.currentCandidate?.candidateId === candidate?.candidateId &&
+          latestViewer.participantId === viewer?.participantId;
+        const stillAllowed = latestRoom.status === "ACTIVE" && latestViewer.isEligibleVoter &&
+          latestRoom.currentCandidateIndex !== null &&
+          latestViewer.nextCandidateIndex === latestRoom.currentCandidateIndex &&
+          latestViewer.userVotes?.[candidate!.candidateId] === undefined;
+        return sameTarget && stillAllowed ? null : previous;
+      });
     } catch {
       setResyncError("Could not retrieve the latest authoritative room snapshot. Your previous vote may already have been recorded.");
     } finally {
@@ -111,7 +131,7 @@ export function CineMatchVotingPanel({
         });
       } else {
         setSubmission({
-          key, choice, phase: "failed",
+          key, choice, phase: "failed", recoverable: result.status === 429,
           error: { code: result.code, message: result.message },
         });
       }
@@ -233,7 +253,9 @@ export function CineMatchVotingPanel({
                     {currentSubmission.phase === "sending" && "Sending " + currentSubmission.choice + " to server…"}
                     {currentSubmission.phase === "confirmed" && "Server acknowledged your " + currentSubmission.choice + " vote. Synchronizing authoritative state…"}
                     {currentSubmission.phase === "unknown" && "The vote outcome is uncertain. Resync; you may retry only the same " + currentSubmission.choice + " decision."}
-                    {currentSubmission.phase === "failed" && "Vote rejected by server. Resync to recover."}
+                    {currentSubmission.phase === "failed" && (currentSubmission.recoverable
+                      ? "Vote was rate-limited. Resync to check server state before voting again."
+                      : "Vote rejected by server. This decision stays locked for your safety.")}
                     {currentSubmission.error && (
                       <p className="mt-1 text-xs" data-testid="cine024-vote-error">{currentSubmission.error.code}: {currentSubmission.error.message}</p>
                     )}
