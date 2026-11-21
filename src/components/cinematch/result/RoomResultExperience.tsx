@@ -151,6 +151,24 @@ export function RoomResultExperience({ roomId }: { roomId: string }) {
     setPendingRetry(mode);
     setError(null);
     setFeedback(null);
+    // The operation ID is derived from the original round + intent, never a fresh
+    // random value. Retrying after an ambiguous response replays the same mutation.
+    const operationId = `retry:${payload.room.currentRoundId ?? "-"}:${mode}`;
+    const reconcileUncertainRetry = async (cause: string) => {
+      try {
+        await resync();
+      } catch {
+        // Even unexpected refresh failures must not escape an event handler.
+      }
+      if (accessRevokedRef.current) return;
+      const latest = payloadRef.current;
+      if (latest && latest.room.stateVersion > payload.room.stateVersion &&
+          latest.room.status !== "EXHAUSTED") {
+        setFeedback("Room state changed after the retry. Open the room to continue.");
+        return;
+      }
+      setError(`${cause} The retry outcome is unconfirmed. Check the room state before trying again; another attempt for this round uses the same operation ID.`);
+    };
     try {
       // Construct the mutation handler in the event, not during React render.
       // It captures the authoritative snapshot gate without reading refs in render.
@@ -162,19 +180,32 @@ export function RoomResultExperience({ roomId }: { roomId: string }) {
       const result = await roomActions.retryRound({
         roundId: payload.room.currentRoundId,
         startRound: mode === "fresh",
-        operationId: `retry:${payload.room.currentRoundId ?? "-"}:${mode}`,
+        operationId,
       });
       if (result.ok) {
+        await resync();
         setFeedback(mode === "fresh"
           ? "New round requested successfully. Open the room to continue."
           : "Room returned to the lobby. Open the room to continue.");
-        await resync();
+      } else if (result.transient) {
+        const cause = result.code === "NETWORK_ERROR"
+          ? "The connection was interrupted."
+          : result.code === "INVALID_RESPONSE"
+            ? "The server response was unreadable."
+            : "The server could not confirm the request.";
+        await reconcileUncertainRetry(cause);
       } else {
         await resync();
-        setError(result.stale
-          ? "Room state changed. The latest result has been refreshed."
-          : "Unable to start a new round. Check connection and retry safely.");
+        if (!accessRevokedRef.current) {
+          setError(result.stale
+            ? "Room state changed. The latest result has been refreshed."
+            : "Unable to start a new round. Check the room state before retrying.");
+        }
       }
+    } catch {
+      // A transport/parser exception does not prove the mutation failed.
+      // Reconcile via GET instead of firing a new action with another operation ID.
+      await reconcileUncertainRetry("An unexpected error interrupted the request.");
     } finally {
       pendingRef.current = false;
       setPendingRetry(null);
@@ -321,7 +352,7 @@ export function RoomResultExperience({ roomId }: { roomId: string }) {
           )}
           {room.finishState.code === "DECK_EXHAUSTED" && !isRetryAllowed(payload!) && (
             <p className="mt-4 text-sm font-semibold text-[var(--cm-ink-muted)]">
-              Only the host can retry, and at least two connected guests are required.
+              Only the host can retry, and at least two connected participants (including the host) are required.
             </p>
           )}
           <Link href={room.finishState.code === "ROOM_EXPIRED" ? "/cinematch" : roomHref}
