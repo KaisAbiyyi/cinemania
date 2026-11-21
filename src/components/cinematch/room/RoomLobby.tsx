@@ -271,9 +271,22 @@ export function RoomLobby({ roomId }: { roomId: string }) {
                   </button>
                 </>
               ) : (
-                <p role="status" className="rounded-lg bg-[var(--cm-warning-bg)] p-4 text-sm text-[var(--cm-warning-ink)]">
-                  {room.status === "ACTIVE" ? "Round started. Voting interaction is being delivered separately in CINE-024; room state remains server-authoritative." : "This round is no longer in the lobby. Results and recovery controls are being delivered in CINE-025."}
-                </p>
+                <div role="status" className="space-y-3 rounded-lg bg-[var(--cm-warning-bg)] p-4 text-sm text-[var(--cm-warning-ink)]">
+                  <p>{room.status === "ACTIVE"
+                    ? "Round started. Your vote will be recorded only when the private realtime connection is available."
+                    : "This room is no longer in the lobby. Open the server-confirmed result to continue."}</p>
+                  {room.status === "ACTIVE" ? (
+                    <Link data-testid="cm-continue-voting" href={`/cinematch/vote/${encodeURIComponent(roomId)}`}
+                      className="inline-flex min-h-[44px] items-center font-bold underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2">
+                      Continue to voting
+                    </Link>
+                  ) : (
+                    <Link data-testid="cm-view-results" href={`/cinematch/result/${encodeURIComponent(roomId)}`}
+                      className="inline-flex min-h-[44px] items-center font-bold underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-2">
+                      View server-confirmed result
+                    </Link>
+                  )}
+                </div>
               )}
             </section>
             <section className="space-y-4 rounded-2xl border border-[var(--cm-border)] bg-[var(--cm-surface-subtle)] p-5 sm:p-6">

@@ -38,8 +38,13 @@ test.describe("CINE-023 real create / invite / lobby workflow", () => {
       await expect(guestPage.getByText("Guest two (You)")).toBeVisible({ timeout: 20000 });
       await expect(guestPage.getByTestId("cm-participant-count")).toHaveText("2 / 5");
       await hostPage.getByTestId("cm-start-round").click();
-      await expect(hostPage.getByText("Round started. Voting interaction is being delivered separately in CINE-024; room state remains server-authoritative.")).toBeVisible({ timeout: 20000 });
-      await expect(guestPage.getByText("Round started. Voting interaction is being delivered separately in CINE-024; room state remains server-authoritative.")).toBeVisible({ timeout: 20000 });
+      await expect(hostPage.getByTestId("cm-continue-voting")).toBeVisible({ timeout: 20000 });
+      await expect(guestPage.getByTestId("cm-continue-voting")).toBeVisible({ timeout: 20000 });
+      const roomId = new URL(hostPage.url()).pathname.split("/").at(-1);
+      await expect(hostPage.getByTestId("cm-continue-voting")).toHaveAttribute("href", `/cinematch/vote/${roomId}`);
+      await hostPage.getByTestId("cm-continue-voting").click();
+      await expect(hostPage).toHaveURL(new RegExp(`/cinematch/vote/${roomId}$`));
+      await expect(hostPage.getByTestId("cine024-voting-panel")).toBeVisible({ timeout: 20000 });
     } finally {
       await Promise.all(contexts.map((c) => c.close()));
     }

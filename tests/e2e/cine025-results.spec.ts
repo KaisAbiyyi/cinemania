@@ -77,6 +77,32 @@ async function mockRoom(
 
 test.describe("CINE-025 private result UI (seeded, browser-level transport fixtures)", () => {
   for (const phase of ["MATCHED", "EXHAUSTED"] as const) {
+    test(`finished voting screen navigates to authenticated ${phase} result without local match inference`, async ({ page, context }) => {
+      const canonical = fixture(phase);
+      await context.route(`**/api/rooms/${ROOM_ID}**`, async (route) => {
+        if (route.request().method() !== "GET" || new URL(route.request().url()).pathname !== `/api/rooms/${ROOM_ID}`) {
+          await route.continue();
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: { "cache-control": "no-store" },
+          body: JSON.stringify({
+            room: { ...canonical.room, participants: [], currentCandidate: null },
+            viewer: { ...canonical.viewer, isEligibleVoter: true, userVotes: {}, nextCandidateIndex: null },
+          }),
+        });
+      });
+      await page.goto(`/cinematch/vote/${ROOM_ID}`);
+      await expect(page.getByTestId("cine026-open-result")).toBeVisible();
+      await page.getByTestId("cine026-open-result").click();
+      await expect(page).toHaveURL(PATH);
+      await expect(page.getByTestId(phase === "MATCHED" ? "cine025-match" : "cine025-no-match")).toBeVisible();
+    });
+  }
+
+  for (const phase of ["MATCHED", "EXHAUSTED"] as const) {
     test(`five independent clients converge on server ${phase} without client match inference`, async ({ browser }) => {
       const contexts: BrowserContext[] = [];
       try {

@@ -371,7 +371,12 @@ export function RoomResultExperience({ roomId }: { roomId: string }) {
           <p className="mt-2 text-[var(--cm-ink-muted)]">
             The room is currently {room.status.toLowerCase()}. This page will show a result after the server commits it.
           </p>
-          <Link href={roomHref} className="mt-4 inline-flex min-h-[44px] items-center text-sm font-semibold text-[var(--cm-brand-text)] underline">Open room</Link>
+          <Link data-testid="cine026-continue-from-result" href={room.status === "ACTIVE"
+            ? `/cinematch/vote/${encodeURIComponent(roomId)}`
+            : roomHref}
+            className="mt-4 inline-flex min-h-[44px] items-center text-sm font-semibold text-[var(--cm-brand-text)] underline">
+            {room.status === "ACTIVE" ? "Continue voting" : "Open room"}
+          </Link>
         </section>
       )}
 
