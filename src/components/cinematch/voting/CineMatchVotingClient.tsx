@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CineMatchVotingPanel, type VotingSnapshot } from "@/components/cinematch/voting/CineMatchVotingPanel";
 import { CineMatchAlertCard } from "@/components/cinematch/CineMatchPrimitives";
 import { createRoomActions } from "@/lib/realtime/roomActions";
@@ -34,6 +34,7 @@ export function CineMatchVotingClient({ roomId }: { roomId: string }) {
   const [error, setError] = useState<string | null>(null);
   const currentRef = useRef<VotingSnapshot | null>(null);
   const realtimeRef = useRef<RoomRealtimeHandle | null>(null);
+  const actionsRef = useRef<ReturnType<typeof createRoomActions> | null>(null);
 
   const accept = useCallback((value: RoomSnapshot): boolean => {
     const next = safeSnapshot(value);
@@ -68,11 +69,10 @@ export function CineMatchVotingClient({ roomId }: { roomId: string }) {
     else await fetchSnapshot();
   }, [fetchSnapshot]);
 
-  const actions = useMemo(() => createRoomActions({
-    roomId,
-    accept,
-    resync,
-  }), [roomId, accept, resync]);
+  useEffect(() => {
+    actionsRef.current = createRoomActions({ roomId, accept, resync });
+    return () => { actionsRef.current = null; };
+  }, [roomId, accept, resync]);
 
   useEffect(() => {
     const syncNetwork = () => setOffline(!navigator.onLine);
@@ -156,7 +156,10 @@ export function CineMatchVotingClient({ roomId }: { roomId: string }) {
         loading={loading}
         connection={status}
         offline={offline}
-        onVote={(input) => actions.vote(input)}
+        onVote={(input) => {
+          if (!actionsRef.current) throw new Error("Room action layer is not initialized");
+          return actionsRef.current.vote(input);
+        }}
         onResync={resync}
       />
     </div>
