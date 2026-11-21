@@ -134,7 +134,7 @@ export function CineMatchVotingPanel({
     return <div role="status" data-testid="cine024-loading" className="rounded-2xl border border-[var(--cm-border)] p-6 text-[var(--cm-ink)]">Loading authoritative room state…</div>;
   }
 
-  if (!snapshot) {
+  if (!room || !viewer) {
     return (
       <section className="space-y-4">
         <ConnectionStatusBanner status={connection} isOffline={offline} onResync={() => void resync()} resyncing={resyncing} />
