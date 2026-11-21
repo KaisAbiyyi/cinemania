@@ -13,6 +13,7 @@ const staging = loadHostedStaging();
 const ORIGIN = "http://127.0.0.1:3065";
 const RUN = "C026-" + randomUUID().slice(0, 8);
 const createdRoomIds = new Set<string>();
+const contextPages = new WeakMap<BrowserContext, Set<Page>>();
 const db = new Pool({ ...staging.pgConfig, max: 1, connectionTimeoutMillis: 10000, statement_timeout: 10000 });
 
 type RoomRun = {
@@ -492,6 +493,9 @@ async function makeContext(browser: Browser, testInfo: TestInfo, storageState?: 
     ...(storageState ? { storageState } : {}),
     recordVideo: { dir: testInfo.outputPath("cine026-staging-video") },
   });
+  const pages = new Set<Page>();
+  contextPages.set(context, pages);
+  context.on("page", (page) => pages.add(page));
   await context.addInitScript(() => {
     const redact = () => {
       if (!document.head || document.getElementById("cine026-video-redaction")) return;
@@ -636,7 +640,7 @@ async function expectResultForAll(pages: Page[]) {
 }
 
 async function closeContexts(contexts: BrowserContext[], testInfo: TestInfo) {
-  const videos = contexts.flatMap((context) => context.pages().map((page) => page.video()).filter((video): video is NonNullable<typeof video> => Boolean(video)));
+  const videos = contexts.flatMap((context) => [...(contextPages.get(context) ?? context.pages())].map((page) => page.video()).filter((video): video is NonNullable<typeof video> => Boolean(video)));
   await Promise.all(contexts.map((context) => context.close().catch(() => undefined)));
   if (testInfo.status === testInfo.expectedStatus) {
     await Promise.all(videos.map((video) => video.delete().catch(() => undefined)));
