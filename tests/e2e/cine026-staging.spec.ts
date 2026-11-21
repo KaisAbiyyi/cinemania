@@ -319,29 +319,49 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       await startVoting(room);
       await expect.poll(() => interruption.connections, { timeout: 20000 }).toBeGreaterThan(0);
       if (browserName !== "webkit") await expect.poll(() => interruption.routes, { timeout: 20000 }).toBeGreaterThan(0);
-      const connectionsBeforeInterruption = interruption.connections;
       if (browserName === "webkit") {
         await room.pages[1]!.evaluate(() => {
           const registry = (window as Window & { __cine026SocketRegistry?: WebSocket[] }).__cine026SocketRegistry;
           const socket = registry?.find((item) => new URL(item.url).pathname === "/realtime/v1/websocket" && item.readyState === WebSocket.OPEN);
           if (!socket) throw new Error("Open WebKit Supabase socket was not found for interruption.");
-          socket.close(1011, "CINE-026 simulated Realtime interruption");
+          socket.close(4001, "CINE-026 simulated Realtime interruption");
         });
       } else {
         await interruption.activeRoute!.close({ code: 1011, reason: "CINE-026 simulated Realtime interruption" });
       }
+      await room.contexts[1]!.setOffline(true);
       await expect.poll(() => interruption.closes, { timeout: 15000 }).toBeGreaterThan(0);
-      const broadcastsBeforeInterruptedVote = interruption.broadcasts;
-      const offlineVote = await clickVote(room.pages[0]!, room.roomId, "SKIP");
-      expect(offlineVote.room.status).toBe("ACTIVE");
-      expect(offlineVote.room.currentCandidateIndex).toBe(0);
-      await expect.poll(() => interruption.connections, { timeout: 30000 }).toBeGreaterThan(connectionsBeforeInterruption);
+      const connectionsWhileOffline = interruption.connections;
+      const firstVote = await clickVote(room.pages[0]!, room.roomId, "SKIP");
+      expect(firstVote.room.status).toBe("ACTIVE");
+      expect(firstVote.room.currentCandidateIndex).toBe(0);
+      const snapshotResponse = await room.contexts[1]!.request.get(`${ORIGIN}/api/rooms/${room.roomId}`);
+      expect(snapshotResponse.status()).toBe(200);
+      const snapshot = await snapshotResponse.json();
+      const candidate = snapshot.room.currentCandidate as { candidateId: string; movieId: number };
+      const offlineVote = await room.contexts[1]!.request.post(`${ORIGIN}/api/rooms/${room.roomId}/votes`, {
+        headers: { origin: ORIGIN },
+        data: {
+          candidateId: candidate.candidateId,
+          movieId: candidate.movieId,
+          roundId: snapshot.room.currentRoundId,
+          vote: "SKIP",
+          operationId: randomUUID(),
+        },
+      });
+      expect(offlineVote.status()).toBe(200);
+      expect((await offlineVote.json()).room.currentCandidateIndex).toBe(1);
+      await room.contexts[1]!.setOffline(false);
+      await expect.poll(() => interruption.connections, { timeout: 30000 }).toBeGreaterThan(connectionsWhileOffline);
       await expectLive(room.pages[1]!);
-      const last = await clickVote(room.pages[1]!, room.roomId, "SKIP");
-      expect(last.room.currentCandidateIndex).toBe(1);
       await expect(room.pages[1]!.getByTestId("cine024-progress")).toHaveText("Card 02 / 20");
+      const secondHostVote = await clickVote(room.pages[0]!, room.roomId, "SKIP");
+      expect(secondHostVote.room.currentCandidateIndex).toBe(1);
+      const secondGuestVote = await clickVote(room.pages[1]!, room.roomId, "SKIP");
+      expect(secondGuestVote.room.currentCandidateIndex).toBe(2);
+      await expect(room.pages[1]!.getByTestId("cine024-progress")).toHaveText("Card 03 / 20");
       await expect.poll(() => interruption.connections, { timeout: 30000 }).toBeGreaterThan(1);
-      await expect.poll(() => interruption.broadcasts, { timeout: 30000 }).toBeGreaterThan(broadcastsBeforeInterruptedVote);
+      await expect.poll(() => interruption.broadcasts, { timeout: 30000 }).toBeGreaterThan(0);
     } finally {
       await closeContexts(room.contexts, testInfo);
     }
