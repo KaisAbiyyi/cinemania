@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext } from "@playwright/test";
 
 const ROOM_ID = "7e1249e6-a564-45c8-91fb-1a1dada1bd12";
 const ROUND_ID = "f99371e1-d5c8-4e1a-adb6-6c6ac7653f6b";
