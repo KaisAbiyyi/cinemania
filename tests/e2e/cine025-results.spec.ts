@@ -148,6 +148,69 @@ test.describe("CINE-025 private result UI (seeded, browser-level transport fixtu
     }
   });
 
+  test("a dropped retry request is surfaced and recovery reuses its operation ID", async ({ page, context }) => {
+    let phase: Phase = "EXHAUSTED";
+    const operationIds: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await mockRoom(context, () => fixture(phase, "HOST", phase === "EXHAUSTED" ? 11 : 12));
+    await context.route(`**/api/rooms/${ROOM_ID}/retry`, async (route) => {
+      const request = route.request().postDataJSON() as Record<string, unknown>;
+      operationIds.push(String(request.operationId));
+      if (operationIds.length <= 4) {
+        await route.abort("failed");
+        return;
+      }
+      phase = "ACTIVE";
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(fixture("ACTIVE", "HOST", 12)),
+      });
+    });
+
+    await page.goto(PATH);
+    await page.getByTestId("cine025-start-fresh").click();
+    const warning = page.getByTestId("cine025-error");
+    await expect(warning).toContainText("The connection was interrupted.");
+    await expect(warning).toContainText("same operation ID");
+    await expect(page.getByTestId("cine025-start-fresh")).toBeEnabled();
+    expect(operationIds).toHaveLength(4);
+
+    await page.getByTestId("cine025-start-fresh").click();
+    await expect(page.getByTestId("cine025-not-finished")).toBeVisible();
+    expect(new Set(operationIds).size).toBe(1);
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("a committed retry with unreadable response is recovered by authoritative resync", async ({ page, context }) => {
+    let phase: Phase = "EXHAUSTED";
+    const operationIds: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await mockRoom(context, () => fixture(phase, "HOST", phase === "EXHAUSTED" ? 11 : 12));
+    await context.route(`**/api/rooms/${ROOM_ID}/retry`, async (route) => {
+      const request = route.request().postDataJSON() as Record<string, unknown>;
+      operationIds.push(String(request.operationId));
+      // The server committed the transition, but all idempotent replies were corrupted.
+      phase = "ACTIVE";
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: "unreadable-json",
+      });
+    });
+
+    await page.goto(PATH);
+    await page.getByTestId("cine025-start-fresh").click();
+    await expect(page.getByTestId("cine025-not-finished")).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "Room state changed after the retry." })).toBeVisible();
+    await expect(page.getByTestId("cine025-error")).toHaveCount(0);
+    expect(operationIds).toHaveLength(4);
+    expect(new Set(operationIds).size).toBe(1);
+    expect(pageErrors).toEqual([]);
+  });
+
   test("clipboard rejection exposes only manually copyable title/year", async ({ page, context }) => {
     await context.addInitScript(() => {
       Object.defineProperty(navigator, "clipboard", {
