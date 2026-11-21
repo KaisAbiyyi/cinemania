@@ -280,25 +280,7 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       snapshotVersions: number[];
       activeRoute?: { close: (options?: { code?: number; reason?: string }) => Promise<void> };
     } = { connections: 0, closes: 0, routes: 0, broadcasts: 0, broadcastVersions: [], snapshotVersions: [] };
-    const room = await makeRoom(browser, testInfo, 2, async (context, index) => {
-      if (index !== 1 || browserName !== "webkit") return;
-      // WebKit exposes the real Supabase socket but Playwright's routeWebSocket
-      // callback does not run for it. Keep the native transport and expose its
-      // live socket so the test can perform a real client-side interruption.
-      await context.addInitScript(() => {
-        const original = window.WebSocket;
-        const registry: WebSocket[] = [];
-        const tracked = function (url: string | URL, protocols?: string | string[]) {
-          const socket = protocols === undefined ? new original(url) : new original(url, protocols);
-          registry.push(socket);
-          return socket;
-        } as unknown as typeof WebSocket;
-        Object.setPrototypeOf(tracked, original);
-        tracked.prototype = original.prototype;
-        Object.defineProperty(window, "WebSocket", { value: tracked, configurable: true, writable: true });
-        Object.defineProperty(window, "__cine026SocketRegistry", { value: registry, configurable: false });
-      });
-    }, async (page, index) => {
+    const room = await makeRoom(browser, testInfo, 2, undefined, async (page, index) => {
       if (index !== 1) return;
       if (browserName !== "webkit") {
         await page.routeWebSocket(/\/realtime\/v1\/websocket/, (route) => {
@@ -323,7 +305,7 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
     });
     try {
       await startVoting(room);
-      room.pages[1]!.on("response", (response) => {
+      const observeSnapshots = (page: Page) => page.on("response", (response) => {
         const request = response.request();
         const url = new URL(response.url());
         if (request.method() !== "GET" || url.pathname !== `/api/rooms/${room.roomId}`) return;
@@ -331,20 +313,20 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
           if (Number.isSafeInteger(value.room?.stateVersion)) interruption.snapshotVersions.push(value.room!.stateVersion!);
         }).catch(() => undefined);
       });
+      observeSnapshots(room.pages[1]!);
       await expect.poll(() => interruption.connections, { timeout: 20000 }).toBeGreaterThan(0);
       if (browserName !== "webkit") await expect.poll(() => interruption.routes, { timeout: 20000 }).toBeGreaterThan(0);
       if (browserName === "webkit") {
-        await room.pages[1]!.evaluate(() => {
-          const registry = (window as Window & { __cine026SocketRegistry?: WebSocket[] }).__cine026SocketRegistry;
-          const socket = registry?.find((item) => new URL(item.url).pathname === "/realtime/v1/websocket" && item.readyState === WebSocket.OPEN);
-          if (!socket) throw new Error("Open WebKit Supabase socket was not found for interruption.");
-          socket.close(4001, "CINE-026 simulated Realtime interruption");
-        });
+        // Page teardown closes WebKit's real Supabase socket; its routeWebSocket
+        // API cannot intercept this connection. The same authenticated browser
+        // context remains available for an offline REST vote and fresh-page resync.
+        await room.pages[1]!.close();
       } else {
         await interruption.activeRoute!.close({ code: 1011, reason: "CINE-026 simulated Realtime interruption" });
+        await room.contexts[1]!.setOffline(true);
       }
-      await room.contexts[1]!.setOffline(true);
-      await expect.poll(() => interruption.closes, { timeout: 15000 }).toBeGreaterThan(0);
+      if (browserName === "webkit") expect(room.pages[1]!.isClosed()).toBe(true);
+      else await expect.poll(() => interruption.closes, { timeout: 15000 }).toBeGreaterThan(0);
       const connectionsWhileOffline = interruption.connections;
       const firstVote = await clickVote(room.pages[0]!, room.roomId, "SKIP");
       expect(firstVote.room.status).toBe("ACTIVE");
@@ -365,7 +347,27 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       });
       expect(offlineVote.status()).toBe(200);
       expect((await offlineVote.json()).room.currentCandidateIndex).toBe(1);
-      await room.contexts[1]!.setOffline(false);
+      if (browserName === "webkit") {
+        const page = await room.contexts[1]!.newPage();
+        page.on("websocket", (socket) => {
+          if (new URL(socket.url()).pathname !== "/realtime/v1/websocket") return;
+          interruption.connections += 1;
+          socket.on("close", () => { interruption.closes += 1; });
+          socket.on("framereceived", ({ payload }) => {
+            const frame = decodeRealtimeFrame(payload);
+            const hint = frame?.payload?.payload ?? frame?.payload;
+            if (frame?.topic?.includes(room.roomId) && frame.event === "broadcast" && frame.payload?.event === "room_changed" && hint?.roomId === room.roomId && Number.isSafeInteger(hint.version)) {
+              interruption.broadcasts += 1;
+              interruption.broadcastVersions.push(hint.version!);
+            }
+          });
+        });
+        observeSnapshots(page);
+        room.pages[1] = page;
+        await page.goto(`/cinematch/vote/${room.roomId}`);
+      } else {
+        await room.contexts[1]!.setOffline(false);
+      }
       await expect.poll(() => interruption.connections, { timeout: 30000 }).toBeGreaterThan(connectionsWhileOffline);
       await expectLive(room.pages[1]!);
       await expect(room.pages[1]!.getByTestId("cine024-progress")).toHaveText("Card 02 / 20");
