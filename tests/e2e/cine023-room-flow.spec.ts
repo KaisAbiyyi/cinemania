@@ -37,6 +37,9 @@ test.describe("CINE-023 real create / invite / lobby workflow", () => {
       await guestPage.reload();
       await expect(guestPage.getByText("Guest two (You)")).toBeVisible({ timeout: 20000 });
       await expect(guestPage.getByTestId("cm-participant-count")).toHaveText("2 / 5");
+      await hostPage.getByTestId("cm-start-round").click();
+      await expect(hostPage.getByText("Round started. Voting interaction is being delivered separately in CINE-024; room state remains server-authoritative.")).toBeVisible({ timeout: 20000 });
+      await expect(guestPage.getByText("Round started. Voting interaction is being delivered separately in CINE-024; room state remains server-authoritative.")).toBeVisible({ timeout: 20000 });
     } finally {
       await Promise.all(contexts.map((c) => c.close()));
     }
