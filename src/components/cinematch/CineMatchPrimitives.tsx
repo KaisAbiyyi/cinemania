@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -19,6 +19,33 @@ import type { RealtimeStatus } from "@/lib/realtime/roomRealtime";
 import type { SafeDeckCandidate } from "@/lib/schemas/roomDeck";
 import type { SafeRoomParticipant } from "@/lib/server/room/roomSnapshot";
 import { cn } from "@/lib/utils";
+
+export type ClipboardCopyResult =
+  | { ok: true }
+  | { ok: false; reason: "UNAVAILABLE" | "REJECTED" };
+
+/**
+ * Writes text to the browser clipboard and returns a strict pass/fail outcome
+ * so callers never report false copy success when the API is unavailable or rejected.
+ */
+export async function copyTextToClipboard(
+  text: string
+): Promise<ClipboardCopyResult> {
+  if (
+    typeof navigator === "undefined" ||
+    !navigator.clipboard ||
+    typeof navigator.clipboard.writeText !== "function"
+  ) {
+    return { ok: false, reason: "UNAVAILABLE" };
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "REJECTED" };
+  }
+}
 
 interface ConnectionStatusBannerProps {
   status: RealtimeStatus;
@@ -141,8 +168,36 @@ interface RoomCodeChipProps {
   invitePath: string;
 }
 
+type RoomCodeCopyState =
+  | { status: "idle" }
+  | { status: "copied"; target: "code" | "link" }
+  | {
+      status: "error";
+      target: "code" | "link";
+      value: string;
+      reason: "UNAVAILABLE" | "REJECTED";
+    };
+
 export function RoomCodeChip({ code, invitePath }: RoomCodeChipProps) {
-  const [copiedType, setCopiedType] = useState<"code" | "link" | null>(null);
+  const [copyState, setCopyState] = useState<RoomCodeCopyState>({ status: "idle" });
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (resetTimerRef.current) {
+        clearTimeout(resetTimerRef.current);
+      }
+    };
+  }, []);
+
+  const scheduleReset = (delayMs: number) => {
+    if (resetTimerRef.current) {
+      clearTimeout(resetTimerRef.current);
+    }
+    resetTimerRef.current = setTimeout(() => {
+      setCopyState({ status: "idle" });
+    }, delayMs);
+  };
 
   const handleCopy = async (type: "code" | "link") => {
     const value =
@@ -151,64 +206,91 @@ export function RoomCodeChip({ code, invitePath }: RoomCodeChipProps) {
         : typeof window !== "undefined"
           ? `${window.location.origin}${invitePath}`
           : invitePath;
-    try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(value);
-      }
-      setCopiedType(type);
-      setTimeout(() => setCopiedType(null), 2000);
-    } catch {
-      setCopiedType(type);
-      setTimeout(() => setCopiedType(null), 2000);
+    const result = await copyTextToClipboard(value);
+    if (result.ok) {
+      setCopyState({ status: "copied", target: type });
+      scheduleReset(2000);
+      return;
     }
+
+    setCopyState({
+      status: "error",
+      target: type,
+      value,
+      reason: result.reason,
+    });
+    scheduleReset(5000);
   };
 
+  const copiedTarget = copyState.status === "copied" ? copyState.target : null;
+
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--cm-border)]/45 bg-[var(--cm-surface-subtle)] p-3.5">
-      <div className="min-w-0">
-        <p className="text-xs font-medium uppercase tracking-wider text-[var(--cm-ink-muted)]">
-          Room Code
-        </p>
-        <p
-          data-testid="cm-room-code"
-          className="font-mono text-2xl font-bold tracking-[0.18em] text-[var(--cm-ink)] tabular-nums"
-        >
-          {code}
-        </p>
+    <div className="space-y-2.5 rounded-xl border border-[var(--cm-border)]/45 bg-[var(--cm-surface-subtle)] p-3.5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium uppercase tracking-wider text-[var(--cm-ink-muted)]">
+            Room Code
+          </p>
+          <p
+            data-testid="cm-room-code"
+            className="font-mono text-2xl font-bold tracking-[0.18em] text-[var(--cm-ink)] tabular-nums"
+          >
+            {code}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void handleCopy("code")}
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-[var(--cm-border)]/60 bg-[var(--cm-surface)] px-3.5 py-2 text-xs font-semibold text-[var(--cm-ink)] hover:bg-[var(--cm-surface-elevated)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cm-brand-text)]"
+          >
+            {copiedTarget === "code" ? (
+              <Check className="h-3.5 w-3.5 text-[var(--cm-like)]" aria-hidden="true" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            <span>{copiedTarget === "code" ? "Code Copied" : "Copy Code"}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleCopy("link")}
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-[var(--cm-brand)] px-3.5 py-2 text-xs font-semibold text-[var(--cm-brand-ink)] hover:opacity-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cm-brand-text)]"
+          >
+            {copiedTarget === "link" ? (
+              <Check className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            <span>{copiedTarget === "link" ? "Invite Copied" : "Copy Invite Link"}</span>
+          </button>
+        </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() => void handleCopy("code")}
-          className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-[var(--cm-border)]/60 bg-[var(--cm-surface)] px-3.5 py-2 text-xs font-semibold text-[var(--cm-ink)] hover:bg-[var(--cm-surface-elevated)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cm-brand)]"
-        >
-          {copiedType === "code" ? (
-            <Check className="h-3.5 w-3.5 text-[var(--cm-like)]" aria-hidden="true" />
-          ) : (
-            <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-          )}
-          <span>{copiedType === "code" ? "Code Copied" : "Copy Code"}</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => void handleCopy("link")}
-          className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-[var(--cm-brand)] px-3.5 py-2 text-xs font-semibold text-[var(--cm-brand-ink)] hover:opacity-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cm-brand)]"
-        >
-          {copiedType === "link" ? (
-            <Check className="h-3.5 w-3.5" aria-hidden="true" />
-          ) : (
-            <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
-          )}
-          <span>{copiedType === "link" ? "Invite Copied" : "Copy Invite Link"}</span>
-        </button>
-      </div>
+
       <span className="sr-only" aria-live="polite">
-        {copiedType === "code"
+        {copiedTarget === "code"
           ? `Room code ${code} copied.`
-          : copiedType === "link"
+          : copiedTarget === "link"
             ? "Invite link copied."
             : ""}
       </span>
+
+      {copyState.status === "error" && (
+        <div
+          role="alert"
+          data-testid="cm-copy-error"
+          className="rounded-lg border border-[var(--cm-skip)]/40 bg-[var(--cm-skip-soft-bg)] px-3 py-2 text-xs text-[var(--cm-skip-soft-ink)]"
+        >
+          <span className="font-semibold">
+            {copyState.reason === "UNAVAILABLE"
+              ? "Clipboard is unavailable in this browser."
+              : "Clipboard permission was denied."}
+          </span>{" "}
+          Copy {copyState.target === "code" ? "room code" : "invite link"} manually:{" "}
+          <code className="select-all font-mono font-bold break-all">
+            {copyState.value}
+          </code>
+        </div>
+      )}
     </div>
   );
 }

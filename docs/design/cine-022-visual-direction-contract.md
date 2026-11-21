@@ -52,9 +52,10 @@ Defined in `src/app/globals.css`:
   - All text-on-surface and label-on-fill tokens meet `>= 4.5:1` in both Light and Dark themes.
   - Interactive input/card border tokens meet `>= 3.0:1` (`WCAG 1.4.11`).
 - **Keyboard Walkthrough:**
-  1. State selector tabs (`role="tablist"`) -> Theme/Role/Motion toggles -> Active stage inputs/controls -> Recovery/Secondary actions.
-  2. In `swipe` state, focusing the active voting region enables **`ArrowLeft` / `S`** (Skip) and **`ArrowRight` / `L`** (Like) alongside Tab-reachable `Skip Film` and `Like Film` buttons.
-  3. All custom interactive controls expose `focus-visible:outline-2 focus-visible:outline-offset-2`.
+  1. State selector tabs (`role="tablist"`) follow the WAI-ARIA Tabs Pattern with **roving `tabIndex`** (`0` on active tab, `-1` on inactive tabs) and **`ArrowLeft` / `ArrowRight` / `Home` / `End`** focus + activation wrapping cleanly across all 9 states.
+  2. `Tab` exits the active tab directly into theme/role/motion controls -> active stage inputs/controls -> recovery/secondary actions.
+  3. In `swipe` state, focusing the active voting region enables **`ArrowLeft` / `S`** (Skip) and **`ArrowRight` / `L`** (Like) alongside Tab-reachable `Skip Film` and `Like Film` buttons.
+  4. All custom interactive controls expose `focus-visible:outline-2 focus-visible:outline-offset-2`, and clipboard copy actions (`RoomCodeChip`, `Copy Match Title`) fail closed with a scoped `[role="alert"]` manual copy fallback instead of false success when `navigator.clipboard.writeText` is unavailable or denied.
 - **ARIA & Next.js 16 Isolation (L-057):**
   - Passive connection/vote confirmations use `role="status"` and `aria-live="polite"`.
   - Actionable failures use a scoped `[data-testid="cm-scoped-alert"][role="alert"]` card, kept strictly separate from Next.js 16's `#__next-route-announcer__`.

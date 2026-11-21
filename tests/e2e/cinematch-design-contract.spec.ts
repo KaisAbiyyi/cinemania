@@ -164,11 +164,52 @@ test.describe("CINE-022: CineMatch Visual Direction & Interaction Contract", () 
     expect(reducedStyles.animationName).toBe("none");
     expect(parseFloat(reducedStyles.transitionDuration)).toBeLessThanOrEqual(0.001);
 
-    // Keyboard walkthrough: activate Swipe state via Tab + Enter / click, then ArrowRight -> LIKE
+    // Keyboard walkthrough: WAI-ARIA roving tabindex & ArrowRight/ArrowLeft/Home/End across tablist
+    const matchTab = page.locator("#cm-tab-match");
+    const createTab = page.locator("#cm-tab-create");
+    const joinTab = page.locator("#cm-tab-join");
+    const offlineTab = page.locator("#cm-tab-offline");
+
+    // Currently on Match tab from reduced-motion check above
+    await expect(matchTab).toHaveAttribute("tabindex", "0");
+    await expect(createTab).toHaveAttribute("tabindex", "-1");
+    await matchTab.focus();
+    await expect(matchTab).toBeFocused();
+
+    // Home jumps to first tab (Create)
+    await page.keyboard.press("Home");
+    await expect(createTab).toBeFocused();
+    await expect(createTab).toHaveAttribute("aria-selected", "true");
+    await expect(createTab).toHaveAttribute("tabindex", "0");
+    await expect(matchTab).toHaveAttribute("tabindex", "-1");
+    await expect(joinTab).toHaveAttribute("tabindex", "-1");
+
+    // ArrowRight advances to Join
+    await page.keyboard.press("ArrowRight");
+    await expect(joinTab).toBeFocused();
+    await expect(joinTab).toHaveAttribute("aria-selected", "true");
+    await expect(joinTab).toHaveAttribute("tabindex", "0");
+    await expect(createTab).toHaveAttribute("tabindex", "-1");
+    await expect(page.getByTestId("cm-stage-join")).toBeVisible();
+
+    // End jumps to last tab (Offline)
+    await page.keyboard.press("End");
+    await expect(offlineTab).toBeFocused();
+    await expect(offlineTab).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("cm-stage-offline")).toBeVisible();
+
+    // ArrowRight wraps from last tab (Offline) back to first tab (Create), ArrowLeft wraps back to Offline
+    await page.keyboard.press("ArrowRight");
+    await expect(createTab).toBeFocused();
+    await expect(createTab).toHaveAttribute("aria-selected", "true");
+
+    await page.keyboard.press("ArrowLeft");
+    await expect(offlineTab).toBeFocused();
+    await expect(offlineTab).toHaveAttribute("aria-selected", "true");
+
+    // Navigate via ArrowRight/click to Swipe stage and verify ArrowRight -> LIKE
     const swipeTab = page.locator("#cm-tab-swipe");
-    await swipeTab.focus();
-    await expect(swipeTab).toBeFocused();
-    await page.keyboard.press("Enter");
+    await swipeTab.click();
     await expect(page.getByTestId("cm-stage-swipe")).toBeVisible();
 
     // Tab forward until reaching the active swipe deck region, then press ArrowRight
@@ -190,5 +231,64 @@ test.describe("CINE-022: CineMatch Visual Direction & Interaction Contract", () 
     const scopedAlert = page.locator('[role="alert"]:not(#__next-route-announcer__)');
     await expect(scopedAlert).toBeVisible();
     await expect(scopedAlert).toContainText("RATE_LIMITED");
+  });
+
+  test("handles real clipboard success and rejection accurately in Lobby RoomCodeChip and Match Copy Match Title", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    // Stub clipboard cleanly before navigation to assert real writeText calls and rejection handling
+    await page.addInitScript(() => {
+      const state = { shouldReject: false, copied: [] as string[] };
+      (window as unknown as { __cmClipboardTest: typeof state }).__cmClipboardTest = state;
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: async (text: string) => {
+            if (state.shouldReject) {
+              throw new Error("Clipboard rejected in test");
+            }
+            state.copied.push(text);
+          },
+        },
+      });
+    });
+
+    await page.goto("/cinematch", { waitUntil: "networkidle" });
+
+    // 1. Lobby RoomCodeChip: success then rejection
+    await page.locator("#cm-tab-lobby").click();
+    await page.getByRole("button", { name: /^Copy Code$/i }).click();
+    await expect(page.getByRole("button", { name: /Code Copied/i })).toBeVisible();
+
+    await page.evaluate(() => {
+      (window as unknown as { __cmClipboardTest: { shouldReject: boolean } }).__cmClipboardTest.shouldReject = true;
+    });
+    await page.getByRole("button", { name: /^Copy Invite Link$/i }).click();
+    const copyError = page.getByTestId("cm-copy-error");
+    await expect(copyError).toBeVisible();
+    await expect(copyError).toContainText("Clipboard permission was denied.");
+    await expect(page.getByRole("button", { name: /Invite Copied/i })).toHaveCount(0);
+
+    // 2. Match Copy Match Title: rejection then success
+    await page.locator("#cm-tab-match").click();
+    await page.getByRole("button", { name: /Copy Match Title/i }).click();
+    const matchShareError = page.getByTestId("cm-match-share-error");
+    await expect(matchShareError).toBeVisible();
+    await expect(matchShareError).toContainText("Movie Night Match: Inception (2010)");
+    await expect(page.getByRole("button", { name: /Match Title Copied/i })).toHaveCount(0);
+
+    await page.evaluate(() => {
+      (window as unknown as { __cmClipboardTest: { shouldReject: boolean } }).__cmClipboardTest.shouldReject = false;
+    });
+    await page.getByRole("button", { name: /Copy Match Title/i }).click();
+    await expect(page.getByTestId("cm-match-share-success")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Match Title Copied/i })).toBeVisible();
+
+    const copiedTexts = await page.evaluate(
+      () => (window as unknown as { __cmClipboardTest: { copied: string[] } }).__cmClipboardTest.copied
+    );
+    expect(copiedTexts).toEqual(["CNM482", "Movie Night Match: Inception (2010)"]);
   });
 });

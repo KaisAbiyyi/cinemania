@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
+  Check,
   CheckCircle2,
   Clapperboard,
   Film,
@@ -30,6 +31,7 @@ import {
   ConnectionStatusBanner,
   ParticipantRosterList,
   RoomCodeChip,
+  copyTextToClipboard,
 } from "./CineMatchPrimitives";
 import { cn } from "@/lib/utils";
 
@@ -52,7 +54,21 @@ export function CineMatchContractStudio() {
   const [dragOffsetPx, setDragOffsetPx] = useState(0);
   const [dragStartX, setDragStartX] = useState<number | null>(null);
   const [resyncPulse, setResyncPulse] = useState(false);
-  const [shareNote, setShareNote] = useState<string | null>(null);
+  const [shareState, setShareState] = useState<
+    | { status: "idle" }
+    | { status: "copied"; text: string }
+    | { status: "error"; text: string; reason: "UNAVAILABLE" | "REJECTED" }
+  >({ status: "idle" });
+  const shareTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  useEffect(() => {
+    return () => {
+      if (shareTimerRef.current) {
+        clearTimeout(shareTimerRef.current);
+      }
+    };
+  }, []);
 
   const contract =
     CINEMATCH_SCREEN_CONTRACTS.find((item) => item.id === activeState) ??
@@ -94,10 +110,63 @@ export function CineMatchContractStudio() {
     setTimeout(() => setResyncPulse(false), 600);
   };
 
-  const handleCopyMatchShare = () => {
-    const title = fixture.snapshot.matchedCandidate?.title ?? "Inception";
-    setShareNote(`Prepared sanitized share summary: "Movie Night Match: ${title} (2010)"`);
-    setTimeout(() => setShareNote(null), 2500);
+  const selectStateTab = (nextStateId: CineMatchScreenStateId) => {
+    setActiveState(nextStateId);
+    setLastSwipePreview(null);
+    setDragOffsetPx(0);
+    setShareState({ status: "idle" });
+  };
+
+  const handleTabKeyDown = (
+    index: number,
+    event: KeyboardEvent<HTMLButtonElement>
+  ) => {
+    const total = CINEMATCH_SCREEN_CONTRACTS.length;
+    let targetIndex: number | null = null;
+    if (event.key === "ArrowRight") {
+      targetIndex = (index + 1) % total;
+    } else if (event.key === "ArrowLeft") {
+      targetIndex = (index - 1 + total) % total;
+    } else if (event.key === "Home") {
+      targetIndex = 0;
+    } else if (event.key === "End") {
+      targetIndex = total - 1;
+    }
+    if (targetIndex === null) return;
+
+    event.preventDefault();
+    const targetContract = CINEMATCH_SCREEN_CONTRACTS[targetIndex];
+    selectStateTab(targetContract.id);
+    tabRefs.current[targetIndex]?.focus();
+  };
+
+  const handleCopyMatchShare = async () => {
+    const matched = fixture.snapshot.matchedCandidate;
+    const title = matched?.title ?? "Inception";
+    const year = matched?.releaseDate ? matched.releaseDate.slice(0, 4) : "2010";
+    const shareText = `Movie Night Match: ${title} (${year})`;
+    const result = await copyTextToClipboard(shareText);
+
+    if (shareTimerRef.current) {
+      clearTimeout(shareTimerRef.current);
+    }
+
+    if (result.ok) {
+      setShareState({ status: "copied", text: shareText });
+      shareTimerRef.current = setTimeout(() => {
+        setShareState({ status: "idle" });
+      }, 2500);
+      return;
+    }
+
+    setShareState({
+      status: "error",
+      text: shareText,
+      reason: result.reason,
+    });
+    shareTimerRef.current = setTimeout(() => {
+      setShareState({ status: "idle" });
+    }, 5000);
   };
 
   return (
@@ -164,22 +233,23 @@ export function CineMatchContractStudio() {
           aria-label="CineMatch screen states"
           className="mt-5 flex flex-wrap gap-2"
         >
-          {CINEMATCH_SCREEN_CONTRACTS.map((item) => {
+          {CINEMATCH_SCREEN_CONTRACTS.map((item, index) => {
             const isSelected = item.id === activeState;
             return (
               <button
                 key={item.id}
+                ref={(el) => {
+                  tabRefs.current[index] = el;
+                }}
                 type="button"
                 role="tab"
                 id={`cm-tab-${item.id}`}
+                tabIndex={isSelected ? 0 : -1}
                 aria-selected={isSelected}
                 aria-controls="cm-active-stage"
                 data-state-id={item.id}
-                onClick={() => {
-                  setActiveState(item.id);
-                  setLastSwipePreview(null);
-                  setDragOffsetPx(0);
-                }}
+                onClick={() => selectStateTab(item.id)}
+                onKeyDown={(event) => handleTabKeyDown(index, event)}
                 className={cn(
                   "inline-flex min-h-[44px] items-center rounded-xl border px-3.5 py-2 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cm-brand-text)]",
                   isSelected
@@ -611,11 +681,19 @@ export function CineMatchContractStudio() {
               <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
-                  onClick={handleCopyMatchShare}
+                  onClick={() => void handleCopyMatchShare()}
                   className="inline-flex min-h-[48px] flex-1 items-center justify-center gap-2 rounded-xl bg-[var(--cm-brand)] px-4 py-2.5 text-sm font-semibold text-[var(--cm-brand-ink)] hover:opacity-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cm-brand-text)]"
                 >
-                  <Sparkles className="h-4 w-4" aria-hidden="true" />
-                  <span>Copy Match Title</span>
+                  {shareState.status === "copied" ? (
+                    <Check className="h-4 w-4" aria-hidden="true" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  <span>
+                    {shareState.status === "copied"
+                      ? "Match Title Copied"
+                      : "Copy Match Title"}
+                  </span>
                 </button>
                 <Link
                   href={`/movie/${fixture.snapshot.matchedCandidate.movieId}`}
@@ -626,14 +704,33 @@ export function CineMatchContractStudio() {
                 </Link>
               </div>
 
-              {shareNote && (
+              {shareState.status === "copied" && (
                 <p
                   role="status"
                   aria-live="polite"
+                  data-testid="cm-match-share-success"
                   className="text-xs font-medium text-[var(--cm-like-soft-ink)]"
                 >
-                  {shareNote}
+                  Copied to clipboard: &ldquo;{shareState.text}&rdquo;
                 </p>
+              )}
+
+              {shareState.status === "error" && (
+                <div
+                  role="alert"
+                  data-testid="cm-match-share-error"
+                  className="rounded-lg border border-[var(--cm-skip)]/40 bg-[var(--cm-skip-soft-bg)] px-3 py-2 text-xs text-[var(--cm-skip-soft-ink)]"
+                >
+                  <span className="font-semibold">
+                    {shareState.reason === "UNAVAILABLE"
+                      ? "Clipboard is unavailable in this browser."
+                      : "Clipboard permission was denied."}
+                  </span>{" "}
+                  Copy match title manually:{" "}
+                  <code className="select-all font-mono font-bold">
+                    {shareState.text}
+                  </code>
+                </div>
               )}
             </section>
           )}
