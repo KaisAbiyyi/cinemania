@@ -296,6 +296,21 @@ export function CineMatchVotingClient({ roomId }: { roomId: string }) {
       {error && (
         <CineMatchAlertCard code="ROOM_CONNECTION" message={error} onRetry={() => void resyncWithSnapshot().catch(() => undefined)} />
       )}
+      {snapshot && (snapshot.room.status === "MATCHED" || snapshot.room.status === "EXHAUSTED" || snapshot.room.status === "EXPIRED") && (
+        <section role="status" data-testid="cine026-result-handoff" className="space-y-3 rounded-xl border border-[var(--cm-border)] bg-[var(--cm-surface)] p-4 text-[var(--cm-ink)]">
+          <p>The server has finished this screening round. Open the authoritative result to see the outcome.</p>
+          <Link data-testid="cine026-open-result" href={`/cinematch/result/${encodeURIComponent(roomId)}`}
+            className="inline-flex min-h-[44px] items-center font-bold text-[var(--cm-brand-text)] underline underline-offset-4">
+            View server-confirmed result
+          </Link>
+        </section>
+      )}
+      {snapshot?.room.status === "LOBBY" && (
+        <Link href={`/cinematch/room/${encodeURIComponent(roomId)}`}
+          className="inline-flex min-h-[44px] items-center font-bold text-[var(--cm-brand-text)] underline underline-offset-4">
+          Return to room lobby
+        </Link>
+      )}
       <CineMatchVotingPanel
         snapshot={snapshot}
         loading={loading}
