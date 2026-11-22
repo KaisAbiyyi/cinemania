@@ -294,8 +294,7 @@ const INVARIANT_LABELS: ReadonlyArray<readonly [RegExp, string]> = [
   [/Realtime publisher configuration/, "publisher_configuration"],
   [/Invalid PostgreSQL schema identifier/, "schema_identifier"],
   [/Outbox events are not strictly ordered/, "outbox_order"],
-  // pg-pool 3.x: a new connection attempt exceeded connectionTimeoutMillis. Not matched by
-  // isPostgresCapacityError, so it currently falls through to the generic 500 branch.
+  // Fixed labels for known pg-pool timeout messages in diagnostic descriptions.
   [/Connection terminated due to connection timeout/, "pool_connection_timeout"],
   [/timeout exceeded when trying to connect/, "pool_checkout_timeout"],
 ];

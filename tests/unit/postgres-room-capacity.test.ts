@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { EventEmitter } from "node:events";
+import { Pool } from "pg";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { handleGuestApiError } from "@/lib/server/auth/guestResponse";
 import { resolvePostgresPoolConfig } from "@/lib/server/room/roomStore";
@@ -13,8 +15,55 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
+});
+
+it("returns 503 for the actual pg-pool new-client timeout", async () => {
+  vi.useFakeTimers();
+  const cause = new Error("synthetic private connection details");
+
+  class StalledClient extends EventEmitter {
+    private callback?: (error: Error) => void;
+
+    connection = { stream: { destroy: () => this.callback?.(cause) } };
+
+    connect(callback: (error: Error) => void) {
+      this.callback = callback;
+    }
+  }
+
+  const pool = new Pool({ connectionTimeoutMillis: 10, Client: StalledClient } as ConstructorParameters<typeof Pool>[0]);
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const result = pool.connect().catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(10);
+    const error = await result;
+    expect(error).toMatchObject({ message: "Connection terminated due to connection timeout", cause });
+    expect(pool.totalCount).toBe(0);
+    const response = handleGuestApiError(error);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("3");
+    expect(await response.json()).toMatchObject({ error: "DATABASE_CAPACITY" });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(cause.message);
+  } finally {
+    await pool.end();
+  }
+});
+
+it.each([
+  Object.assign(new Error("synthetic lock timeout"), { code: "55P03" }),
+  Object.assign(new Error("synthetic query cancellation"), { code: "57014" }),
+  Object.assign(new Error("synthetic unrelated network error"), { code: "ETIMEDOUT" }),
+  new Error("synthetic prefix: Connection terminated due to connection timeout"),
+])("leaves unrelated database failures on the sanitized 500 path", async (error) => {
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  const response = handleGuestApiError(error);
+  expect(response.status).toBe(500);
+  expect(response.headers.get("Retry-After")).toBeNull();
+  expect(await response.json()).toEqual({ error: "INTERNAL_ERROR", message: "Unexpected guest session failure." });
+  expect(JSON.stringify(log.mock.calls)).not.toContain(error.message);
 });
 
 it("defaults to two sessions per Supabase session pool and preserves TLS settings", () => {
