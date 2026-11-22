@@ -10,7 +10,7 @@ export class PublicationAuthorizationError extends Error {}
 export class PublicationDeferredError extends Error {}
 export interface PendingEvent { id: string; version: number }
 export interface LockedOutbox {
-  pending(): Promise<PendingEvent[]>;
+  readyHead(): Promise<PendingEvent | undefined>;
   markDispatched(id: string): Promise<void>;
   recordFailure(id: string, permanent: boolean, authorization: boolean): Promise<void>;
 }
@@ -19,16 +19,19 @@ export interface OutboxStore {
   withRoomLock<T>(roomId: string, work: (outbox: LockedOutbox) => Promise<T>): Promise<T>;
 }
 
-/** Publish at least once, in version order. Consumers must deduplicate hints. */
+/** Publish in durable head order. An ambiguous acknowledgement can replay the head. */
 export async function dispatchPendingEvents(
   roomId: string,
   store: OutboxStore,
   publish: (hint: RoomHint) => Promise<void>,
 ): Promise<boolean> {
-  return store.withRoomLock(roomId, async (outbox) => {
-    const events = await outbox.pending();
-    let last = -1;
-    for (const event of events) {
+  let last = -1;
+  for (let sent = 0; sent < 3; sent++) {
+    // Commit this acknowledgement before sending a later version. If this transaction
+    // rolls back, only the current head can have been sent without a durable mark.
+    const result = await store.withRoomLock(roomId, async (outbox) => {
+      const event = await outbox.readyHead();
+      if (!event) return "idle";
       if (!Number.isSafeInteger(event.version) || event.version <= last) {
         throw new Error("Outbox events are not strictly ordered");
       }
@@ -36,14 +39,16 @@ export async function dispatchPendingEvents(
       try {
         await publish({ roomId, version: event.version });
       } catch (error) {
-        if (error instanceof PublicationDeferredError) return false;
+        if (error instanceof PublicationDeferredError) return "pending";
         const permanent = error instanceof PermanentPublicationError;
         await outbox.recordFailure(event.id, permanent, error instanceof PublicationAuthorizationError);
         if (permanent) console.error("[CINEMATCH_REALTIME_REJECTED] Check provider payload limits and quarantined events.");
-        return false;
+        return "pending";
       }
       await outbox.markDispatched(event.id);
-    }
-    return true;
-  });
+      return "sent";
+    });
+    if (result !== "sent") return result === "idle";
+  }
+  return true;
 }
