@@ -2,12 +2,24 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useState, useSyncExternalStore, type FormEvent } from "react";
 import { Clapperboard, Film, LogIn, Plus, Users } from "lucide-react";
 import { CineMatchAlertCard } from "@/components/cinematch/CineMatchPrimitives";
 import { isRoomPayload, normalizeRoomCode, roomErrorMessage, roomRequest, RoomClientError } from "./clientApi";
 
 type Mode = "create" | "join";
+
+const noopSubscribe = () => () => undefined;
+
+/**
+ * False on the server and during hydration, true once React has committed on the client.
+ * Before that commit the controlled inputs have no handlers: a typed name is reset to the
+ * empty state value (client-side INVALID_DISPLAY_NAME with no request), and a click falls
+ * through to a native GET form submission that would put the name and room code in the URL.
+ */
+function useHydrated(): boolean {
+  return useSyncExternalStore(noopSubscribe, () => true, () => false);
+}
 
 export function RoomEntry({ initialCode = "" }: { initialCode?: string }) {
   const router = useRouter();
@@ -16,10 +28,12 @@ export function RoomEntry({ initialCode = "" }: { initialCode?: string }) {
   const [code, setCode] = useState(initialCode);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<RoomClientError | null>(null);
+  const hydrated = useHydrated();
+  const locked = pending || !hydrated;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (pending) return;
+    if (pending || !hydrated) return;
     setError(null);
     const cleanedName = name.normalize("NFKC").trim();
     if (Array.from(cleanedName).length < 1 || Array.from(cleanedName).length > 32) {
@@ -69,11 +83,11 @@ export function RoomEntry({ initialCode = "" }: { initialCode?: string }) {
             </button>
           </div>
           <h2 className="text-xl font-bold text-[var(--cm-ink)]">{mode === "create" ? "Create a screening room" : "Join a friend&apos;s room"}</h2>
-          <form onSubmit={(event) => void submit(event)} className="space-y-5" noValidate>
+          <form onSubmit={(event) => void submit(event)} className="space-y-5" noValidate data-hydrated={hydrated ? "true" : "false"} data-testid="cm-room-form">
             <div className="space-y-2">
               <label htmlFor="cm-display-name" className="block text-sm font-semibold text-[var(--cm-ink)]">Your display name</label>
               <input id="cm-display-name" name="displayName" type="text" autoComplete="nickname" required maxLength={50} value={name}
-                onChange={(event) => setName(event.target.value)} disabled={pending} placeholder="e.g. Movie fan"
+                onChange={(event) => setName(event.target.value)} disabled={locked} placeholder="e.g. Movie fan"
                 className="min-h-[48px] w-full rounded-lg border border-[var(--cm-border)] bg-[var(--cm-surface-elevated)] px-3 text-[var(--cm-ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cm-brand)]" />
               <p className="text-xs text-[var(--cm-ink-muted)]">1–32 characters; visible to the room.</p>
             </div>
@@ -81,12 +95,12 @@ export function RoomEntry({ initialCode = "" }: { initialCode?: string }) {
               <div className="space-y-2">
                 <label htmlFor="cm-join-code" className="block text-sm font-semibold text-[var(--cm-ink)]">Six-character room code or invite link</label>
                 <input id="cm-join-code" name="roomCode" type="text" required autoCapitalize="characters" autoCorrect="off" spellCheck={false} value={code}
-                  onChange={(event) => setCode(event.target.value)} disabled={pending} placeholder="ABC234"
+                  onChange={(event) => setCode(event.target.value)} disabled={locked} placeholder="ABC234"
                   className="min-h-[48px] w-full min-w-0 rounded-lg border border-[var(--cm-border)] bg-[var(--cm-surface-elevated)] px-3 font-mono text-[var(--cm-ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cm-brand)]" />
               </div>
             )}
             {error && <CineMatchAlertCard code={error.code} message={roomErrorMessage(error)} retryAfterSeconds={error.retryAfterSeconds} />}
-            <button type="submit" disabled={pending} aria-busy={pending} data-testid="cm-room-submit"
+            <button type="submit" disabled={locked} aria-busy={pending} data-testid="cm-room-submit"
               className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-lg bg-[var(--cm-brand)] px-5 py-3 text-sm font-bold text-[var(--cm-brand-ink)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--cm-brand-text)] disabled:cursor-wait disabled:opacity-60">
               <Film className="h-4 w-4" aria-hidden="true" />
               {pending ? "Opening room…" : mode === "create" ? "Create Screening Room" : "Join Screening Room"}

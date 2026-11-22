@@ -3,7 +3,7 @@ import { defineConfig, devices } from "@playwright/test";
 /** Local SQLite + offline TMDB vote/final-state regressions; never Supabase Realtime validation. */
 export default defineConfig({
   testDir: "./tests/e2e",
-  testMatch: ["room-voting.spec.ts", "room-finish-states.spec.ts"],
+  testMatch: ["room-voting.spec.ts", "room-finish-states.spec.ts", "cine026a-join-hydration.spec.ts", "cine026a-redaction-init.spec.ts"],
   fullyParallel: false,
   workers: 1,
   retries: 0,
