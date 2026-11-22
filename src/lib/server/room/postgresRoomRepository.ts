@@ -236,6 +236,9 @@ export class PostgresRoomRepository {
     const isPool = "totalCount" in this.db && typeof (this.db as { connect?: unknown }).connect === "function";
     const client = isPool ? await (this.db as Pool).connect() : (this.db as Client | PoolClient);
     const shouldRelease = isPool && "release" in client;
+    // If ROLLBACK fails, the session may still hold an open transaction and row locks. Destroy it
+    // instead of returning it to the pool, so the next request cannot inherit the open transaction.
+    let discardClient = false;
 
     try {
       if (this.schema) {
@@ -249,12 +252,12 @@ export class PostgresRoomRepository {
       try {
         await client.query("ROLLBACK;");
       } catch {
-        // Rollback error ignored to propagate primary error
+        discardClient = true;
       }
       throw err;
     } finally {
       if (shouldRelease && "release" in client) {
-        (client as PoolClient).release();
+        (client as PoolClient).release(discardClient || undefined);
       }
     }
   }
