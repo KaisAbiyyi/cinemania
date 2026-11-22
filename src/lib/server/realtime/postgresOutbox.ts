@@ -30,14 +30,14 @@ export function postgresOutboxStore(pool: Pool, requestedSchema = "public"): Out
         // Per-room transaction lock ensures competing app instances cannot reorder sends.
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`cinematch-outbox:${schema}:${roomId}`]);
         const outbox: LockedOutbox = {
-          async pending(): Promise<PendingEvent[]> {
+          async readyHead(): Promise<PendingEvent | undefined> {
             const result = await client.query<{ id: string; version: number; ready: boolean }>(
               `SELECT id::text, version, retry_not_before <= NOW() AS ready FROM ${table}
-               WHERE room_id = $1 AND NOT dispatched AND NOT poison ORDER BY version ASC LIMIT 3`,
+               WHERE room_id = $1 AND NOT dispatched AND NOT poison ORDER BY version ASC LIMIT 1`,
               [roomId],
             );
-            const delayed = result.rows.findIndex(event => !event.ready);
-            return delayed < 0 ? result.rows : result.rows.slice(0, delayed);
+            const head = result.rows[0];
+            return head?.ready ? head : undefined;
           },
           async markDispatched(id) {
             await client.query(`UPDATE ${table} SET dispatched = TRUE, dispatched_at = NOW() WHERE room_id = $1 AND id = $2 AND NOT dispatched`, [roomId, id]);
