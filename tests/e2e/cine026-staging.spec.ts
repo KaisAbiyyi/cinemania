@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
+import type { Pool } from "pg";
 import { expect, test, type Browser, type BrowserContext, type Page, type Request, type TestInfo } from "@playwright/test";
 import { withInterruptibleProxy } from "./helpers/cine026a-interruptible-proxy";
+import { createPostgresPool } from "../../src/lib/server/room/postgresPool";
 import {
   REDACTION_INIT_SCRIPT, REDACTION_STYLE_ID, clientsMissingHint, decodeRealtimeFrame, peersMissingSnapshot,
   roomChangedVersion, summarizeConvergence, type RealtimeTrace,
@@ -32,7 +33,10 @@ const CONVERGENCE_MS = 12000;
 const HINT_DELIVERY_MS = 12000;
 const createdRoomIds = new Set<string>();
 const contextPages = new WeakMap<BrowserContext, Set<Page>>();
-const db = new Pool({ ...staging.pgConfig, max: 1, connectionTimeoutMillis: 10000, statement_timeout: 10000 });
+const db = createPostgresPool(
+  { ...staging.pgConfig, max: 1, connectionTimeoutMillis: 10000, statement_timeout: 10000 },
+  "staging_inspector",
+);
 
 type RoomRun = {
   contexts: BrowserContext[];
@@ -58,6 +62,7 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       const ids = [...createdRoomIds];
       if (ids.length === 0) return;
       const client = await db.connect();
+      let discard = false;
       try {
         await client.query("BEGIN");
         const ownership = await client.query(
@@ -87,10 +92,10 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
         if (deleted.rowCount !== ids.length) throw new Error("Staging cleanup refused: exact room deletion count did not match this run.");
         await client.query("COMMIT");
       } catch (error) {
-        await client.query("ROLLBACK");
+        try { await client.query("ROLLBACK"); } catch { discard = true; }
         throw error;
       } finally {
-        client.release();
+        client.release(discard || undefined);
       }
       createdRoomIds.clear();
     } finally {
@@ -830,9 +835,32 @@ async function makeRoom(
 }
 
 async function startVoting(room: RoomRun) {
-  await expect(room.pages[0]!.getByTestId("cm-start-round")).toBeEnabled();
-  await room.pages[0]!.getByTestId("cm-start-round").click();
-  await Promise.all(room.pages.map((page) => expect(page.getByTestId("cm-continue-voting")).toBeVisible({ timeout: 30000 })));
+  const host = room.pages[0]!;
+  await expect(host.getByTestId("cm-start-round")).toBeEnabled();
+  const startedAt = Date.now();
+  const startResponse = host.waitForResponse(response => response.request().method() === "POST" &&
+    new URL(response.url()).pathname === `/api/rooms/${room.roomId}/start`);
+  await host.getByTestId("cm-start-round").click();
+  const response = await startResponse;
+  expect(response.status(), "authority start response").toBe(200);
+  const body: { room: { status: string; stateVersion: number } } = await response.json();
+  expect(body.room.status).toBe("ACTIVE");
+  const results = await Promise.allSettled(room.pages.map(async (page) => {
+    await expect(page.getByTestId("cm-continue-voting")).toBeVisible({ timeout: 30000 });
+    return Date.now() - startedAt;
+  }));
+  const clients = await Promise.all(room.pages.map(async (page, index) => ({
+    visible: await page.evaluate(() => document.visibilityState === "visible").catch(() => null),
+    renderedAtMs: results[index]?.status === "fulfilled" ? results[index].value : null,
+    snapshots: (snapshotStatuses.get(page) ?? []).filter(entry => entry.at >= startedAt).map(entry => ({
+      status: entry.status, version: entry.version, endedAtMs: entry.at - startedAt, requestMs: entry.requestMs,
+    })),
+  })));
+  console.log("CINE026_LOBBY_CONVERGENCE " + JSON.stringify({
+    case: test.info().testId, browser: test.info().project.name, startVersion: body.room.stateVersion, clients,
+  }));
+  const failed = results.find(result => result.status === "rejected");
+  if (failed?.status === "rejected") throw failed.reason;
   await Promise.all(room.pages.map(async (page) => {
     await page.getByTestId("cm-continue-voting").click();
     await expect(page.getByTestId("cine024-voting-panel")).toBeVisible({ timeout: 30000 });
@@ -852,6 +880,11 @@ async function clickVote(page: Page, roomId: string, choice: "LIKE" | "SKIP") {
   });
   await page.getByTestId(choice === "LIKE" ? "cine024-like" : "cine024-skip").click();
   const response = await responsePromise;
+  if (!response.ok()) {
+    console.log("CINE026_VOTE_HTTP " + JSON.stringify({
+      case: test.info().testId, browser: test.info().project.name, status: response.status(),
+    }));
+  }
   expect(response.status()).toBe(200);
   return response.json() as Promise<{ isMatched: boolean; idempotentReplay: boolean; room: { status: string; currentCandidateIndex: number | null; stateVersion: number } }>;
 }
@@ -866,10 +899,13 @@ async function expectResultForAll(pages: Page[]) {
 
 /** Per-page private-WebSocket frames and snapshot GETs, as (version, time) only: no ids, codes or tokens. */
 const traces = new WeakMap<Page, RealtimeTrace>();
+const snapshotStatuses = new WeakMap<Page, Array<{ status: number; version: number | null; at: number; requestMs: number }>>();
 
 function traceRealtime(page: Page, roomId: string) {
   const trace: RealtimeTrace = { hints: [], snapshots: [] };
+  const statuses: Array<{ status: number; version: number | null; at: number; requestMs: number }> = [];
   traces.set(page, trace);
+  snapshotStatuses.set(page, statuses);
   page.on("websocket", (socket) => {
     if (new URL(socket.url()).pathname !== "/realtime/v1/websocket") return;
     socket.on("framereceived", ({ payload }) => {
@@ -880,13 +916,23 @@ function traceRealtime(page: Page, roomId: string) {
   const startedAt = new WeakMap<Request, number>();
   const isSnapshot = (request: Request) => request.method() === "GET" && new URL(request.url()).pathname === `/api/rooms/${roomId}`;
   page.on("request", (request) => { if (isSnapshot(request)) startedAt.set(request, Date.now()); });
+  page.on("requestfailed", (request) => {
+    if (!isSnapshot(request)) return;
+    const at = Date.now();
+    statuses.push({ status: 0, version: null, at, requestMs: at - (startedAt.get(request) ?? at) });
+  });
   page.on("response", (response) => {
     const request = response.request();
     if (!isSnapshot(request)) return;
     const at = Date.now();
     const began = startedAt.get(request) ?? at;
+    const observation = { status: response.status(), version: null as number | null, at, requestMs: at - began };
+    statuses.push(observation);
     void response.json().then((body: { room?: { stateVersion?: number } }) => {
-      if (Number.isSafeInteger(body.room?.stateVersion)) trace.snapshots.push({ version: body.room!.stateVersion!, startedAt: began, at });
+      if (Number.isSafeInteger(body.room?.stateVersion)) {
+        observation.version = body.room!.stateVersion!;
+        trace.snapshots.push({ version: observation.version, startedAt: began, at });
+      }
     }).catch(() => undefined);
   });
 }

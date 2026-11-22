@@ -1,8 +1,9 @@
 // A separately supervised process; never imported into the Next.js request runtime.
-import { Pool } from "pg";
+import { createPostgresPool } from "../src/lib/server/room/postgresPool";
 import { resolvePostgresPoolConfig } from "../src/lib/server/room/roomStore";
 import { postgresOutboxStore } from "../src/lib/server/realtime/postgresOutbox";
 import { dispatchPendingEvents } from "../src/lib/server/realtime/dispatch";
+import { dispatchFailureCategory } from "../src/lib/server/realtime/notifyAfterCommit";
 import { createSupabasePublisher } from "../src/lib/server/realtime/supabasePublisher";
 import { startOutboxWorker } from "../src/lib/server/realtime/worker";
 
@@ -11,8 +12,10 @@ async function main() {
   if (!config) throw new Error("PostgreSQL is required; no SQLite fallback for realtime worker");
   const publish = createSupabasePublisher(process.env.SUPABASE_URL ?? "", process.env.SUPABASE_SECRET_KEY ?? "");
   const schema = process.env.CINEMATCH_OUTBOX_SCHEMA || "public";
-  const pool = new Pool({ ...config.poolConfig, max: Math.min(config.poolConfig.max ?? 2, 2), statement_timeout: 5000, query_timeout: 7000 });
-  pool.on("error", () => console.warn("Realtime worker database connection failed; durable retry remains pending."));
+  const pool = createPostgresPool(
+    { ...config.poolConfig, max: Math.min(config.poolConfig.max ?? 2, 2), statement_timeout: 5000, query_timeout: 7000 },
+    "outbox_worker",
+  );
   try {
     const store = postgresOutboxStore(pool, schema);
     // Fail closed at startup if the outbox migration/authority schema is absent.
@@ -23,7 +26,10 @@ async function main() {
       intervalMs: process.env.CINEMATCH_OUTBOX_POLL_MS === undefined ? 1000 : Number(process.env.CINEMATCH_OUTBOX_POLL_MS),
       roomsPerSweep: 20,
       // No SQL/provider errors, credentials, room payloads or guest identities in logs.
-      onError: () => console.warn("Realtime worker sweep failed; durable retry remains pending."),
+      onError: error => console.warn(
+        "Realtime worker sweep failed; durable retry remains pending.",
+        JSON.stringify({ category: dispatchFailureCategory(error) }),
+      ),
     });
     console.log("Realtime outbox worker ready (autonomous polling).");
     let stopping = false;

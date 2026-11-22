@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Pool, type PoolConfig } from "pg";
+import type { Pool, PoolConfig } from "pg";
 import type {
   Candidate,
   Room,
@@ -18,6 +18,7 @@ import { CapabilityAuthError } from "@/lib/server/auth/guestCapability";
 import { dispatchPendingEvents } from "@/lib/server/realtime/dispatch";
 import { postgresOutboxStore } from "@/lib/server/realtime/postgresOutbox";
 import { createSupabasePublisher } from "@/lib/server/realtime/supabasePublisher";
+import { createPostgresPool } from "./postgresPool";
 import type {
   GraceRoomSweepOutcome,
   SyntheticClock,
@@ -1406,8 +1407,7 @@ export function getRoomAuthorityStore(): RoomAuthorityStore {
     if (cachedPg) {
       void cachedPg.pool.end().catch(() => {});
     }
-    const pool = new Pool(resolvedPg.poolConfig);
-    pool.on("error", () => console.warn("[CINEMATCH_DB_CONNECTION_ERROR] Check room database connectivity."));
+    const pool = createPostgresPool(resolvedPg.poolConfig, "room");
     const store = new PostgresRoomAuthorityStore(pool);
     globalForStore.__cinematchPostgresConnection = {
       fingerprint: resolvedPg.fingerprint,

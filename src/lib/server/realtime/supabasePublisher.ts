@@ -26,7 +26,13 @@ export function createSupabasePublisher(projectUrl: string, secret: string, send
   let authorizationCooldownUntil = 0;
   let providerUnavailableUntil = 0;
   let nextOutageReport = 0;
+  function reportAttemptFailure(kind: "transport" | "status" | "authorization" | "rejected") {
+    if (process.env.CINEMATCH_REALTIME_DIAGNOSTICS === "1") {
+      console.warn("[CINEMATCH_REALTIME_ATTEMPT_FAILURE]", kind);
+    }
+  }
   function reportOutage(status?: number) {
+    reportAttemptFailure(status === undefined ? "transport" : "status");
     providerUnavailableUntil = Date.now() + PROVIDER_UNAVAILABLE_COOLDOWN_MS;
     if (Date.now() < nextOutageReport) return;
     nextOutageReport = Date.now() + AUTHORIZATION_COOLDOWN_MS;
@@ -52,13 +58,17 @@ export function createSupabasePublisher(projectUrl: string, secret: string, send
     }
     void response.body?.cancel().catch(() => {});
     if (response.status === 401 || response.status === 403) {
+      reportAttemptFailure("authorization");
       if (Date.now() >= authorizationCooldownUntil) {
         authorizationCooldownUntil = Date.now() + AUTHORIZATION_COOLDOWN_MS;
         console.error("[CINEMATCH_REALTIME_AUTH] Check publisher key, project origin and broadcast permissions.", response.status);
       }
       throw new PublicationAuthorizationError();
     }
-    if (response.status === 413) throw new PermanentPublicationError("Realtime event too large");
+    if (response.status === 413) {
+      reportAttemptFailure("rejected");
+      throw new PermanentPublicationError("Realtime event too large");
+    }
     if (!response.ok) {
       reportOutage(response.status);
       throw new Error(`Realtime broadcast failed (${response.status})`);
