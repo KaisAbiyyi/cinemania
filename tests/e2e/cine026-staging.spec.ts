@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { expect, test, type Browser, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
-import { startInterruptibleProxy } from "./helpers/cine026a-interruptible-proxy";
+import { expect, test, type Browser, type BrowserContext, type Page, type Request, type TestInfo } from "@playwright/test";
+import { withInterruptibleProxy } from "./helpers/cine026a-interruptible-proxy";
+import {
+  REDACTION_INIT_SCRIPT, REDACTION_STYLE_ID, clientsMissingHint, decodeRealtimeFrame, peersMissingSnapshot,
+  roomChangedVersion, summarizeConvergence, type RealtimeTrace,
+} from "./helpers/cine026a-realtime-evidence";
 
 // Playwright transforms test files through CommonJS in this repository.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -14,12 +18,18 @@ const staging = loadHostedStaging();
 const ORIGIN = "http://127.0.0.1:3065";
 const RUN = "C026-" + randomUUID().slice(0, 8);
 /**
- * CINE-026-A: how long a peer may take to render a server-advanced card after the voter's response. It is
- * deliberately BELOW the 15 s snapshot poll (roomRealtime pollMs) so a lost private WebSocket hint, healed only
- * by polling, still fails; and above the worst delay measured over 23 instrumented hosted Chromium runs
- * (2.8 s, with video recording and a concurrent 5-member burst). Failures report the per-client trace.
+ * CINE-026-A. Two SEPARATE acceptance questions after a server-advanced card:
+ * 1. UI convergence (user-experience allowance): every client renders the new card within CONVERGENCE_MS of the
+ *    voter's response. 12 s is an allowance justified by the measured worst case (2.8 s over 23 instrumented
+ *    hosted Chromium runs); it proves nothing about HOW the client learned, because the 15 s snapshot poll
+ *    (roomRealtime pollMs) can fire at any phase, including immediately.
+ * 2. Private WebSocket delivery (event path): every client must have received an authenticated `room_changed`
+ *    frame carrying EXACTLY the authoritative stateVersion. Polling cannot produce a frame, so this is
+ *    independent of the poll phase. HINT_DELIVERY_MS bounds delivery latency only.
+ * The 15 s polling fallback itself is untouched.
  */
 const CONVERGENCE_MS = 12000;
+const HINT_DELIVERY_MS = 12000;
 const createdRoomIds = new Set<string>();
 const contextPages = new WeakMap<BrowserContext, Set<Page>>();
 const db = new Pool({ ...staging.pgConfig, max: 1, connectionTimeoutMillis: 10000, statement_timeout: 10000 });
@@ -162,7 +172,7 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       expect(last.isMatched).toBe(false);
       expect(last.room.status).toBe("ACTIVE");
       expect(last.room.currentCandidateIndex).toBe(1);
-      await expectCardConverged(room.pages, "Card 02 / 20", last.room.stateVersion);
+      await expectAuthoritativeConvergence(room.pages, "Card 02 / 20", { version: last.room.stateVersion, finalVoterIndex: 2 }, testInfo);
     } finally {
       await closeContexts(room.contexts, testInfo);
     }
@@ -253,7 +263,7 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       expect(afterReplay.rows[0]?.count).toBe(1);
       const last = await clickVote(room.pages[1]!, room.roomId, "SKIP");
       expect(last.room.currentCandidateIndex).toBe(1);
-      await expectCardConverged(room.pages, "Card 02 / 20", last.room.stateVersion);
+      await expectAuthoritativeConvergence(room.pages, "Card 02 / 20", { version: last.room.stateVersion, finalVoterIndex: 1 }, testInfo);
     } finally {
       await closeContexts(room.contexts, testInfo);
     }
@@ -546,7 +556,9 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
     // restore the TCP path (TLS is end to end, nothing is intercepted). This is a genuine interruption in every
     // engine, including WebKit where setOffline() does not close an open socket and routeWebSocket cannot
     // intercept the Realtime socket. The page, its cookies (membership) and its capability are never touched.
-    const proxy = await startInterruptibleProxy("dmrbticnsczhyaiftrar.supabase.co");
+    // The proxy scope also covers makeRoom(): if room creation rejects under staging capacity pressure, the proxy
+    // listener and any tunnel are still destroyed and the ORIGINAL setup error is what the test reports.
+    await withInterruptibleProxy("dmrbticnsczhyaiftrar.supabase.co", async (proxy) => {
     const socketEvents = { opens: 0, closes: 0, hints: [] as number[], snapshots: [] as number[] };
     const navigations: string[] = [];
     const room = await makeRoom(browser, testInfo, 2, undefined, (page, index) => {
@@ -621,8 +633,8 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       expect(navigations, `${browserName}: the page must not have navigated or reloaded`).toEqual([]);
     } finally {
       await closeContexts(room.contexts, testInfo);
-      await proxy.close();
     }
+    });
   });
 
   test("90-second disconnected-host grace expires without a wall-clock sleep", async ({ browser }, testInfo) => {
@@ -760,65 +772,9 @@ async function makeContext(browser: Browser, testInfo: TestInfo, storageState?: 
   const pages = new Set<Page>();
   contextPages.set(context, pages);
   context.on("page", (page) => pages.add(page));
-  await context.addInitScript(() => {
-    const redact = () => {
-      if (!document.head || document.getElementById("cine026-video-redaction")) return;
-      const style = document.createElement("style");
-      style.id = "cine026-video-redaction";
-      style.textContent = '[data-testid="cm-room-code"], [data-testid="cine024-voting-panel"] header p { filter: blur(10px) !important; }';
-      document.head.append(style);
-    };
-    // document (always a Node) rather than document.documentElement (null when init scripts run): observing null
-    // threw, and WebKit evaluates every init script as one bootstrap, so the throw also skipped later hooks.
-    new MutationObserver(redact).observe(document, { childList: true, subtree: true });
-    redact();
-  });
+  // Guarded plain-JS script (see REDACTION_INIT_SCRIPT): a throw here used to disable every later WebKit init script.
+  await context.addInitScript({ content: REDACTION_INIT_SCRIPT });
   return context;
-}
-
-function decodeRealtimeFrame(message: string | Buffer): {
-  topic?: string;
-  event?: string;
-  payload?: {
-    event?: string;
-    status?: string;
-    response?: Record<string, unknown>;
-    roomId?: string;
-    version?: number;
-    payload?: { roomId?: string; version?: number };
-  };
-} | null {
-  if (typeof message === "string") {
-    const decoded = JSON.parse(message) as unknown;
-    if (Array.isArray(decoded) && decoded.length >= 5) {
-      return { topic: String(decoded[2]), event: String(decoded[3]), payload: decoded[4] as { event?: string; status?: string; response?: Record<string, unknown>; roomId?: string; version?: number; payload?: { roomId?: string; version?: number } } };
-    }
-    return decoded as { event?: string; payload?: { event?: string; status?: string; response?: Record<string, unknown> } };
-  }
-
-  // Supabase Realtime encodes server broadcast frames as binary (kind 4).
-  // Read only the length-prefixed event name; no room IDs or payload data are logged.
-  if (message.length >= 5 && message[0] === 4) {
-    const topicLength = message[1]!;
-    const eventLength = message[2]!;
-    const metadataLength = message[3]!;
-    const payloadEncoding = message[4]!;
-    const topic = message.subarray(5, 5 + topicLength).toString("utf8");
-    const eventStart = 5 + topicLength;
-    const event = message.subarray(eventStart, eventStart + eventLength).toString("utf8");
-    const payloadStart = eventStart + eventLength + metadataLength;
-    let body: { roomId?: string; version?: number } | undefined;
-    if (payloadEncoding === 1) {
-      try { body = JSON.parse(message.subarray(payloadStart).toString("utf8")) as { roomId?: string; version?: number }; }
-      catch { /* Ignore malformed or non-JSON frames in this test observer. */ }
-    }
-    return { topic, event: "broadcast", payload: { event, payload: body } };
-  }
-  const decoded = JSON.parse(message.toString("utf8")) as unknown;
-  if (Array.isArray(decoded) && decoded.length >= 5) {
-    return { topic: String(decoded[2]), event: String(decoded[3]), payload: decoded[4] as { event?: string; status?: string; response?: Record<string, unknown>; roomId?: string; version?: number; payload?: { roomId?: string; version?: number } } };
-  }
-  return decoded as { event?: string; payload?: { event?: string; status?: string; response?: Record<string, unknown> } };
 }
 
 async function makeRoom(
@@ -863,6 +819,7 @@ async function makeRoom(
       traceRealtime(page, roomId);
       await page.goto(`/cinematch/room/${roomId}`);
       await expect(page.getByTestId("cm-participant-count")).toHaveText(`${participantCount} / 5`, { timeout: 30000 });
+      await assertRedactionActive(page);
       return page;
     }));
     return { contexts, pages, roomId, code, hostName, participantIds };
@@ -907,43 +864,73 @@ async function expectResultForAll(pages: Page[]) {
   }));
 }
 
-/** Per-page private-WebSocket hint and snapshot-GET versions, so a convergence failure names the failing layer. */
-const traces = new WeakMap<Page, { hints: number[]; snapshots: number[] }>();
+/** Per-page private-WebSocket frames and snapshot GETs, as (version, time) only: no ids, codes or tokens. */
+const traces = new WeakMap<Page, RealtimeTrace>();
 
 function traceRealtime(page: Page, roomId: string) {
-  const trace = { hints: [] as number[], snapshots: [] as number[] };
+  const trace: RealtimeTrace = { hints: [], snapshots: [] };
   traces.set(page, trace);
   page.on("websocket", (socket) => {
     if (new URL(socket.url()).pathname !== "/realtime/v1/websocket") return;
     socket.on("framereceived", ({ payload }) => {
-      try {
-        const frame = decodeRealtimeFrame(payload);
-        const hint = frame?.payload?.payload ?? frame?.payload;
-        if (frame?.event === "broadcast" && frame.payload?.event === "room_changed" && hint?.roomId === roomId && Number.isSafeInteger(hint.version)) trace.hints.push(hint.version!);
-      } catch { /* unrelated or non-JSON frame */ }
+      const version = roomChangedVersion(payload, roomId);
+      if (version !== null) trace.hints.push({ version, at: Date.now() });
     });
   });
+  const startedAt = new WeakMap<Request, number>();
+  const isSnapshot = (request: Request) => request.method() === "GET" && new URL(request.url()).pathname === `/api/rooms/${roomId}`;
+  page.on("request", (request) => { if (isSnapshot(request)) startedAt.set(request, Date.now()); });
   page.on("response", (response) => {
-    if (response.request().method() !== "GET" || new URL(response.url()).pathname !== `/api/rooms/${roomId}`) return;
+    const request = response.request();
+    if (!isSnapshot(request)) return;
+    const at = Date.now();
+    const began = startedAt.get(request) ?? at;
     void response.json().then((body: { room?: { stateVersion?: number } }) => {
-      if (Number.isSafeInteger(body.room?.stateVersion)) trace.snapshots.push(body.room!.stateVersion!);
+      if (Number.isSafeInteger(body.room?.stateVersion)) trace.snapshots.push({ version: body.room!.stateVersion!, startedAt: began, at });
     }).catch(() => undefined);
   });
 }
 
 /**
- * Every client must render the server-advanced card. A miss reports, per client, whether the private WebSocket
- * hint and an authoritative snapshot at or above the expected version arrived: hint missing = notification layer;
- * snapshot missing = fetch layer; both present yet not rendered = client reducer / render layer.
+ * The redaction style must be live before sensitive UI is recorded: no init-script error was captured, the
+ * style element is attached, and the room code chip is actually blurred (computed style, not just a rule).
  */
-async function expectCardConverged(pages: Page[], card: string, expectedVersion: number) {
-  const settled = await Promise.allSettled(pages.map((page) => expect(page.getByTestId("cine024-progress")).toHaveText(card, { timeout: CONVERGENCE_MS })));
-  const missed = settled.flatMap((result, index) => (result.status === "rejected" ? [index] : []));
-  const report = missed.map((index) => {
-    const trace = traces.get(pages[index]!) ?? { hints: [], snapshots: [] };
-    return { client: index, hintAtExpectedVersion: trace.hints.some((v) => v >= expectedVersion), snapshotAtExpectedVersion: trace.snapshots.some((v) => v >= expectedVersion), hints: trace.hints, snapshots: trace.snapshots };
-  });
-  expect(missed, `clients that did not render "${card}" within ${CONVERGENCE_MS} ms (expected stateVersion >= ${expectedVersion}): ${JSON.stringify(report)}`).toEqual([]);
+async function assertRedactionActive(page: Page) {
+  await expect(page.locator("#" + REDACTION_STYLE_ID)).toBeAttached();
+  expect(await page.evaluate(() => (window as unknown as { __cmRedactionError?: string }).__cmRedactionError ?? null), "redaction init script must not have failed").toBeNull();
+  const chip = page.getByTestId("cm-room-code");
+  if (await chip.count()) {
+    expect(await chip.first().evaluate((element) => getComputedStyle(element).filter), "room code must be blurred before video can capture it").toContain("blur");
+  }
+}
+
+/**
+ * Two separate assertions after a server-advanced card (see CONVERGENCE_MS / HINT_DELIVERY_MS):
+ * - private WebSocket delivery: every client received a `room_changed` frame with exactly `version`;
+ * - UI convergence: every client rendered `card` within CONVERGENCE_MS.
+ * Per-client evidence (frame, snapshot GET start/end, render, all relative to the voter's response) is attached and
+ * logged so latency stays measurable. A poll-healed UI fails the first assertion; a missing GET names the fetch
+ * layer. `finalVoterIndex` is exempt from the snapshot-GET rule: its view comes from its own vote response.
+ */
+async function expectAuthoritativeConvergence(pages: Page[], card: string, expected: { version: number; finalVoterIndex: number }, testInfo: TestInfo) {
+  const anchorAt = Date.now();
+  const renderedAt: Array<number | null> = pages.map(() => null);
+  const [ui, delivery] = await Promise.all([
+    Promise.allSettled(pages.map(async (page, index) => {
+      await expect(page.getByTestId("cine024-progress")).toHaveText(card, { timeout: CONVERGENCE_MS });
+      renderedAt[index] = Date.now();
+    })),
+    Promise.allSettled(pages.map((page) => expect.poll(() => traces.get(page)?.hints.some((hint) => hint.version === expected.version) ?? false, { timeout: HINT_DELIVERY_MS }).toBe(true))),
+  ]);
+  const evidence = pages.map((page, index) => summarizeConvergence(traces.get(page) ?? { hints: [], snapshots: [] }, expected.version, anchorAt, renderedAt[index]!));
+  const summary = JSON.stringify({ card, expectedVersion: expected.version, finalVoterIndex: expected.finalVoterIndex, clients: evidence });
+  await testInfo.attach("convergence-evidence.json", { body: summary, contentType: "application/json" });
+  console.log("CINE026A_CONVERGENCE " + summary);
+  const failed = (results: PromiseSettledResult<unknown>[]) => results.flatMap((result, index) => (result.status === "rejected" ? [index] : []));
+  expect.soft(clientsMissingHint(evidence), `private WebSocket delivery: clients that never received a room_changed frame with stateVersion ${expected.version} within ${HINT_DELIVERY_MS} ms (a poll-healed UI cannot satisfy this): ${summary}`).toEqual([]);
+  expect.soft(peersMissingSnapshot(evidence, expected.finalVoterIndex), `fetch layer: peers that never read an authoritative snapshot >= ${expected.version}: ${summary}`).toEqual([]);
+  expect(failed(ui), `UI convergence: clients that did not render "${card}" within ${CONVERGENCE_MS} ms: ${summary}`).toEqual([]);
+  void delivery; // delivery failures are reported through clientsMissingHint above, with the evidence attached
 }
 
 async function closeContexts(contexts: BrowserContext[], testInfo: TestInfo) {
