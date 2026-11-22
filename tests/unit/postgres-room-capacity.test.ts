@@ -34,7 +34,8 @@ it("returns 503 for the actual pg-pool new-client timeout", async () => {
     }
   }
 
-  const pool = new Pool({ connectionTimeoutMillis: 10, Client: StalledClient } as ConstructorParameters<typeof Pool>[0]);
+  // The fake client only implements the acquisition path exercised by pg-pool.
+  const pool = new Pool({ connectionTimeoutMillis: 10, Client: StalledClient as unknown as typeof import("pg").Client });
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   try {
     const result = pool.connect().catch((error: unknown) => error);
