@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { CapabilityAuthError, type CookieAttributes } from "./guestCapability";
 import { RoomRateLimitError } from "./roomRateLimit";
@@ -260,8 +261,79 @@ export function handleGuestApiError(err: unknown): NextResponse {
     );
   }
 
+  // Sanitized diagnostics only: an allowlisted SQLSTATE, a coarse category and a correlation ID.
+  // Never log the raw error, its message, SQL, parameters, cookies, tokens, room or participant IDs.
+  const diagnostic = describeUnexpectedFailure(err);
+  console.error("[GUEST_API_ERROR] Unexpected guest session failure.", JSON.stringify(diagnostic));
   return NextResponse.json(
     { error: "INTERNAL_ERROR", message: "Unexpected guest session failure." },
     { status: 500, headers: PRIVATE_NO_STORE_HEADERS }
   );
+}
+
+const DIAGNOSTIC_SQLSTATES = new Set([
+  "40P01", // deadlock_detected
+  "40001", // serialization_failure
+  "55P03", // lock_not_available
+  "57014", // query_canceled (statement timeout)
+  "25P02", // in_failed_sql_transaction
+  "53300", // too_many_connections
+  "08000", "08003", "08006", // connection exceptions
+  "23505", // unique_violation
+  "23514", // check_violation
+  "23503", // foreign_key_violation
+  "22P02", // invalid_text_representation
+]);
+
+const SAFE_CLASS_NAME = /^[A-Za-z][A-Za-z0-9_]{0,60}$/;
+
+const INVARIANT_LABELS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/Duplicate vote encountered/, "duplicate_vote_in_consensus"],
+  [/Frozen round voter roster size/, "frozen_roster_size"],
+  [/Cannot start round: movie deck/, "deck_size"],
+  [/Realtime publisher configuration/, "publisher_configuration"],
+  [/Invalid PostgreSQL schema identifier/, "schema_identifier"],
+  [/Outbox events are not strictly ordered/, "outbox_order"],
+  // pg-pool 3.x: a new connection attempt exceeded connectionTimeoutMillis. Not matched by
+  // isPostgresCapacityError, so it currently falls through to the generic 500 branch.
+  [/Connection terminated due to connection timeout/, "pool_connection_timeout"],
+  [/timeout exceeded when trying to connect/, "pool_checkout_timeout"],
+];
+
+/**
+ * Walks the error and its `cause` chain (bounded) and returns sanitized facts only: an allowlisted
+ * SQLSTATE, a safe class name and a correlation ID. Messages, SQL, parameters and identifiers are never read out.
+ */
+export function describeUnexpectedFailure(err: unknown): {
+  correlationId: string;
+  category: "postgres" | "timeout" | "capability" | "unknown";
+  sqlstate: string;
+  errorClass: string;
+  invariant: string;
+  causeDepth: number;
+} {
+  const correlationId = randomUUID();
+  let current: unknown = err;
+  let sqlstate = "NONE";
+  let isPg = false;
+  let causeDepth = 0;
+  let timeout = false;
+  for (let depth = 0; depth < 4 && typeof current === "object" && current !== null; depth += 1) {
+    const candidate = current as { code?: unknown; severity?: unknown; message?: unknown; cause?: unknown };
+    if (sqlstate === "NONE" && typeof candidate.code === "string" && /^[0-9A-Z]{5}$/.test(candidate.code)) {
+      sqlstate = DIAGNOSTIC_SQLSTATES.has(candidate.code) ? candidate.code : "OTHER_SQLSTATE";
+    }
+    if (typeof candidate.severity === "string") isPg = true;
+    if (typeof candidate.message === "string" && /timeout/i.test(candidate.message)) timeout = true;
+    if (depth > 0) causeDepth = depth;
+    current = candidate.cause;
+  }
+  // Map known internal invariant messages to fixed labels. The message text itself is never emitted.
+  const rawMessage = err instanceof Error ? err.message : "";
+  const invariant = INVARIANT_LABELS.find(([pattern]) => pattern.test(rawMessage))?.[1] ?? "unclassified";
+  const rawName = err instanceof Error ? err.name : "";
+  const errorClass = (err as object | null)?.constructor?.name ?? "";
+  const safeClass = SAFE_CLASS_NAME.test(errorClass) ? errorClass : SAFE_CLASS_NAME.test(rawName) ? rawName : "non_error";
+  const category = isPg ? "postgres" : timeout ? "timeout" : err instanceof CapabilityAuthError ? "capability" : "unknown";
+  return { correlationId, category, sqlstate, errorClass: safeClass, invariant, causeDepth };
 }
