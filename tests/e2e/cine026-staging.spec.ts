@@ -81,7 +81,24 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
   });
 
   test("2 independent clients reach one unanimous match through the real UI", async ({ browser }, testInfo) => {
-    const room = await makeRoom(browser, testInfo, 2);
+    // Event-path proof: the observing client's Realtime socket must deliver the room_changed
+    // broadcast for the matching version. Only WebSocket frames update this counter, so the
+    // assertion cannot be satisfied by the 15-second polling fallback.
+    const observed = { maxVersion: 0, frames: 0 };
+    const room = await makeRoom(browser, testInfo, 2, undefined, (page, index) => {
+      if (index !== 0) return;
+      page.on("websocket", (socket) => {
+        if (new URL(socket.url()).pathname !== "/realtime/v1/websocket") return;
+        socket.on("framereceived", ({ payload }) => {
+          const frame = decodeRealtimeFrame(payload);
+          const hint = frame?.payload?.payload ?? frame?.payload;
+          if (frame?.event === "broadcast" && frame.payload?.event === "room_changed" && frame.topic?.includes(room.roomId) && hint?.roomId === room.roomId && Number.isSafeInteger(hint.version)) {
+            observed.frames += 1;
+            observed.maxVersion = Math.max(observed.maxVersion, hint.version!);
+          }
+        });
+      });
+    });
     try {
       await startVoting(room);
       const first = await clickVote(room.pages[0]!, room.roomId, "LIKE");
@@ -89,6 +106,10 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       await expect(room.pages[0]!.getByTestId("cine024-waiting")).toContainText("LIKE vote is locked");
       const last = await clickVote(room.pages[1]!, room.roomId, "LIKE");
       expect(last.isMatched).toBe(true);
+      const matchVersion = last.room.stateVersion;
+      expect(Number.isSafeInteger(matchVersion)).toBe(true);
+      // Shorter than the 15 s poll interval (src/lib/realtime/roomRealtime.ts pollMs) so a poll cannot satisfy it.
+      await expect.poll(() => observed.maxVersion, { timeout: 12000, message: "peer WebSocket never received room_changed for the match version" }).toBeGreaterThanOrEqual(matchVersion);
       await expectResultForAll(room.pages);
     } finally {
       await closeContexts(room.contexts, testInfo);
@@ -393,6 +414,99 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
     }
   });
 
+  test("same-page Realtime socket interruption recovers without closing the page", async ({ browser, browserName }, testInfo) => {
+    // BLOCKED on WebKit in this harness: the in-page capture init script never installs in the WebKit
+    // context (diagnostic: no __cmSockets list while the page owns a Realtime socket). Not a product pass.
+    test.skip(browserName === "webkit", "BLOCKED: WebKit same-page socket interruption cannot be injected in this harness; see PR evidence.");
+    // WebKit cannot be intercepted with routeWebSocket, and setOffline() does not sever an open
+    // WebSocket there. This init script records sockets created by the page so the test can close the
+    // real Realtime socket in place, while the context is offline, without reloading or closing the page.
+    // Plain-JS string: Playwright's function serialization can inject transform helpers that are
+    // undefined in the page, which would silently prevent this capture from installing.
+    const socketInit = `(() => {
+      const Native = window.WebSocket;
+      const state = window;
+      state.__cmSockets = [];
+      state.__cmCloses = 0;
+      window.WebSocket = new Proxy(Native, {
+        construct(target, args) {
+          const socket = Reflect.construct(target, args);
+          state.__cmSockets.push(socket);
+          socket.addEventListener("close", () => { state.__cmCloses += 1; });
+          return socket;
+        },
+      });
+    })();`;
+    const net = { connections: 0, closes: 0, versions: [] as number[], pageWs: [] as string[] };
+    const room = await makeRoom(browser, testInfo, 2, async (context, index) => {
+      if (index === 1) await context.addInitScript({ content: socketInit });
+    }, (page, index) => {
+      if (index !== 1) return;
+      page.on("websocket", (socket) => {
+        net.pageWs.push(new URL(socket.url()).pathname);
+        if (new URL(socket.url()).pathname !== "/realtime/v1/websocket") return;
+        net.connections += 1;
+        socket.on("close", () => { net.closes += 1; });
+        socket.on("framereceived", ({ payload }) => {
+          const frame = decodeRealtimeFrame(payload);
+          const hint = frame?.payload?.payload ?? frame?.payload;
+          if (frame?.event === "broadcast" && frame.payload?.event === "room_changed" && frame.topic?.includes(room.roomId) && hint?.roomId === room.roomId && Number.isSafeInteger(hint.version)) {
+            net.versions.push(hint.version!);
+          }
+        });
+      });
+    });
+    try {
+      await startVoting(room);
+      await expect.poll(() => net.connections, { timeout: 20000 }).toBeGreaterThan(0);
+      const samePage = room.pages[1]!;
+      // Close the live Realtime socket in place and wait for CLOSED while the network is still up, so the
+      // close handshake completes (WebKit does not finish it while the context is offline).
+      const closed = await samePage.evaluate(async () => {
+        const state = window as unknown as { __cmSockets?: WebSocket[]; __cmCloses?: number };
+        const live = (state.__cmSockets ?? []).filter((s) => s.readyState === WebSocket.OPEN || s.readyState === WebSocket.CONNECTING);
+        for (const socket of live) socket.close(4001, "CINE-026 in-page interruption");
+        const deadline = Date.now() + 10000;
+        while (live.some((s) => s.readyState !== WebSocket.CLOSED) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        const probe = { hasList: Array.isArray(state.__cmSockets), wsNative: String(window.WebSocket).includes("[native code]"), wsType: typeof window.WebSocket };
+        const diagnostics = [probe, ...(state.__cmSockets ?? []).map((s) => `${s.readyState}:${s.url.replace(/([?&])(apikey|token|vsn)=[^&]*/gi, "$1$2=<redacted>")}`)];
+        return { requested: live.length, states: live.map((s) => s.readyState), closeEvents: state.__cmCloses ?? 0, diagnostics };
+      });
+      expect(closed.requested, `no live Realtime socket in page; sockets=${JSON.stringify(closed.diagnostics)} pageWs=${JSON.stringify(net.pageWs)} realtimeConnections=${net.connections}`).toBeGreaterThan(0);
+      expect(closed.states.every((state) => state === 3)).toBe(true); // WebSocket.CLOSED
+      expect(closed.closeEvents).toBeGreaterThan(0);
+      // Now keep the context offline so the client's automatic reconnect attempts cannot succeed yet.
+      await room.contexts[1]!.setOffline(true);
+      expect(samePage.url()).toContain(`/cinematch/`);
+      expect(samePage.isClosed()).toBe(false);
+      // Host vote, then the offline member completes the card over REST (request API, not page network).
+      const hostVote = await clickVote(room.pages[0]!, room.roomId, "SKIP");
+      expect(hostVote.room.currentCandidateIndex).toBe(0);
+      const snapshot = await (await room.contexts[1]!.request.get(`${ORIGIN}/api/rooms/${room.roomId}`)).json();
+      const candidate = snapshot.room.currentCandidate as { candidateId: string; movieId: number };
+      const offlineVote = await room.contexts[1]!.request.post(`${ORIGIN}/api/rooms/${room.roomId}/votes`, {
+        headers: { origin: ORIGIN },
+        data: { candidateId: candidate.candidateId, movieId: candidate.movieId, roundId: snapshot.room.currentRoundId, vote: "SKIP", operationId: randomUUID() },
+      });
+      expect(offlineVote.status()).toBe(200);
+      expect((await offlineVote.json()).room.currentCandidateIndex).toBe(1);
+      const connectionsWhileOffline = net.connections;
+      await room.contexts[1]!.setOffline(false);
+      await expect.poll(() => net.connections, { timeout: 60000, message: "same page did not re-open a Realtime socket after reconnect" }).toBeGreaterThan(connectionsWhileOffline);
+      expect(samePage.isClosed()).toBe(false);
+      // Post-reconnect event: the host votes on the next card. Only a WebSocket frame can satisfy the
+      // assertion below within 12 s (poll interval is 15 s), so polling cannot mask a missed event.
+      const postReconnect = await clickVote(room.pages[0]!, room.roomId, "SKIP");
+      expect(postReconnect.room.currentCandidateIndex).toBe(1);
+      await expect.poll(() => net.versions, { timeout: 12000, message: "same page did not receive room_changed over WebSocket after reconnect" }).toContain(postReconnect.room.stateVersion);
+      await expect(samePage.getByTestId("cine024-progress")).toHaveText("Card 02 / 20");
+    } finally {
+      await closeContexts(room.contexts, testInfo);
+    }
+  });
+
   test("90-second disconnected-host grace expires without a wall-clock sleep", async ({ browser }, testInfo) => {
     const room = await makeRoom(browser, testInfo, 2);
     try {
@@ -439,6 +553,37 @@ test.describe("CINE-026 — hosted staging Supabase / WebSocket qualification", 
       expect(snapshot.room.status, JSON.stringify({ room: snapshot.room, roundState: roundState.rows[0] })).toBe("LOBBY");
       expect(snapshot.room.finishState.code).toBe("ROUND_CANCELLED");
       expect(snapshot.viewer.role).toBe("HOST");
+    } finally {
+      await closeContexts(room.contexts, testInfo);
+    }
+  });
+
+  test("natural 90-second host grace elapses in real wall-clock time (no DB backdating)", async ({ browser }, testInfo) => {
+    // Real elapsed time only: no timestamp rewriting. Requires that some production path evaluates the
+    // grace timer after 90 s; if nothing does, this test fails and the gap is reported, not masked.
+    test.setTimeout(240000);
+    const room = await makeRoom(browser, testInfo, 2);
+    try {
+      await startVoting(room);
+      const [hostContext] = room.contexts.splice(0, 1);
+      const disconnected = await hostContext!.request.post(`${ORIGIN}/api/rooms/${room.roomId}/presence`, {
+        headers: { origin: ORIGIN }, data: { connected: false },
+      });
+      expect(disconnected.status()).toBe(200);
+      const disconnectedAt = Date.now();
+      await hostContext!.close();
+      const guest = room.contexts[0]!;
+      // Wall-clock wait is the point of this test; it deliberately measures natural elapse.
+      await new Promise((resolve) => setTimeout(resolve, 100000));
+      const elapsedMs = Date.now() - disconnectedAt;
+      expect(elapsedMs).toBeGreaterThanOrEqual(90000);
+      const response = await guest.request.get(`${ORIGIN}/api/rooms/${room.roomId}`);
+      expect(response.status()).toBe(200);
+      const snapshot = await response.json();
+      const host = snapshot.room.participants.find((participant: { displayName: string }) => participant.displayName === room.hostName);
+      expect(host?.isConnected, JSON.stringify({ elapsedMs, status: snapshot.room.status, finish: snapshot.room.finishState })).toBe(false);
+      expect(snapshot.room.status, JSON.stringify({ elapsedMs, finish: snapshot.room.finishState })).toBe("LOBBY");
+      expect(snapshot.room.finishState.code).toBe("ROUND_CANCELLED");
     } finally {
       await closeContexts(room.contexts, testInfo);
     }
