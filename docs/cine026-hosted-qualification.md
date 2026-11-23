@@ -97,3 +97,22 @@ Rules for using the measurements:
 1. A cold-path run is repeated only as often as the exclusive window and the idle time between samples allow; every sample is reported with min, median and max, never a single pass or an average alone.
 2. A cold-path SLO is proposed by the owner from the observed distribution and the product's tolerance for a delayed first event, then reviewed independently before adoption. Until then the criterion is `NOT QUALIFIED` and the measurements are informational.
 3. If warm-path acceptance passes but the cold-path distribution is unacceptable, an application-side remediation is scoped as a separate task with before-and-after latency and pool profiles, including the connection-hold trade-off of any longer deadline inside the outbox lock.
+
+## Anggaran supervisor dan preservasi bukti
+
+Run 45281615554 mencatat WebKit mulai pukul 22:59:20.362 UTC. Pada 23:06:20.373 UTC, batas 420 detik menghentikan supervisor walaupun Playwright mencatat 3/3 lulus. Artefak tidak memuat fase terakhir, ringkasan transport, atau metrik cleanup WebKit. Waktu yang sama sebelumnya dipakai untuk build, eksekusi tes dan teardown. Bukti tersebut mengonfirmasi persaingan anggaran, sedangkan aktivitas teardown yang sedang berjalan saat cutoff tidak dapat ditentukan.
+
+Supervisor Actions memakai adapter terhadap hook kandidat yang sudah dipin. Guard project, lease, cleanup fixture, dan audit read-only setelah pelepasan lease tetap dijalankan oleh supervisor kandidat. Batas publisher, konfigurasi pool, retry dan assertion Playwright tetap.
+
+| Anggaran | Batas |
+| --- | --- |
+| Eksekusi nominal | Gate A 7 menit per browser, Gate B 19 menit, Gate C 55 menit. Build dan child workload memakai anggaran ini. |
+| Teardown per workload | 240 detik sejak child selesai atau supervisor diminta berhenti. Cadangan ini mencakup quiet window 135 detik, penyelesaian child/monitor, pemeriksaan port, pelepasan lease, dan audit SQL dengan koneksi baru. |
+| Eskalasi dan ceiling absolut | SIGTERM hanya dikirim ke supervisor untuk meminta teardown. Jika teardown melewati batas, grup proses mendapat SIGKILL paling lambat setelah 6 detik. Ceiling per workload adalah anggaran eksekusi yang tersedia + 240 detik + 6 detik. |
+| Job kualifikasi | Tetap 120 menit. Jam dimulai dari langkah pertama job kualifikasi. Sebelum tiap workload, waktu untuk cleanup, eskalasi dan tiga menit untuk penutupan/upload disisihkan. Workload berikutnya tidak dimulai jika sisa waktu tidak cukup. |
+
+Anggaran eksekusi nominal A/B/C berjumlah 95 menit. Lima cadangan teardown dan eskalasi berjumlah 20 menit 30 detik. Menjumlahkan batas nominal dengan setup dan warm-up secara bersamaan bisa melampaui 120 menit. Anggaran eksekusi efektif setiap tahap karena itu dihitung ulang dari waktu job yang tersisa. Kekurangan waktu atau timeout yang benar-benar terjadi menghasilkan HOLD. Skenario, assertion serta ambang transport dan status tetap utuh.
+
+Artefak diperbarui secara atomik saat fase berubah, saat ringkasan transport parsial tersedia, dan saat hasil akhir diterima. Status `partial` menandai checkpoint dengan verdict HOLD. Hasil akhir mencantumkan fase terakhir, timeout yang terjadi, dan bukti terminal yang hilang. Counter parsial dapat membantu diagnosis tetapi tidak mengesahkan Gate A–D. Cleanup memerlukan laporan supervisor yang lengkap, pelepasan lease terkonfirmasi dan readback nol dari sesi baru. Timeout saat eksekusi tetap menggagalkan gate meskipun cleanup berhasil. Jika job dihentikan sebelum langkah upload berjalan, checkpoint lokal mungkin tidak tersedia sebagai artefak Actions.
+
+[Run 45281615554](https://github.com/KaisAbiyyi/cinemania/actions/runs/45281615554) · [Review independen](https://github.com/KaisAbiyyi/cinemania/pull/66#pullrequestreview-6031016598).
