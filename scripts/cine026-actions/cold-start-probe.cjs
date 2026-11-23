@@ -229,5 +229,5 @@ function readProbe(value) {
 }
 
 module.exports = {
-  APP_DEADLINE_MS, REQUEST_DEADLINE_MS, TOTAL_DEADLINE_MS, buildPlan, classify, interpret, readProbe, runColdStartProbe,
+  APP_DEADLINE_MS, CATEGORIES, REQUEST_DEADLINE_MS, TOTAL_DEADLINE_MS, buildPlan, classify, interpret, readProbe, runColdStartProbe,
 };

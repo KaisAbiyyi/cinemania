@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { createInterface } = require("node:readline");
 const { readProbe, runColdStartProbe } = require("./cold-start-probe.cjs");
+const { readWarmup, warmRealtimeTenant } = require("./realtime-warmup.cjs");
 
 const candidate = path.resolve("candidate");
 const temp = process.env.RUNNER_TEMP;
@@ -375,7 +376,8 @@ const preflightCodes = new Set([
   "DISPATCH_CONTEXT_REFUSED", "DISPATCH_CONSENT_REFUSED", "CHECKOUT_SHA_MISMATCH",
   "PR_CANDIDATE_MISMATCH", "STAGING_CONFIGURATION_MISSING", "SESSION_POOL_BUDGET_UNCONFIRMED",
   "STAGING_ISOLATION_FAILED", "SERVER_SESSION_BUDGET_INSUFFICIENT", "STAGING_HTTPS_HEALTH_FAILED",
-  "STAGING_PG_CONNECTION_FAILED",
+  "STAGING_PG_CONNECTION_FAILED", "LEASE_BUSY", "WARMUP_CONFIGURATION_INVALID", "WARMUP_NOT_READY",
+  "WARMUP_CLEANUP_UNCONFIRMED",
 ]);
 function summarize(evidence) {
   return ["## CINE-026/063 staging qualification", "",
@@ -383,6 +385,10 @@ function summarize(evidence) {
     "Preflight: " + evidence.preflight.status,
     ...Object.entries(evidence.gates).map(([gate, status]) => "Gate " + gate + ": " + status),
     "Verdict: " + evidence.verdict,
+    ...(evidence.warmup ? ["Realtime warm-up (qualification-only): " + evidence.warmup.status + "; " +
+      evidence.warmup.requests.map(r => r.id + " " + (r.http ?? r.failure) + " " + r.ms + " ms").join(", ") + "."] : []),
+    ...(evidence.coverage ? ["Warm-path acceptance: " + evidence.coverage.warmPathAcceptance +
+      ". Cold-path recovery: " + evidence.coverage.coldPathRecovery + " (not measured in this run)."] : []),
     ...(evidence.mode === "cold-start-probe" && evidence.probe ? ["Probe: " + evidence.probe.verdict + "; cold first " + evidence.probe.coldFirstMs +
       " ms, warm median " + evidence.probe.warmMedianMs + " ms, warm max " + evidence.probe.warmMaxMs + " ms, concurrent max " +
       evidence.probe.concurrentMaxMs + " ms. Diagnostic only: not Gate A-D acceptance."] : []),
@@ -400,48 +406,90 @@ const POOLER_QUIET_WINDOW_MS = 135_000;
 const probeDependencies = () => ({
   load: require(path.join(candidate, "tests/hosted-supabase/environment.cjs")),
   Client: require(path.join(candidate, "node_modules/pg")).Client,
-  readback: preflight, probe: runColdStartProbe,
+  readback: preflight, probe: runColdStartProbe, warm: warmRealtimeTenant,
   secret: process.env.SUPABASE_SECRET_KEY, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
 });
 
-async function runProbeSession(env, evidence, deps = probeDependencies()) {
+// Runs `action` while this process holds the exclusive staging lease on a dedicated session. `cleanup` is
+// updated in place. The lease release must be acknowledged, then an independent fresh session reads back
+// the clean baseline (retained pooler sessions may need one bounded quiet window). Returns the first
+// error instead of throwing so the caller can record evidence before failing.
+async function leasedSession(env, deps, action, cleanup, applicationName) {
   const { load, Client } = deps;
   const staging = load.loadHostedStaging();
-  const db = new Client({ ...staging.pgConfig, statement_timeout: 10_000, query_timeout: 12_000, application_name: "cine026-probe-supervisor" });
+  const db = new Client({ ...staging.pgConfig, statement_timeout: 10_000, query_timeout: 12_000, application_name: applicationName });
   let firstError;
   let released = false;
   db.on("error", error => { firstError ??= error; });
-  evidence.cleanup = { leaseRelease: "not_acquired", readback: "NOT RUN" };
   try {
     await db.connect();
     const lock = await db.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired", [LEASE_KEY]);
     requireCondition(lock.rows[0].acquired === true, "LEASE_BUSY");
-    evidence.cleanup.leaseRelease = "unconfirmed";
-    const probe = readProbe(await deps.probe({ url: staging.url, secret: deps.secret }));
-    requireCondition(probe, "QUALIFICATION_SETUP_FAILED");
-    evidence.probe = probe;
+    cleanup.leaseRelease = "unconfirmed";
+    await action(staging);
   } catch (error) {
     firstError ??= error;
   } finally {
-    if (evidence.cleanup.leaseRelease === "unconfirmed") {
+    if (cleanup.leaseRelease === "unconfirmed") {
       try {
         const unlock = await db.query("SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS released", [LEASE_KEY]);
         released = unlock.rows[0].released === true;
       } catch (error) { firstError ??= error; }
-      evidence.cleanup.leaseRelease = released ? "released" : "unconfirmed";
+      cleanup.leaseRelease = released ? "released" : "unconfirmed";
     }
     try { await db.end(); } catch (error) { firstError ??= error; }
   }
-  // Independent fresh-session readback (retained pooler sessions may need one bounded quiet window).
-  for (let attempt = 0; attempt < 2 && evidence.cleanup.readback !== "PASS"; attempt++) {
+  for (let attempt = 0; attempt < 2 && cleanup.readback !== "PASS"; attempt++) {
     if (attempt === 1) await deps.sleep(POOLER_QUIET_WINDOW_MS);
     try {
       await deps.readback(env);
-      evidence.cleanup.readback = "PASS";
-    } catch { evidence.cleanup.readback = "FAIL"; }
+      cleanup.readback = "PASS";
+    } catch { cleanup.readback = "FAIL"; }
   }
+  return firstError;
+}
+
+// One exclusive-lease probe session. The probe itself never touches PostgreSQL; the lease only fences other
+// staging users. Cleanup is fail-closed: lease release must be acknowledged and an independent fresh
+// session must read back the clean baseline, otherwise Gate D is UNCONFIRMED and the verdict is HOLD.
+async function runProbeSession(env, evidence, deps = probeDependencies()) {
+  evidence.cleanup = { leaseRelease: "not_acquired", readback: "NOT RUN" };
+  const firstError = await leasedSession(env, deps, async staging => {
+    const probe = readProbe(await deps.probe({ url: staging.url, secret: deps.secret }));
+    requireCondition(probe, "QUALIFICATION_SETUP_FAILED");
+    evidence.probe = probe;
+  }, evidence.cleanup, "cine026-probe-supervisor");
   evidence.gates.D = evidence.cleanup.leaseRelease === "released" && evidence.cleanup.readback === "PASS" ? "PASS" : "UNCONFIRMED";
   if (firstError) throw firstError;
+}
+
+// Qualification-only Realtime tenant warm-up before the hosted gates. It holds the exclusive lease while it
+// runs, releases it with confirmation and reads the clean baseline back from a fresh session BEFORE the
+// workload starts (the workload takes its own lease). A warm-up that is not READY, or whose cleanup is not
+// confirmed, stops the run before any gate: failing closed is never a silent pass.
+async function runWarmupSession(env, evidence, deps = probeDependencies()) {
+  const cleanup = { leaseRelease: "not_acquired", readback: "NOT RUN" };
+  let warmup;
+  const firstError = await leasedSession(env, deps, async staging => {
+    warmup = readWarmup(await deps.warm({ url: staging.url, secret: deps.secret }));
+    requireCondition(warmup, "QUALIFICATION_SETUP_FAILED");
+  }, cleanup, "cine026-warmup-supervisor");
+  evidence.warmup = warmup ? { ...warmup, completedAt: new Date().toISOString(), cleanup } : { status: "NOT_RUN", requests: [], cleanup };
+  const cleaned = cleanup.leaseRelease === "released" && cleanup.readback === "PASS";
+  if (!cleaned) evidence.gates.D = "UNCONFIRMED";
+  if (firstError) throw firstError;
+  requireCondition(cleaned, "WARMUP_CLEANUP_UNCONFIRMED");
+  requireCondition(warmup.status === "READY", "WARMUP_NOT_READY");
+}
+
+// Warm-path acceptance is the only thing the hosted gates can establish after a warm-up. Cold-path recovery
+// (bounded outbox recovery and first-event delivery after tenant idle) is a separate criterion that is
+// designed in docs/cine026-hosted-qualification.md and is NOT measured here, so it is never reported as passed.
+function coverageOf(evidence) {
+  if (!workloadModes.includes(evidence.mode)) return undefined;
+  const passed = evidence.verdict !== "HOLD";
+  return { warmPathAcceptance: !passed ? "HOLD" : evidence.mode === "full" ? "PASS (GATES A-D)" : "PASS (GATE A ONLY)",
+    coldPathRecovery: "NOT QUALIFIED" };
 }
 
 // Gate order. `gate-a-only` runs the five targeted browser scenarios and never dispatches Gate B or C,
@@ -456,6 +504,12 @@ async function runGateSequence(mode, run, evidence) {
   if (evidence.gates.B === "PASS") evidence.gates.C = await run("C") ? "PASS" : "FAIL";
 }
 
+// Hosted gates never start on a tenant whose warm-up is not READY with confirmed cleanup.
+async function runWarmedGates(env, evidence, run, deps) {
+  await runWarmupSession(env, evidence, deps);
+  await runGateSequence(evidence.mode, run, evidence);
+}
+
 // A scoped Gate A pass is never reported as complete A-D acceptance.
 function decideVerdict(evidence, wasInterrupted) {
   if (evidence.failure || wasInterrupted || evidence.preflight.status !== "PASS") return "HOLD";
@@ -467,11 +521,16 @@ function decideVerdict(evidence, wasInterrupted) {
     return { COLD_START_REPRODUCED: "COLD-START PROBE REPRODUCED", PER_ROOM_EFFECT_OBSERVED: "COLD-START PROBE COMPLETE: PER-ROOM EFFECT",
       WARM_PATH_NOT_CLEAN: "COLD-START PROBE COMPLETE: WARM PATH NOT CLEAN" }[evidence.probe.verdict] ?? "COLD-START PROBE INCONCLUSIVE";
   }
+  // Hosted gates run on a warmed tenant, so a pass is warm-path evidence only and says nothing about cold-path recovery.
+  const warmed = evidence.warmup?.status === "READY" && evidence.warmup.cleanup?.leaseRelease === "released" &&
+    evidence.warmup.cleanup?.readback === "PASS";
+  if (!warmed) return "HOLD";
   if (evidence.mode === "gate-a-only") {
     return evidence.gates.A === "PASS" && evidence.gates.D === "PASS" &&
-      evidence.gates.B === "NOT RUN" && evidence.gates.C === "NOT RUN" ? "GATE A ONLY PASSED" : "HOLD";
+      evidence.gates.B === "NOT RUN" && evidence.gates.C === "NOT RUN" ? "WARM-PATH GATE A ONLY PASSED; COLD-PATH NOT QUALIFIED" : "HOLD";
   }
-  return Object.values(evidence.gates).every(gate => gate === "PASS") ? "ALL GATES PASSED" : "HOLD";
+  return Object.values(evidence.gates).every(gate => gate === "PASS") ?
+    "WARM-PATH ACCEPTANCE: ALL GATES PASSED; COLD-PATH RECOVERY NOT QUALIFIED" : "HOLD";
 }
 
 async function qualify(directory) {
@@ -486,6 +545,7 @@ async function qualify(directory) {
     if (evidence.mode === "cold-start-probe") await runProbeSession(env, evidence);
     if (workloadModes.includes(evidence.mode)) {
       const run = async (gate, browser = null, targets = null) => {
+        const startedAt = new Date().toISOString();
         const file = path.join(directory, "playwright.json");
         fs.rmSync(file, { force: true });
         const args = gate === "B" ? ["--worker-qualification"] :
@@ -494,10 +554,10 @@ async function qualify(directory) {
         const result = await runWorkload(args, { ...env, PLAYWRIGHT_JSON_OUTPUT_FILE: file }, minutes * 60_000);
         const report = gate === "B" ? null : readBrowserReport(parseReport(file), browser ? { [browser]: targets } : fullMatrix);
         fs.rmSync(file, { force: true });
-        evidence.workload.push({ gate, browser, ...result, ...(report ? { report } : {}) });
+        evidence.workload.push({ gate, browser, startedAt, ...result, ...(report ? { report } : {}) });
         return stableWorkload(result) && (gate === "B" ? Boolean(result.worker) : report.valid);
       };
-      await runGateSequence(evidence.mode, run, evidence);
+      await runWarmedGates(env, evidence, run);
     }
   } catch (error) {
     evidence.failure = { phase: evidence.preflight.status === "PASS" ? "qualification" : "preflight",
@@ -507,6 +567,7 @@ async function qualify(directory) {
   } finally {
     if (evidence.workload.length) evidence.gates.D = evidence.workload.every(verifiedCleanup) ? "PASS" : "UNCONFIRMED";
     evidence.verdict = decideVerdict(evidence, interrupted);
+    evidence.coverage = coverageOf(evidence);
     const passed = evidence.verdict !== "HOLD";
     fs.writeFileSync(path.join(temp, "cine026-qualification-evidence.json"), JSON.stringify(evidence, null, 2) + "\n",
       { flag: "wx", mode: 0o600 });
@@ -570,4 +631,4 @@ if (require.main === module) main().catch(error => {
   process.stderr.write((safe ? message : "QUALIFICATION_HARNESS_FAILED") + "\n");
   process.exitCode = 1;
 });
-module.exports = { runProbeSession, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
+module.exports = { runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };

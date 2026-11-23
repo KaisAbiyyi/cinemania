@@ -121,8 +121,12 @@ test("PR lookup uses the runner token without redirects and rejects failed or ch
   await assert.rejects(() => verifyLivePR("test-token", request), /PR_CANDIDATE_MISMATCH/);
 });
 
+const readyWarmup = () => ({ status: "READY", requests: [], cleanup: { leaseRelease: "released", readback: "PASS" } });
 const freshEvidence = (mode, preflight = "PASS") => ({ mode, preflight: { status: preflight },
-  gates: { A: "NOT RUN", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" }, workload: [] });
+  gates: { A: "NOT RUN", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" }, workload: [],
+  ...(mode === "gate-a-only" || mode === "full" ? { warmup: readyWarmup() } : {}) });
+const GATE_A_VERDICT = "WARM-PATH GATE A ONLY PASSED; COLD-PATH NOT QUALIFIED";
+const FULL_VERDICT = "WARM-PATH ACCEPTANCE: ALL GATES PASSED; COLD-PATH RECOVERY NOT QUALIFIED";
 const recorder = failAt => {
   const calls = [];
   const run = async (gate, browser) => { calls.push(gate + (browser ? ":" + browser : "")); return calls.length !== failAt; };
@@ -143,7 +147,7 @@ test("a fully passing Gate A under gate-a-only never dispatches Gate B or C", as
   assert.deepEqual(calls, ["A:chromium", "A:firefox", "A:webkit"]);
   assert.deepEqual(evidence.gates, { A: "PASS", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" });
   evidence.gates.D = "PASS";
-  assert.equal(decideVerdict(evidence, false), "GATE A ONLY PASSED");
+  assert.equal(decideVerdict(evidence, false), GATE_A_VERDICT);
 });
 
 test("full mode still proceeds from Gate A to B and C, and only then reports complete acceptance", async () => {
@@ -152,7 +156,7 @@ test("full mode still proceeds from Gate A to B and C, and only then reports com
   await runGateSequence("full", run, evidence);
   assert.deepEqual(calls, ["A:chromium", "A:firefox", "A:webkit", "B", "C"]);
   evidence.gates.D = "PASS";
-  assert.equal(decideVerdict(evidence, false), "ALL GATES PASSED");
+  assert.equal(decideVerdict(evidence, false), FULL_VERDICT);
 });
 
 test("a Gate A failure stops execution before later browsers and never passes", async () => {
@@ -175,7 +179,7 @@ test("unconfirmed cleanup, setup failure, interruption or missing workload keep 
   assert.equal(decideVerdict({ ...evidence, gates: { ...evidence.gates, D: "UNCONFIRMED" } }, false), "HOLD");
   assert.equal(decideVerdict({ ...evidence, gates: { ...evidence.gates, D: "NOT RUN" } }, false), "HOLD");
   const clean = { ...evidence, gates: { ...evidence.gates, D: "PASS" } };
-  assert.equal(decideVerdict(clean, false), "GATE A ONLY PASSED");
+  assert.equal(decideVerdict(clean, false), GATE_A_VERDICT);
   assert.equal(decideVerdict(clean, true), "HOLD");
   assert.equal(decideVerdict({ ...clean, failure: { phase: "qualification" } }, false), "HOLD");
   assert.equal(decideVerdict({ ...clean, preflight: { status: "FAIL" } }, false), "HOLD");
