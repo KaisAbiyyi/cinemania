@@ -144,7 +144,7 @@ const count = value => Number.isSafeInteger(value) && value >= 0;
 function readTransport(value) {
   const http = numericFields(value?.http, ["count", "okCount", "nonOkCount", "maxMs", "over1000Ms", "over1400Ms"]);
   const outcomes = numericFields(value?.outcomes, [...transportOutcomes]);
-  if (!http || !outcomes || !Array.isArray(value.failures) || value.failures.length > 10 || !count(value.omittedFailures)) return null;
+  if (!http || http.count !== http.okCount + http.nonOkCount || !outcomes || !Array.isArray(value.failures) || value.failures.length > 10 || !count(value.omittedFailures)) return null;
   const failures = [];
   for (const failure of value.failures) {
     if (!transportCategories.has(failure?.category) || !transportPhases.has(failure.phase) || !count(failure.ms) ||
@@ -364,7 +364,8 @@ function hasTransportEvidence(result) {
 
 function stableWorkload(result) {
   return result.exitCode === 0 && !result.executionTimedOut && !result.firstFailure && !result.metrics?.firstFailure &&
-    verifiedCleanup(result) && hasTransportEvidence(result) && result.transport.failures.length === 0 && result.transport.omittedFailures === 0 &&
+    verifiedCleanup(result) && hasTransportEvidence(result) && result.transport.http.nonOkCount === 0 &&
+    result.transport.failures.length === 0 && result.transport.omittedFailures === 0 &&
     result.metrics.counts != null && result.metrics.peaks != null &&
     ["capacity", "escapedReset", "checkedOutReset", "idleReset", "providerTransport", "providerStatus"]
       .every(key => result.metrics.counts[key] === 0);

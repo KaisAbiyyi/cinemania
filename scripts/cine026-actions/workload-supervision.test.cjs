@@ -299,3 +299,12 @@ test("an unsolicited supervisor stop cannot pass even with exit 0 and complete c
   assert.equal(result.firstFailure.code, "WORKLOAD_SUPERVISOR_STOP_REQUESTED");
   assert.equal(stableWorkload(result), false);
 });
+
+test("an authorization or rejected HTTP response cannot pass as healthy provider traffic", async () => {
+  const f = fakeSupervisor();
+  f.terminal(0, { ...transport, http: { ...transport.http, count: 9, nonOkCount: 1 } });
+  const result = await f.done;
+  assert.equal(result.metrics.counts.providerStatus, 0);
+  assert.equal(result.transport.http.nonOkCount, 1);
+  assert.equal(stableWorkload(result), false);
+});

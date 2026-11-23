@@ -95,7 +95,7 @@ test("an unacknowledged release, stranded process or missing evidence never pass
     counts: zero("capacity escapedReset checkedOutReset idleReset lockTimeout providerTransport providerStatus"),
     peaks: zero("pending poison retries oldest_pending_ms advisory_waiters idle_transactions other_role_sessions"),
     final: zero("rooms participants votes events pending poison retries oldest_pending_ms advisory_locks advisory_waiters idle_transactions other_role_sessions other_role_nonidle_sessions") };
-  const state = { exitCode: 0, terminalMilestone: true, transport: { http: { okCount: 1 }, failures: [], omittedFailures: 0 } };
+  const state = { exitCode: 0, terminalMilestone: true, transport: { http: { okCount: 1, nonOkCount: 0 }, failures: [], omittedFailures: 0 } };
   observeLine(state, "CINE026_HOSTED_METRICS " + JSON.stringify(metrics));
   assert.equal(stableWorkload(state), true);
   assert.equal(verifiedCleanup({ ...state, remainingProcesses: true }), false);
@@ -194,14 +194,14 @@ test("a workload with unverified cleanup fails its Gate A stage, so cleanup fail
     counts: zero("capacity escapedReset checkedOutReset idleReset lockTimeout providerTransport providerStatus"),
     peaks: zero("pending poison retries oldest_pending_ms advisory_waiters idle_transactions other_role_sessions"),
     final: zero("rooms participants votes events pending poison retries oldest_pending_ms advisory_locks advisory_waiters idle_transactions other_role_sessions other_role_nonidle_sessions") };
-  const ok = { exitCode: 0, terminalMilestone: true, metrics, transport: { http: { okCount: 1 }, failures: [], omittedFailures: 0 } };
+  const ok = { exitCode: 0, terminalMilestone: true, metrics, transport: { http: { okCount: 1, nonOkCount: 0 }, failures: [], omittedFailures: 0 } };
   assert.equal(stableWorkload(ok), true);
   for (const broken of [
     { ...ok, metrics: { ...metrics, cleanupVerified: false } },
     { ...ok, metrics: { ...metrics, final: { ...metrics.final, rooms: 1 } } },
     { ...ok, metrics: { ...metrics, counts: { ...metrics.counts, providerTransport: 1 } } },
     { ...ok, transport: { http: { okCount: 0 }, failures: [], omittedFailures: 0 } },
-    { ...ok, transport: { http: { okCount: 1 }, failures: [], omittedFailures: 1 } },
+    { ...ok, transport: { http: { okCount: 1, nonOkCount: 0 }, failures: [], omittedFailures: 1 } },
     { ...ok, remainingProcesses: true }, { ...ok, executionTimedOut: true }, { ...ok, interrupted: true },
   ]) assert.equal(stableWorkload(broken), false);
 });
