@@ -32,7 +32,7 @@ permissions:
 
 env:
   NODE_VERSION: '24.21.0'
-  CANDIDATE: cb84ded1fbba19e55d0df94276ecf048c60ed27a
+  CANDIDATE: 00555c03d4173ac54750677207b78252e2063257
   PROJECT: dmrbticnsczhyaiftrar
 
 jobs:
