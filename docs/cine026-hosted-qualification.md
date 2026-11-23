@@ -31,7 +31,7 @@ gh api repos/KaisAbiyyi/cinemania/environments/cine026-staging/variables --jq '.
 
 The agent dispatches the workflow on `main`, first in `preflight` mode. This verifies the pinned candidate, guarded staging TLS/HTTPS, project scope, capacity and empty state without creating fixtures. When it passes and the exclusive window is still confirmed, the agent dispatches a fresh `full` invocation with the same candidate and project, and `exclusive=true`. If the qualified window ends, require fresh consent. Use a new dispatch after diagnosis instead of GitHub's Re-run button, which reuses the prior invocation.
 
-`gate-a-only` mode runs only the five targeted browser cases, then Gate D cleanup and independent readback. Gates B and C stay `NOT RUN` even when Gate A passes. Its distinct success verdict is `GATE A ONLY PASSED`, which is never complete A–D acceptance. The `full` workflow runs the five targeted cases, hosted worker proof and 39 browser cases in order. Each workload invokes the existing PostgreSQL qualification lease and the supervisor's post-release read-only audit. Repository concurrency prevents overlapping Actions jobs. The exclusive window must also cover any local or other external staging users.
+`gate-a-only` mode runs only the five targeted browser cases, then Gate D cleanup and independent readback. Gates B and C stay `NOT RUN` even when Gate A passes. Its distinct success verdict is `WARM-PATH GATE A ONLY PASSED; COLD-PATH NOT QUALIFIED`, which is never complete A–D acceptance and never a cold-path result. Both workload modes begin with a bounded Realtime warm-up, described below. The `full` workflow runs the five targeted cases, hosted worker proof and 39 browser cases in order. Each workload invokes the existing PostgreSQL qualification lease and the supervisor's post-release read-only audit. Repository concurrency prevents overlapping Actions jobs. The exclusive window must also cover any local or other external staging users.
 
 The job checks cleanup even when a workload exits unsuccessfully. A timeout, cancelled job or lost runner can prevent cleanup from being confirmed. In that case keep the HOLD and verify the designated project with a fresh guarded read-only session before any retry. Only run-owned fixtures may be removed through authorized cleanup.
 
@@ -53,3 +53,47 @@ Bounds: a 10 s diagnostic deadline per request, a 75 s wall limit, no retries, n
 Cleanup is fail-closed: the lease release must be acknowledged and an independent fresh session must read back the empty baseline (one bounded 135 s quiet window for retained pooler sessions), otherwise Gate D is `UNCONFIRMED` and the verdict is `HOLD`. Gates A to C stay `NOT RUN`.
 
 Verdict codes: `COLD_START_REPRODUCED` (P1 above 1500 ms, sequential warm probes below it), `PER_ROOM_EFFECT_OBSERVED`, `WARM_PATH_NOT_CLEAN`, `INCONCLUSIVE_NOT_COLD` (the first request was already fast: the tenant was warm), `INCONCLUSIVE_FIRST_PROBE_FAILED`. The verdict is a latency classification. Whether the tenant really started up during P1 is confirmed separately with the provider's `realtime_logs` (`Connection process starting up`, `CheckConnection`, `Starting stream replication`, `POST /api/broadcast ... Sent 202 in N ms`). Before dispatching, confirm from those logs that the tenant has shut down (`Tenant ... has been terminated: :shutdown`) and has not started again. Dispatch once per exclusive window.
+
+## Realtime warm-up and the two evidence classes (`gate-a-only` and `full`)
+
+The cold-start probe (above, run 45274114936) showed that the first private broadcast after the Supabase Realtime tenant has shut down took 2632 ms (2481 ms at the provider, with a 1335 ms `CheckConnection`), while later broadcasts to the same or other rooms took 377 to 428 ms. The application publisher's 1500 ms deadline is therefore shorter than a tenant start. Hosted gates are split into two evidence classes so that neither can be mistaken for the other.
+
+### Warm-path acceptance (this workflow)
+
+`gate-a-only` and `full` first run a **qualification-only Realtime warm-up**, labelled `Realtime warm-up (qualification-only)` in the job summary and `warmup` in the evidence artifact. It warms Realtime itself, not `GET /auth/v1/health` (a different service that does not start the tenant).
+
+- Exactly three private-broadcast POSTs with the application's endpoint, headers and body shape, to synthetic random topics. No retries, no PostgreSQL access, no application rows, a 20 s wall limit.
+- `W1` starts the tenant (10 s diagnostic deadline, must return HTTP 202). `W2` and `W3` go to two further synthetic rooms and must each return HTTP 202 within 1500 ms (the application deadline, used here only as a readiness bar).
+- **Fail-closed.** A 401, 403, any other status, a timeout, a transport error or a slow verification is `NOT_READY`. The run then stops before Gate A with `WARMUP_NOT_READY`; gates stay `NOT RUN` and the verdict is `HOLD`.
+- The warm-up holds the exclusive staging lease on its own session. It releases the lease with confirmation and an independent fresh session reads the empty baseline back (one bounded 135 s quiet window) **before** any workload starts. The workload then takes its own lease exactly as before. An unconfirmed release or readback stops the run (`WARMUP_CLEANUP_UNCONFIRMED`, Gate D `UNCONFIRMED`).
+- `firstRequestOverAppDeadline` is a latency classification. Whether the tenant really started is confirmed separately in the provider's `realtime_logs`. The evidence also records `completedAt` and each workload's `startedAt`.
+- Not changed: the application, its 1500 ms deadline, retry policy, database pool, the zero-transport-failure gate, credentials handling and the existing preflight. A transport failure during a gate still fails that gate.
+
+Verdicts are labelled by what they prove:
+
+| Mode | Success verdict | Meaning |
+| --- | --- | --- |
+| `gate-a-only` | `WARM-PATH GATE A ONLY PASSED; COLD-PATH NOT QUALIFIED` | Five targeted cases passed on a warmed tenant. Not A-D acceptance. |
+| `full` | `WARM-PATH ACCEPTANCE: ALL GATES PASSED; COLD-PATH RECOVERY NOT QUALIFIED` | Gates A to D passed on a warmed tenant. |
+
+The evidence also carries `coverage: { warmPathAcceptance, coldPathRecovery }`, where `coldPathRecovery` is always `NOT QUALIFIED` in these modes. A passing warm run never claims that the cold path passed.
+
+Limitation: the warm-up is performed once, before Gate A. Hosted gates keep browser clients connected, which keeps the tenant running, and the earlier Gate A-only run took about 3.5 minutes from start to cleanup. Provider logs showed a tenant ending about 10 minutes after it started with no connected users. If the tenant went idle between gates, a later transport failure is still reported by the existing diagnostics and still fails the gate. It is never masked.
+
+### Cold-path recovery (separate criterion, design only, not implemented)
+
+Cold-path recovery asks what a user experiences when the first room event after tenant idle is published. It is a different question from warm-path correctness and needs its own run: a future infrastructure PR would add a mode that deliberately skips the warm-up and runs one scenario against a tenant confirmed shut down in `realtime_logs`. This document defines what that run must record. It does **not** set a service-level objective.
+
+| Measure | Definition | Existing evidence source |
+| --- | --- | --- |
+| First-publish latency | Time of the first provider request after idle, split into client, provider (`Sent 202 in N ms`) and tenant start (`CheckConnection`). | Cold-start probe; transport diagnostics (`ms`, `category`, `phase`). |
+| Bounded outbox recovery | Time from the first failed attempt to the outbox marking the event delivered, and the number of attempts. | `CINE026_TRANSPORT_DIAGNOSTICS` (`outbox`, `observedAfterFailureMs`, outcomes). |
+| First-event delivery latency | Time from the event's durable receipt to the private WebSocket frame at a subscriber, and to a GET that started after that frame. | Browser convergence evidence (`hintAfterAnchorMs`, `snapshotStartAfterAnchorMs`, `renderedAfterAnchorMs`). |
+| Ordering | Versions seen by every client are monotonic with no gap or duplicate, including the event that was retried. | Convergence evidence and version checks. |
+| Resource impact | Connection-seconds held under the per-room advisory lock, peak advisory waiters, lock timeouts, peak sessions against the pooler budget. | Hosted metrics `counts` and `peaks`. |
+
+Rules for using the measurements:
+
+1. A cold-path run is repeated only as often as the exclusive window and the idle time between samples allow; every sample is reported with min, median and max, never a single pass or an average alone.
+2. A cold-path SLO is proposed by the owner from the observed distribution and the product's tolerance for a delayed first event, then reviewed independently before adoption. Until then the criterion is `NOT QUALIFIED` and the measurements are informational.
+3. If warm-path acceptance passes but the cold-path distribution is unacceptable, an application-side remediation is scoped as a separate task with before-and-after latency and pool profiles, including the connection-hold trade-off of any longer deadline inside the outbox lock.
