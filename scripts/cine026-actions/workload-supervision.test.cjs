@@ -65,8 +65,8 @@ function fakeSupervisor({ groupAlive = () => false, onCheckpoint, signal } = {})
     onCheckpoint: onCheckpoint ?? (state => checkpoints.push(structuredClone(state))),
   });
   const line = value => child.stdout.write(value + "\n");
-  function terminal(code = 0) {
-    line("CINE026_TRANSPORT_DIAGNOSTICS " + JSON.stringify(transport));
+  function terminal(code = 0, terminalTransport = transport) {
+    line("CINE026_TRANSPORT_DIAGNOSTICS " + JSON.stringify(terminalTransport));
     line("CINE026_HOSTED_METRICS " + JSON.stringify(metrics));
     line("CINE026_SUPERVISOR_PHASE terminal");
     child.emit("exit", code);
@@ -207,6 +207,7 @@ test("all five workloads share the job envelope and reserve cleanup plus artifac
   assert.equal(now + last.executionMs + last.cleanupMs + last.forceGraceMs, jobStarted + 117 * MINUTE);
   assert.equal(planWorkload("C", jobStarted, jobStarted + 113 * MINUTE), null);
   assert.equal(planWorkload("C", NaN, now), null);
+  assert.equal(planWorkload("A", jobStarted, jobStarted + 103 * MINUTE, 630_000), null);
 });
 
 test("the bridge checkpoints while a child runs and emits teardown before independent audit", async () => {
@@ -274,4 +275,27 @@ test("the bridge cooperatively stops the active child and preserves the supervis
   assert.equal(stopCalls, 1);
   assert.equal(emitted.includes("CINE026_SUPERVISOR_PHASE stop_requested"), true);
   assert.equal(emitted.includes("CINE026_SUPERVISOR_PHASE terminal"), true);
+});
+
+test("a worker recovery proof cannot certify zero failures from an empty terminal transport report", async () => {
+  const f = fakeSupervisor();
+  f.line("CINE026_WORKER_RECOVERY " + JSON.stringify({
+    appCommit: "00555c03d4173ac54750677207b78252e2063257", versions: [6, 7],
+    receiptToPrivateHintMs: [12, 13], receiptToDurableReadbackMs: [19, 21],
+  }));
+  f.terminal(0, { ...transport, http: { ...transport.http, count: 0, okCount: 0, maxMs: 0 } });
+  const result = await f.done;
+  assert.deepEqual(result.worker.versions, [6, 7]);
+  assert.equal(verifiedCleanup(result), true);
+  assert.equal(stableWorkload(result), false);
+});
+
+test("an unsolicited supervisor stop cannot pass even with exit 0 and complete cleanup", async () => {
+  const f = fakeSupervisor();
+  f.line("CINE026_SUPERVISOR_PHASE teardown");
+  f.line("CINE026_SUPERVISOR_PHASE stop_requested");
+  f.terminal();
+  const result = await f.done;
+  assert.equal(result.firstFailure.code, "WORKLOAD_SUPERVISOR_STOP_REQUESTED");
+  assert.equal(stableWorkload(result), false);
 });

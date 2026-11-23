@@ -16,9 +16,9 @@ const PHASES = new Set([
   "shutdown_observed", "quiet_window", "cleanup_audit", "terminal",
 ]);
 
-function planWorkload(gate, jobStartedAt, now = Date.now()) {
+function planWorkload(gate, jobStartedAt, now = Date.now(), preparationMs = 0) {
   if (!Number.isSafeInteger(jobStartedAt) || jobStartedAt <= 0 || jobStartedAt > now) return null;
-  const remaining = jobStartedAt + JOB_MS - now - JOB_RESERVE_MS;
+  const remaining = jobStartedAt + JOB_MS - now - JOB_RESERVE_MS - preparationMs;
   const executionMs = Math.min(EXECUTION_MINUTES[gate] * 60_000, remaining - CLEANUP_MS - FORCE_GRACE_MS);
   return executionMs > 0 ? { executionMs, cleanupMs: CLEANUP_MS, forceGraceMs: FORCE_GRACE_MS } : null;
 }
@@ -67,6 +67,7 @@ function superviseWorkload(child, {
         recordFailure("supervisor", "WORKLOAD_HARD_CEILING");
       }
       killGroup("SIGKILL");
+      checkpoint();
       // An orphan can keep the pipes open even after the supervisor dies.
       // Stop waiting at the hard ceiling. The result remains incomplete.
       child.stdout.destroy();
@@ -106,6 +107,7 @@ function superviseWorkload(child, {
       if (PHASES.has(phase)) {
         if (state.milestones.length < 20) state.milestones.push({ phase, at: now() });
         if (phase === "teardown") enterTeardown();
+        if (phase === "stop_requested") recordFailure("supervisor", "WORKLOAD_SUPERVISOR_STOP_REQUESTED");
         if (phase === "terminal") state.terminalMilestone = true;
         checkpoint();
       } else if (observe(state, line)) {
@@ -224,7 +226,10 @@ async function runSupervisor({
         });
         children.add(child);
         return {
-          stop: () => child.stop(),
+          stop() {
+            teardown();
+            return child.stop();
+          },
           done: child.done.then(code => {
             children.delete(child);
             if (kind !== "build" || code !== 0) teardown();
@@ -242,6 +247,7 @@ async function runSupervisor({
           phase("shutdown_observed");
         }
         emit(label + " " + JSON.stringify(value));
+        if (label === "CINE026_HOSTED_FAILURE" && value.primary === true) teardown();
       },
     });
     phase("terminal");

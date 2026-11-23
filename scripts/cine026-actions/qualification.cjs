@@ -358,9 +358,13 @@ function verifiedCleanup(result) {
     m.final != null && fields.every(key => m.final[key] === 0);
 }
 
+function hasTransportEvidence(result) {
+  return result.transport?.http?.okCount > 0;
+}
+
 function stableWorkload(result) {
   return result.exitCode === 0 && !result.executionTimedOut && !result.firstFailure && !result.metrics?.firstFailure &&
-    verifiedCleanup(result) && result.transport?.failures?.length === 0 && result.transport.omittedFailures === 0 &&
+    verifiedCleanup(result) && hasTransportEvidence(result) && result.transport.failures.length === 0 && result.transport.omittedFailures === 0 &&
     result.metrics.counts != null && result.metrics.peaks != null &&
     ["capacity", "escapedReset", "checkedOutReset", "idleReset", "providerTransport", "providerStatus"]
       .every(key => result.metrics.counts[key] === 0);
@@ -527,6 +531,15 @@ function decideVerdict(evidence, wasInterrupted) {
     "WARM-PATH ACCEPTANCE: ALL GATES PASSED; COLD-PATH RECOVERY NOT QUALIFIED" : "HOLD";
 }
 
+const PREFLIGHT_HEADROOM_MS = 150_000;
+const WARMUP_HEADROOM_MS = 8 * 60_000;
+
+function checkWorkloadBudget(gate, startedAt, reservedMs = 0) {
+  const budget = planWorkload(gate, startedAt, Date.now(), reservedMs);
+  requireCondition(budget, "WORKFLOW_BUDGET_EXHAUSTED");
+  return budget;
+}
+
 function writeEvidence(evidence, status) {
   const artifact = path.join(temp, "cine026-qualification-evidence.json");
   const next = artifact + ".tmp";
@@ -543,17 +556,18 @@ async function qualify(directory) {
     authorize(process.env);
     verifyCheckout();
     requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
+    const stagedWorkload = workloadModes.includes(evidence.mode);
+    const jobStartedAt = Number(process.env.CINE026_JOB_STARTED_MS);
+    if (stagedWorkload) checkWorkloadBudget("A", jobStartedAt, PREFLIGHT_HEADROOM_MS + WARMUP_HEADROOM_MS);
     const env = configureStaging(directory, process.env);
     evidence.preflight = { status: "PASS", ...await preflight(env) };
     requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
     if (evidence.mode === "cold-start-probe") await runProbeSession(env, evidence);
-    if (workloadModes.includes(evidence.mode)) {
-      const jobStartedAt = Number(process.env.CINE026_JOB_STARTED_MS);
-      requireCondition(planWorkload("A", jobStartedAt), "WORKFLOW_BUDGET_EXHAUSTED");
+    if (stagedWorkload) {
+      checkWorkloadBudget("A", jobStartedAt, WARMUP_HEADROOM_MS);
       const run = async (gate, browser = null, targets = null) => {
         requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
-        const budget = planWorkload(gate, jobStartedAt);
-        requireCondition(budget, "WORKFLOW_BUDGET_EXHAUSTED");
+        const budget = checkWorkloadBudget(gate, jobStartedAt);
         const workload = { gate, browser, budget, startedAt: new Date().toISOString() };
         const file = path.join(directory, "playwright.json");
         fs.rmSync(file, { force: true });
@@ -568,7 +582,7 @@ async function qualify(directory) {
         const report = gate === "B" ? null : readBrowserReport(parseReport(file), browser ? { [browser]: targets } : fullMatrix);
         evidence.workload.push({ ...workload, ...result,
           missingEvidence: [!result.terminalMilestone && "terminal_milestone", !result.metrics && "terminal_metrics",
-            !result.transport && "terminal_transport"].filter(Boolean),
+            !result.transport && "terminal_transport", result.transport && !hasTransportEvidence(result) && "observed_transport"].filter(Boolean),
           ...(report ? { report } : {}) });
         delete evidence.activeWorkload;
         fs.rmSync(file, { force: true });
