@@ -36,3 +36,20 @@ The agent dispatches the workflow on `main`, first in `preflight` mode. This ver
 The job checks cleanup even when a workload exits unsuccessfully. A timeout, cancelled job or lost runner can prevent cleanup from being confirmed. In that case keep the HOLD and verify the designated project with a fresh guarded read-only session before any retry. Only run-owned fixtures may be removed through authorized cleanup.
 
 Read the Actions job summary and the `cine026-staging-evidence-<run id>` artifact. The artifact contains fixed case labels, outcomes, sanitized first-failure diagnostics, counts and timings. Browser video, screenshots, raw traces, child logs and credential files stay outside the upload path. A WebSocket frame and a GET that begins after that frame are reported separately. The agent uses the verified run and artifact links to update PR #66, both issues and both Notion tasks. The Actions job uses a read-only repository token throughout.
+
+## Cold-start probe (`cold-start-probe` mode)
+
+A diagnostic, never acceptance. It tests whether the first broadcast after the Supabase Realtime tenant has shut down is slower than the application publisher's fixed 1500 ms deadline. It sends one connection warm-up (`GET /auth/v1/health`, Auth rather than Realtime, so the first probe reuses an established TCP/TLS connection) and then exactly ten private broadcast POSTs to synthetic random topics, with the same endpoint, headers and body shape as the application publisher:
+
+| Probe | Role | Question |
+| --- | --- | --- |
+| P1 | `cold_first` | Does the first request after tenant idle exceed 1500 ms? |
+| P2, P4 | `warm_same_room` | Is the same room fast once the tenant is warm? |
+| P3, P5 | `warm_other_room` | Is a different room fast on the same warm tenant (per-tenant or per-room effect)? |
+| P6 to P10 | `warm_concurrent` | Do five concurrent rooms (the Gate A client count) stay fast? Reported separately from the verdict. |
+
+Bounds: a 10 s diagnostic deadline per request, a 75 s wall limit, no retries, no repeat when the tenant turns out to be warm. The application deadline, retry policy, database pool and acceptance gates are untouched. The probe never opens a PostgreSQL connection except the exclusive lease session, never creates application rows, and records a request as accepted only on an HTTP 202 response. A written body without a response is reported as no response. Provider acceptance is not subscriber delivery; delivery stays covered by the browser gates.
+
+Cleanup is fail-closed: the lease release must be acknowledged and an independent fresh session must read back the empty baseline (one bounded 135 s quiet window for retained pooler sessions), otherwise Gate D is `UNCONFIRMED` and the verdict is `HOLD`. Gates A to C stay `NOT RUN`.
+
+Verdict codes: `COLD_START_REPRODUCED` (P1 above 1500 ms, sequential warm probes below it), `PER_ROOM_EFFECT_OBSERVED`, `WARM_PATH_NOT_CLEAN`, `INCONCLUSIVE_NOT_COLD` (the first request was already fast: the tenant was warm), `INCONCLUSIVE_FIRST_PROBE_FAILED`. The verdict is a latency classification. Whether the tenant really started up during P1 is confirmed separately with the provider's `realtime_logs` (`Connection process starting up`, `CheckConnection`, `Starting stream replication`, `POST /api/broadcast ... Sent 202 in N ms`). Before dispatching, confirm from those logs that the tenant has shut down (`Tenant ... has been terminated: :shutdown`) and has not started again. Dispatch once per exclusive window.

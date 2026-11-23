@@ -5,12 +5,13 @@ const { execFileSync, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createInterface } = require("node:readline");
+const { readProbe, runColdStartProbe } = require("./cold-start-probe.cjs");
 
 const candidate = path.resolve("candidate");
 const temp = process.env.RUNNER_TEMP;
 const project = "dmrbticnsczhyaiftrar";
 const sha = "00555c03d4173ac54750677207b78252e2063257";
-const dispatchModes = ["preflight", "gate-a-only", "full"];
+const dispatchModes = ["preflight", "cold-start-probe", "gate-a-only", "full"];
 const browsers = ["chromium", "firefox", "webkit"];
 const fields = ["rooms", "participants", "votes", "events", "pending", "poison",
   "retries", "oldest_pending_ms", "advisory_locks", "advisory_waiters",
@@ -382,11 +383,66 @@ function summarize(evidence) {
     "Preflight: " + evidence.preflight.status,
     ...Object.entries(evidence.gates).map(([gate, status]) => "Gate " + gate + ": " + status),
     "Verdict: " + evidence.verdict,
+    ...(evidence.mode === "cold-start-probe" && evidence.probe ? ["Probe: " + evidence.probe.verdict + "; cold first " + evidence.probe.coldFirstMs +
+      " ms, warm median " + evidence.probe.warmMedianMs + " ms, warm max " + evidence.probe.warmMaxMs + " ms, concurrent max " +
+      evidence.probe.concurrentMaxMs + " ms. Diagnostic only: not Gate A-D acceptance."] : []),
     ...(evidence.mode === "gate-a-only" ? ["Scope: Gate A only. Gates B and C were intentionally not run; this is not A-D acceptance."] : []),
     "", "Evidence contains allowlisted counts and timings only.", ""].join("\n");
 }
 
 const workloadModes = ["gate-a-only", "full"];
+const LEASE_KEY = "cinematch:hosted-qualification";
+const POOLER_QUIET_WINDOW_MS = 135_000;
+
+// One exclusive-lease probe session. The probe itself never touches PostgreSQL; the lease only fences other
+// staging users. Cleanup is fail-closed: lease release must be acknowledged and an independent fresh
+// session must read back the clean baseline, otherwise Gate D is UNCONFIRMED and the verdict is HOLD.
+const probeDependencies = () => ({
+  load: require(path.join(candidate, "tests/hosted-supabase/environment.cjs")),
+  Client: require(path.join(candidate, "node_modules/pg")).Client,
+  readback: preflight, probe: runColdStartProbe,
+  secret: process.env.SUPABASE_SECRET_KEY, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+});
+
+async function runProbeSession(env, evidence, deps = probeDependencies()) {
+  const { load, Client } = deps;
+  const staging = load.loadHostedStaging();
+  const db = new Client({ ...staging.pgConfig, statement_timeout: 10_000, query_timeout: 12_000, application_name: "cine026-probe-supervisor" });
+  let firstError;
+  let released = false;
+  db.on("error", error => { firstError ??= error; });
+  evidence.cleanup = { leaseRelease: "not_acquired", readback: "NOT RUN" };
+  try {
+    await db.connect();
+    const lock = await db.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired", [LEASE_KEY]);
+    requireCondition(lock.rows[0].acquired === true, "LEASE_BUSY");
+    evidence.cleanup.leaseRelease = "unconfirmed";
+    const probe = readProbe(await deps.probe({ url: staging.url, secret: deps.secret }));
+    requireCondition(probe, "QUALIFICATION_SETUP_FAILED");
+    evidence.probe = probe;
+  } catch (error) {
+    firstError ??= error;
+  } finally {
+    if (evidence.cleanup.leaseRelease === "unconfirmed") {
+      try {
+        const unlock = await db.query("SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS released", [LEASE_KEY]);
+        released = unlock.rows[0].released === true;
+      } catch (error) { firstError ??= error; }
+      evidence.cleanup.leaseRelease = released ? "released" : "unconfirmed";
+    }
+    try { await db.end(); } catch (error) { firstError ??= error; }
+  }
+  // Independent fresh-session readback (retained pooler sessions may need one bounded quiet window).
+  for (let attempt = 0; attempt < 2 && evidence.cleanup.readback !== "PASS"; attempt++) {
+    if (attempt === 1) await deps.sleep(POOLER_QUIET_WINDOW_MS);
+    try {
+      await deps.readback(env);
+      evidence.cleanup.readback = "PASS";
+    } catch { evidence.cleanup.readback = "FAIL"; }
+  }
+  evidence.gates.D = evidence.cleanup.leaseRelease === "released" && evidence.cleanup.readback === "PASS" ? "PASS" : "UNCONFIRMED";
+  if (firstError) throw firstError;
+}
 
 // Gate order. `gate-a-only` runs the five targeted browser scenarios and never dispatches Gate B or C,
 // even when Gate A passes completely. Execution stops at the first failing Gate A workload.
@@ -404,6 +460,13 @@ async function runGateSequence(mode, run, evidence) {
 function decideVerdict(evidence, wasInterrupted) {
   if (evidence.failure || wasInterrupted || evidence.preflight.status !== "PASS") return "HOLD";
   if (evidence.mode === "preflight") return "READ-ONLY PREFLIGHT PASSED";
+  if (evidence.mode === "cold-start-probe") {
+    // A diagnostic, not acceptance: Gates A-C must stay NOT RUN and cleanup must be verified.
+    if (evidence.gates.D !== "PASS" || !evidence.probe ||
+      [evidence.gates.A, evidence.gates.B, evidence.gates.C].some(gate => gate !== "NOT RUN")) return "HOLD";
+    return { COLD_START_REPRODUCED: "COLD-START PROBE REPRODUCED", PER_ROOM_EFFECT_OBSERVED: "COLD-START PROBE COMPLETE: PER-ROOM EFFECT",
+      WARM_PATH_NOT_CLEAN: "COLD-START PROBE COMPLETE: WARM PATH NOT CLEAN" }[evidence.probe.verdict] ?? "COLD-START PROBE INCONCLUSIVE";
+  }
   if (evidence.mode === "gate-a-only") {
     return evidence.gates.A === "PASS" && evidence.gates.D === "PASS" &&
       evidence.gates.B === "NOT RUN" && evidence.gates.C === "NOT RUN" ? "GATE A ONLY PASSED" : "HOLD";
@@ -413,13 +476,14 @@ function decideVerdict(evidence, wasInterrupted) {
 
 async function qualify(directory) {
   const evidence = { candidate: sha, workflowSha: process.env.GITHUB_SHA,
-    mode: workloadModes.includes(process.env.DISPATCH_MODE) ? process.env.DISPATCH_MODE : "preflight", preflight: { status: "FAIL" },
+    mode: [...workloadModes, "cold-start-probe"].includes(process.env.DISPATCH_MODE) ? process.env.DISPATCH_MODE : "preflight", preflight: { status: "FAIL" },
     gates: { A: "NOT RUN", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" }, workload: [] };
   try {
     authorize(process.env);
     verifyCheckout();
     const env = configureStaging(directory, process.env);
     evidence.preflight = { status: "PASS", ...await preflight(env) };
+    if (evidence.mode === "cold-start-probe") await runProbeSession(env, evidence);
     if (workloadModes.includes(evidence.mode)) {
       const run = async (gate, browser = null, targets = null) => {
         const file = path.join(directory, "playwright.json");
@@ -506,4 +570,4 @@ if (require.main === module) main().catch(error => {
   process.stderr.write((safe ? message : "QUALIFICATION_HARNESS_FAILED") + "\n");
   process.exitCode = 1;
 });
-module.exports = { runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
+module.exports = { runProbeSession, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
