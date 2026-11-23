@@ -15,6 +15,18 @@ const LEASE_KEY = "cinematch:hosted-qualification";
 // Supavisor's tenant shutdown runs after the last subscriber disconnects, on a
 // two-minute timer. A connected SQL monitor itself prevents that shutdown.
 const POOLER_QUIET_WINDOW_MS = 135_000;
+const SAFE_ERROR_CODES = new Set([
+  "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ENETDOWN", "ENETUNREACH",
+  "EHOSTUNREACH", "ENOTFOUND", "EAI_AGAIN", "08000", "08001", "08003", "08006",
+  "57P01", "57P02", "57P03", "53300", "57014", "55P03",
+]);
+const LOST_CONNECTION_CODES = new Set([
+  "ECONNRESET", "EPIPE", "ENETDOWN", "ENETUNREACH", "08003", "08006", "57P01", "57P02",
+]);
+
+function safeCode(error, fallback) {
+  return SAFE_ERROR_CODES.has(error?.code) ? error.code : fallback;
+}
 
 function createCapabilitySecret() {
   return randomBytes(32).toString("hex");
@@ -105,7 +117,15 @@ async function assertNoListeners(ports) {
   })));
 }
 
-async function main() {
+async function main({
+  loadStaging = loadHostedStaging,
+  makeClient = config => new Client(config),
+  startChild = launch,
+  checkPorts = assertNoListeners,
+  wait = delay,
+  report = (label, value) => console.log(label + " " + JSON.stringify(value)),
+  args = process.argv.slice(2),
+} = {}) {
   // Fresh exact-project consent is mandatory and must be present before the credentials file is read.
   if (process.env.CINE018_STAGING_PROJECT !== "dmrbticnsczhyaiftrar") {
     throw new Error("Set CINE018_STAGING_PROJECT to the exact staging project for this invocation.");
@@ -114,7 +134,7 @@ async function main() {
     throw new Error("Set CINE018_STAGING_ENV_FILE to the owner-designated credentials file.");
   }
 
-  const staging = loadHostedStaging();
+  const staging = loadStaging();
   const env = { ...process.env, ...staging.appEnv };
   // Never inherit cloud-admin selectors or destructive-test consent from the caller.
   delete env.SUPABASE_ACCESS_TOKEN;
@@ -141,18 +161,18 @@ async function main() {
   const buildEnv = { ...env };
   delete buildEnv.NODE_OPTIONS;
   const testEnv = { ...env, NODE_OPTIONS: "--require ./tests/fixtures/mock-tmdb.cjs" };
-  const playwrightArgs = process.argv.slice(2);
+  const playwrightArgs = args;
   const workerQualification = playwrightArgs[0] === "--worker-qualification";
   if (workerQualification && playwrightArgs.length !== 1) throw new Error("Worker qualification accepts no Playwright options");
   const ports = workerQualification ? [3101, 3102] : [3065];
-  await assertNoListeners(ports);
+  await checkPorts(ports);
   // Invoke Playwright directly so Windows does not reinterpret forwarded options
   // through cmd.exe (notably regex grep filters containing `|`).
   const playwrightCli = path.join(path.dirname(require.resolve("playwright")), "cli.js");
 
   // One lease/monitor session, one inspector, one serial worker and up to five
   // app sessions. The owner must verify hosted capacity under this budget first.
-  const db = new Client({ ...staging.pgConfig, application_name: "cine026-hosted-supervisor", statement_timeout: 10000 });
+  const db = makeClient({ ...staging.pgConfig, application_name: "cine026-hosted-supervisor", statement_timeout: 10000 });
   const counts = { capacity: 0, escapedReset: 0, checkedOutReset: 0, idleReset: 0, lockTimeout: 0, providerTransport: 0, providerStatus: 0 };
   const peaks = { pending: 0, poison: 0, retries: 0, oldest_pending_ms: 0, advisory_waiters: 0, idle_transactions: 0, other_role_sessions: 0 };
   function observe(line) {
@@ -171,42 +191,76 @@ async function main() {
   let worker;
   let monitor;
   let monitored = true;
-  let supervisorFailed = false;
-  let leased = false;
-  let closing;
+  let firstFailure;
+  let operation = "connect";
+  let connectionLost = false;
+  let leaseRelease = "not_acquired";
+  let admitted = false;
+  let stopping;
   let mockLogDirectory;
-  const closeSupervisor = () => closing ??= (async () => {
+  let immediate;
+  let final;
+  let cleanupVerified = false;
+
+  function record(failurePhase, error, fallback) {
+    const failure = { phase: failurePhase, code: safeCode(error, fallback), at: new Date().toISOString() };
+    const primary = firstFailure === undefined;
+    firstFailure ??= failure;
+    report("CINE026_HOSTED_FAILURE", { ...failure, primary });
+  }
+
+  async function attempt(failurePhase, fallback, action) {
     try {
-      if (leased) {
-        const unlock = await db.query("SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS released", [LEASE_KEY]);
-        if (!unlock.rows[0].released) throw new Error("Hosted staging qualification lease was lost");
-      }
-    } finally {
-      await db.end();
+      await action();
+      return true;
+    } catch (error) {
+      record(failurePhase, error, fallback);
+      return false;
     }
-  })();
-  db.on("error", () => {
-    supervisorFailed = true;
-    void phase?.stop();
+  }
+
+  const stopWork = () => stopping ??= Promise.all([
+    attempt("phase_stop", "CHILD_STOP_FAILED", () => phase?.stop()),
+    attempt("worker_stop", "CHILD_STOP_FAILED", () => worker?.stop()),
+  ]).then(results => results.every(Boolean));
+
+  db.on("error", error => {
+    connectionLost = true;
+    record(operation, error, "SUPERVISOR_CONNECTION_FAILED");
+    if (monitored && (phase || worker)) void stopWork();
   });
-  try {
+
+  async function runWork() {
     await db.connect();
+    operation = "lease_acquire";
+    leaseRelease = "unconfirmed";
     const lock = await db.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired", [LEASE_KEY]);
-    if (!lock.rows[0].acquired) throw new Error("Hosted staging qualification lease is already held");
-    leased = true;
+    if (!lock.rows[0].acquired) {
+      leaseRelease = "not_acquired";
+      record(operation, null, "LEASE_BUSY");
+      return;
+    }
+    operation = "preflight";
     await assertEmptyHostedApplication(db);
     assertClean(await readState(db));
+    if (firstFailure) return;
+    admitted = true;
 
     if (!workerQualification) {
-      phase = launch([require.resolve("next/dist/bin/next"), "build"], buildEnv, observe);
+      operation = "build";
+      phase = startChild([require.resolve("next/dist/bin/next"), "build"], buildEnv, observe);
       const build = await phase.done;
-      if (build !== 0 || supervisorFailed) return build || 1;
+      if (build !== 0) record(operation, null, "BUILD_FAILED");
+      if (firstFailure) return;
+      operation = "preflight";
       assertClean(await readState(db));
+      if (firstFailure) return;
       mockLogDirectory = mkdtempSync(path.join(tmpdir(), "cine026-hosted-mock-"));
       testEnv.CINE026_MOCK_REQUEST_LOG = path.join(mockLogDirectory, "request-logs.json");
 
       let ready = false;
-      worker = launch(["--conditions=react-server", "--import", "tsx", "scripts/realtime-worker.ts"], {
+      operation = "worker_start";
+      worker = startChild(["--conditions=react-server", "--import", "tsx", "scripts/realtime-worker.ts"], {
         ...env, CINEMATCH_PG_POOL_MAX: "1", CINEMATCH_OUTBOX_POLL_MS: "1000", NODE_OPTIONS: "",
       }, line => {
         observe(line);
@@ -215,86 +269,118 @@ async function main() {
       const boot = await Promise.race([
         worker.done.then(() => false),
         (async () => {
-          for (let i = 0; i < 150 && !ready; i++) await delay(100);
+          for (let i = 0; i < 150 && !ready && !firstFailure; i++) await wait(100);
           return ready;
         })(),
       ]);
-      if (!boot || supervisorFailed) throw new Error("Independent worker did not reach readiness");
+      if (!boot) record(operation, null, "WORKER_NOT_READY");
+      if (firstFailure) return;
     }
+    // Restart qualification owns two app pools of at most two clients each,
+    // two worker pools of at most two each, an inspector and the supervisor.
+    operation = "monitor";
+    phase = workerQualification
+      ? startChild(["tests/local-supabase/two-instance-qualification.cjs", "--hosted-staging"], {
+        ...buildEnv, CINEMATCH_PG_POOL_MAX: "2",
+      }, observe)
+      : startChild([playwrightCli, "test", "--config=playwright.cine026.staging.config.ts", ...playwrightArgs], testEnv, observe);
     monitor = (async () => {
       while (monitored) {
         const state = await readState(db);
         for (const key of Object.keys(peaks)) peaks[key] = Math.max(peaks[key], state[key]);
-        await delay(3000);
+        await wait(3000);
       }
-    })().catch(() => {
-      supervisorFailed = true;
-      void phase?.stop();
+    })().catch(error => {
+      connectionLost ||= LOST_CONNECTION_CODES.has(error?.code);
+      record("monitor", error, "MONITOR_FAILED");
+      void stopWork();
     });
-    // Restart qualification owns two app pools of at most two clients each,
-    // two worker pools of at most two each, an inspector and the supervisor.
-    phase = workerQualification
-      ? launch(["tests/local-supabase/two-instance-qualification.cjs", "--hosted-staging"], {
-        ...buildEnv, CINEMATCH_PG_POOL_MAX: "2",
-      }, observe)
-      : launch([playwrightCli, "test", "--config=playwright.cine026.staging.config.ts", ...playwrightArgs], testEnv, observe);
     const completion = phase.done.then(code => ({ code, workerExited: false }));
     const outcome = worker
       ? await Promise.race([completion, worker.done.then(() => ({ code: 1, workerExited: true }))])
       : await completion;
-    supervisorFailed ||= outcome.workerExited;
-    monitored = false;
-    await monitor;
-    await phase.stop();
-    await worker?.stop();
-    const immediate = await readState(db);
-    console.log("CINE026_HOSTED_SHUTDOWN " + JSON.stringify({ counts, peaks, immediate, supervisorFailed }));
-    assertQuiescent(immediate);
-    await assertNoListeners(ports);
-    let final = immediate;
-    if (immediate.other_role_sessions !== 0) {
-      // The owner’s exclusive window remains in force after releasing our SQL lease.
-      // Leave the pooler entirely, then verify with one new read-only session.
-      await closeSupervisor();
-      await delay(POOLER_QUIET_WINDOW_MS);
-      const audit = new Client({ ...staging.pgConfig, statement_timeout: 10000 });
-      audit.on("error", () => { supervisorFailed = true; });
-      try {
-        await audit.connect();
-        final = await readState(audit);
-      } finally {
-        await audit.end();
-      }
-    }
-    console.log("CINE026_HOSTED_METRICS " + JSON.stringify({ counts, peaks, final, supervisorFailed }));
-    assertClean(final);
-    return outcome.code || Number(supervisorFailed);
+    if (outcome.code !== 0) record("workload", null, outcome.workerExited ? "WORKER_EXITED" : "WORKLOAD_FAILED");
+  }
+
+  try {
+    await runWork();
+  } catch (error) {
+    connectionLost ||= LOST_CONNECTION_CODES.has(error?.code);
+    record(operation, error, "SUPERVISOR_OPERATION_FAILED");
   } finally {
     monitored = false;
-    await phase?.stop();
-    await worker?.stop();
+    const stopped = await stopWork();
     await monitor;
-    try {
-      await closeSupervisor();
-    } finally {
-      if (mockLogDirectory) {
+    const portsClosed = admitted && stopped && await attempt("port_check", "PORTS_UNCONFIRMED", () => checkPorts(ports));
+    if (admitted && !connectionLost) {
+      operation = "shutdown_read";
+      await attempt(operation, "SHUTDOWN_STATE_UNCONFIRMED", async () => {
+        try {
+          immediate = await readState(db);
+        } catch (error) {
+          connectionLost ||= LOST_CONNECTION_CODES.has(error?.code);
+          throw error;
+        }
+        assertQuiescent(immediate);
+      });
+    }
+    report("CINE026_HOSTED_SHUTDOWN", { counts, peaks, immediate, firstFailure });
+
+    if (leaseRelease === "unconfirmed") {
+      operation = "lease_release";
+      const unlocked = !connectionLost && await attempt(operation, "LEASE_RELEASE_UNCONFIRMED", async () => {
+        const unlock = await db.query("SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS released", [LEASE_KEY]);
+        if (unlock.rows[0].released !== true) throw new Error("Lease unlock was not acknowledged");
+      });
+      if (unlocked) leaseRelease = "released";
+    }
+    operation = "supervisor_close";
+    const closed = await attempt(operation, "SUPERVISOR_CLOSE_UNCONFIRMED", () => db.end());
+    if (portsClosed && (closed || connectionLost)) {
+      // Owner exclusivity covers this readback after our SQL lease ends. Leave
+      // the pooler quiet if retained sessions are visible or shutdown state is unknown.
+      if (!immediate || immediate.other_role_sessions !== 0) await wait(POOLER_QUIET_WINDOW_MS);
+      let audit;
+      let auditFault = false;
+      const inspected = await attempt("cleanup_audit", "CLEANUP_UNCONFIRMED", async () => {
+        audit = makeClient({ ...staging.pgConfig, statement_timeout: 10000 });
+        audit.on("error", error => {
+          auditFault = true;
+          record("cleanup_audit", error, "AUDIT_CONNECTION_FAILED");
+        });
+        await audit.connect();
+        await audit.query("BEGIN READ ONLY");
+        final = await readState(audit);
+        await audit.query("COMMIT");
+        assertClean(final);
+      });
+      const auditClosed = await attempt("audit_close", "AUDIT_CLOSE_UNCONFIRMED", () => audit?.end());
+      cleanupVerified = inspected && auditClosed && !auditFault;
+      if (cleanupVerified && leaseRelease === "unconfirmed") leaseRelease = "verified_absent";
+    }
+    if (mockLogDirectory) {
+      await attempt("mock_cleanup", "MOCK_CLEANUP_FAILED", () => {
         try {
           unlinkSync(testEnv.CINE026_MOCK_REQUEST_LOG);
         } catch (error) {
           if (error.code !== "ENOENT") throw error;
         }
         rmdirSync(mockLogDirectory);
-      }
+      });
     }
   }
+  const result = { counts, peaks, final, firstFailure, leaseRelease, cleanupVerified };
+  report("CINE026_HOSTED_METRICS", result);
+  return { ...result, exitCode: firstFailure || !cleanupVerified || leaseRelease !== "released" ? 1 : 0 };
 }
 
 if (require.main === module) {
-  main().then(code => { process.exitCode = code; }).catch((error) => {
-    // Keep database error details, but never serialize environment or connection config.
-    console.error("CINE-026 hosted staging qualification BLOCKED/FAILED:", error.code || error.message);
+  main().then(({ exitCode }) => { process.exitCode = exitCode; }).catch((error) => {
+    console.error("CINE026_HOSTED_FAILURE " + JSON.stringify({
+      phase: "runner_setup", code: safeCode(error, "RUNNER_SETUP_FAILED"), at: new Date().toISOString(), primary: true,
+    }));
     process.exitCode = 1;
   });
 }
 
-module.exports = { createCapabilitySecret, assertQuiescent, assertClean };
+module.exports = { createCapabilitySecret, assertQuiescent, assertClean, main };
