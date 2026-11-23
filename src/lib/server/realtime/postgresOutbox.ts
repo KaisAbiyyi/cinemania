@@ -31,8 +31,8 @@ export function postgresOutboxStore(pool: Pool, requestedSchema = "public"): Out
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`cinematch-outbox:${schema}:${roomId}`]);
         const outbox: LockedOutbox = {
           async readyHead(): Promise<PendingEvent | undefined> {
-            const result = await client.query<{ id: string; version: number; ready: boolean }>(
-              `SELECT id::text, version, retry_not_before <= NOW() AS ready FROM ${table}
+            const result = await client.query<{ id: string; version: number; retryCount: number; ready: boolean }>(
+              `SELECT id::text, version, retry_count AS "retryCount", retry_not_before <= NOW() AS ready FROM ${table}
                WHERE room_id = $1 AND NOT dispatched AND NOT poison ORDER BY version ASC LIMIT 1`,
               [roomId],
             );

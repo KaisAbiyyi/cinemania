@@ -1,11 +1,14 @@
 import "server-only";
 import { PermanentPublicationError, PublicationAuthorizationError, PublicationDeferredError, type RoomHint } from "./dispatch";
+import { classifyTransportFailure, emitRealtimeDiagnostic, realtimeDiagnosticsEnabled, roomToken, trackRequestPhase } from "./diagnostics";
 
 const AUTHORIZATION_COOLDOWN_MS = 60_000;
 // After a timeout, reset or 5xx, stop probing for a few seconds. Each in-flight send holds a pooled
 // database connection inside the outbox lock; against a hanging provider and a 2-connection
 // session-pool budget, unbounded probing would queue ordinary requests behind provider timeouts.
 const PROVIDER_UNAVAILABLE_COOLDOWN_MS = 5_000;
+// Fixed by CINE-026/063 qualification: diagnostics must not change this deadline.
+const PROVIDER_REQUEST_TIMEOUT_MS = 1_500;
 
 /** Server-only factory: callers must keep the key outside client bundles. */
 export function createSupabasePublisher(projectUrl: string, secret: string, send: typeof fetch = fetch) {
@@ -44,17 +47,36 @@ export function createSupabasePublisher(projectUrl: string, secret: string, send
     const topic = encodeURIComponent(`room:${hint.roomId}`);
     const endpoint = new URL(`/realtime/v1/api/broadcast/${topic}/events/room_changed?private=true`, base);
     let response: Response;
+    const diagnostics = realtimeDiagnosticsEnabled();
+    const startedAt = Date.now();
+    const started = performance.now();
+    const tracker = trackRequestPhase(endpoint.pathname + endpoint.search);
     try {
       response = await send(endpoint, {
         method: "POST",
         redirect: "error",
         headers: { "content-type": "application/json", apikey: secret },
         body: JSON.stringify({ roomId: hint.roomId, version: hint.version }),
-        signal: AbortSignal.timeout(1500),
+        signal: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS),
       });
-    } catch {
+    } catch (error) {
+      if (diagnostics) {
+        // Diagnostic only: no HTTP response was received, so provider-side processing is unknown.
+        emitRealtimeDiagnostic("ATTEMPT", {
+          kind: "transport", r: roomToken(hint.roomId), v: hint.version, ms: Math.round(performance.now() - started),
+          startedAt: new Date(startedAt).toISOString(), phase: tracker.phase(), ...classifyTransportFailure(error),
+        });
+      }
       reportOutage();
       throw new Error("Realtime provider request failed");
+    } finally {
+      tracker.done();
+    }
+    if (diagnostics) {
+      emitRealtimeDiagnostic("ATTEMPT", {
+        kind: "http", r: roomToken(hint.roomId), v: hint.version, ms: Math.round(performance.now() - started),
+        startedAt: new Date(startedAt).toISOString(), status: response.status,
+      });
     }
     void response.body?.cancel().catch(() => {});
     if (response.status === 401 || response.status === 403) {

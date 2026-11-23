@@ -10,6 +10,7 @@ const path = require("node:path");
 const { createInterface } = require("node:readline");
 const { setTimeout: delay } = require("node:timers/promises");
 const { Client } = require("pg");
+const { createTransportDiagnostics } = require("./transport-diagnostics.cjs");
 const { loadHostedStaging, assertEmptyHostedApplication } = require("../../tests/hosted-supabase/environment.cjs");
 const LEASE_KEY = "cinematch:hosted-qualification";
 // Supavisor's tenant shutdown runs after the last subscriber disconnects, on a
@@ -187,7 +188,9 @@ async function main({
   const db = makeClient({ ...supervisorConfig, application_name: "cine026-hosted-supervisor" });
   const counts = { capacity: 0, escapedReset: 0, checkedOutReset: 0, idleReset: 0, lockTimeout: 0, providerTransport: 0, providerStatus: 0 };
   const peaks = { pending: 0, poison: 0, retries: 0, oldest_pending_ms: 0, advisory_waiters: 0, idle_transactions: 0, other_role_sessions: 0 };
+  const transport = createTransportDiagnostics();
   function observe(line) {
+    transport.observe(line);
     if (line.includes("[CINEMATCH_DB_CAPACITY]")) counts.capacity++;
     if (/uncaughtException:.*ECONNRESET/.test(line)) counts.escapedReset++;
     if (line.includes("[CINEMATCH_DB_CONNECTION_ERROR]") && line.includes('"code":"ECONNRESET"')) {
@@ -385,6 +388,7 @@ async function main({
     }
   }
   const result = { counts, peaks, final, firstFailure, leaseRelease, cleanupVerified };
+  report("CINE026_TRANSPORT_DIAGNOSTICS", transport.summary());
   report("CINE026_HOSTED_METRICS", result);
   return { ...result, exitCode: firstFailure || !cleanupVerified || leaseRelease !== "released" ? 1 : 0 };
 }
