@@ -1,0 +1,126 @@
+name: CINE-026/063 hosted staging qualification
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/cine026-hosted-qualification.yml
+      - scripts/cine026-actions/**
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Exact reviewed HEAD of draft PR 66
+        required: true
+        type: string
+      project:
+        description: Exact designated staging project ref
+        required: true
+        type: string
+      exclusive:
+        description: Confirm an exclusive staging window for this invocation
+        required: true
+        default: false
+        type: boolean
+      mode:
+        description: Read-only preflight, or all hosted gates
+        required: true
+        default: preflight
+        type: choice
+        options: [preflight, full]
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '24.21.0'
+  CANDIDATE: cb84ded1fbba19e55d0df94276ecf048c60ed27a
+  PROJECT: dmrbticnsczhyaiftrar
+
+jobs:
+  verify:
+    name: Validate harness without staging access
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: node --test scripts/cine026-actions/qualification.test.cjs
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: KaisAbiyyi/cinemania
+          ref: ${{ env.CANDIDATE }}
+          path: candidate
+          persist-credentials: false
+      - name: Install reviewed candidate's locked dependencies
+        working-directory: candidate
+        run: npm ci
+      - name: Verify target selection and all 39 entries without credentials
+        run: node scripts/cine026-actions/qualification.cjs list
+      - name: Check manual dispatch and live PR
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DISPATCH_SHA: ${{ inputs.candidate }}
+          DISPATCH_PROJECT: ${{ inputs.project }}
+          DISPATCH_EXCLUSIVE: ${{ inputs.exclusive }}
+          DISPATCH_MODE: ${{ inputs.mode }}
+        run: node scripts/cine026-actions/qualification.cjs authorize
+
+  qualify:
+    name: Qualify on designated staging
+    needs: verify
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'KaisAbiyyi/cinemania' &&
+      github.ref == 'refs/heads/main' && github.run_attempt == '1' &&
+      inputs.exclusive
+    environment: cine026-staging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    concurrency:
+      group: cinemania-dmrbticnsczhyaiftrar-hosted-qualification
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: KaisAbiyyi/cinemania
+          ref: ${{ env.CANDIDATE }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install reviewed candidate's locked dependencies
+        working-directory: candidate
+        run: npm ci
+      - name: Install locked Playwright browsers and system dependencies
+        if: inputs.mode == 'full'
+        working-directory: candidate
+        run: npx --no-install playwright install --with-deps chromium firefox webkit
+      - name: Run guarded qualification
+        env:
+          DISPATCH_SHA: ${{ inputs.candidate }}
+          DISPATCH_PROJECT: ${{ inputs.project }}
+          DISPATCH_EXCLUSIVE: ${{ inputs.exclusive }}
+          DISPATCH_MODE: ${{ inputs.mode }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_PG_HOST: ${{ vars.SUPABASE_PG_HOST }}
+          SUPABASE_PG_USER: ${{ vars.SUPABASE_PG_USER }}
+          CINE026_SESSION_POOL_SIZE: ${{ vars.CINE026_SESSION_POOL_SIZE }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_JWT_SECRET }}
+          SUPABASE_PG_PASSWORD: ${{ secrets.SUPABASE_PG_PASSWORD }}
+        run: node scripts/cine026-actions/qualification.cjs run
+      - name: Upload allowlisted evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cine026-staging-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/cine026-qualification-evidence.json
+          if-no-files-found: error
+          retention-days: 14
