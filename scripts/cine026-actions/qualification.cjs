@@ -9,7 +9,7 @@ const { createInterface } = require("node:readline");
 const candidate = path.resolve("candidate");
 const temp = process.env.RUNNER_TEMP;
 const project = "dmrbticnsczhyaiftrar";
-const sha = "cb84ded1fbba19e55d0df94276ecf048c60ed27a";
+const sha = "00555c03d4173ac54750677207b78252e2063257";
 const browsers = ["chromium", "firefox", "webkit"];
 const fields = ["rooms", "participants", "votes", "events", "pending", "poison",
   "retries", "oldest_pending_ms", "advisory_locks", "advisory_waiters",
@@ -124,14 +124,53 @@ function readWorker(value) {
     receiptToDurableReadbackMs: value.receiptToDurableReadbackMs };
 }
 
+const transportCategories = new Set([
+  "client_deadline", "client_abort", "dns_failure", "connect_timeout", "connect_unreachable",
+  "connection_reset", "connection_closed", "response_timeout", "tls_failure", "unexpected_redirect",
+  "unknown_fetch_failure",
+]);
+const transportPhases = new Set([
+  "connecting_or_queued", "request_head_written", "request_written_awaiting_response", "unobserved",
+]);
+const transportOutcomes = new Set(["marked", "retry_scheduled", "deferred", "permanent_rejection"]);
+const count = value => Number.isSafeInteger(value) && value >= 0;
+
+// Sanitized publisher/outbox attempt diagnostics. Every emitted value is rebuilt from fixed enumerations,
+// bounded counters and ISO timestamps; nothing is copied from the child's output verbatim.
+function readTransport(value) {
+  const http = numericFields(value?.http, ["count", "okCount", "nonOkCount", "maxMs", "over1000Ms", "over1400Ms"]);
+  const outcomes = numericFields(value?.outcomes, [...transportOutcomes]);
+  if (!http || !outcomes || !Array.isArray(value.failures) || value.failures.length > 10 || !count(value.omittedFailures)) return null;
+  const failures = [];
+  for (const failure of value.failures) {
+    if (!transportCategories.has(failure?.category) || !transportPhases.has(failure.phase) || !count(failure.ms) ||
+      !count(failure.version) || !Array.isArray(failure.outbox) || failure.outbox.length > 4) return null;
+    const outbox = [];
+    for (const step of failure.outbox) {
+      if (!transportOutcomes.has(step?.outcome) || !count(step.attempt) || !count(step.count) ||
+        !count(step.observedAfterFailureMs)) return null;
+      outbox.push({ outcome: step.outcome, attempt: step.attempt, count: step.count,
+        observedAfterFailureMs: step.observedAfterFailureMs });
+    }
+    failures.push({
+      category: failure.category, code: typeof failure.code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(failure.code) ? failure.code : null,
+      phase: failure.phase, ms: failure.ms, version: failure.version,
+      startedAt: typeof failure.startedAt === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(failure.startedAt) ? failure.startedAt : null,
+      httpResponseReceived: false, outbox,
+    });
+  }
+  return { http, outcomes, failures, omittedFailures: value.omittedFailures };
+}
+
 function observeLine(state, line) {
-  const match = /^(CINE026_HOSTED_FAILURE|CINE026_HOSTED_METRICS|CINE026_WORKER_RECOVERY) (.+)$/.exec(line);
+  const match = /^(CINE026_HOSTED_FAILURE|CINE026_HOSTED_METRICS|CINE026_WORKER_RECOVERY|CINE026_TRANSPORT_DIAGNOSTICS) (.+)$/.exec(line);
   if (!match) return;
   let payload;
   try { payload = JSON.parse(match[2]); } catch { return; }
   if (match[1] === "CINE026_HOSTED_FAILURE") state.firstFailure ??= readFailure(payload) ?? undefined;
   if (match[1] === "CINE026_HOSTED_METRICS") state.metrics = readMetrics(payload);
   if (match[1] === "CINE026_WORKER_RECOVERY") state.worker = readWorker(payload);
+  if (match[1] === "CINE026_TRANSPORT_DIAGNOSTICS") state.transport = readTransport(payload) ?? undefined;
 }
 
 function readBrowserReport(report, expected, listing = false) {

@@ -6,7 +6,7 @@ const { test } = require("node:test");
 const { authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, stableWorkload, verifiedCleanup } =
   require("./qualification.cjs");
 
-const sha = "cb84ded1fbba19e55d0df94276ecf048c60ed27a";
+const sha = "00555c03d4173ac54750677207b78252e2063257";
 const dispatch = {
   GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REPOSITORY: "KaisAbiyyi/cinemania",
   GITHUB_REF: "refs/heads/main", GITHUB_RUN_ATTEMPT: "1", DISPATCH_SHA: sha,
@@ -67,6 +67,26 @@ test("only known fields survive supervisor log capture and the first failure sti
   assert.deepEqual(state.firstFailure, { phase: "monitor", code: "ECONNRESET", at });
   assert.deepEqual(state.worker.versions, [6, 7]);
   assert.equal(JSON.stringify(state).includes("should-not-leak"), false);
+});
+
+test("transport diagnostics are rebuilt from fixed enumerations and reject malformed or leaking input", () => {
+  const good = {
+    http: { count: 8, okCount: 8, nonOkCount: 0, maxMs: 410, over1000Ms: 0, over1400Ms: 0 },
+    outcomes: { marked: 8, retry_scheduled: 1, deferred: 3, permanent_rejection: 0 },
+    failures: [{ category: "client_deadline", code: null, phase: "request_written_awaiting_response", ms: 1502, version: 8,
+      startedAt: "2026-11-24T00:00:01.000Z", httpResponseReceived: false, url: "https://should-not-leak.invalid",
+      outbox: [{ outcome: "retry_scheduled", attempt: 1, count: 1, observedAfterFailureMs: 100, room: "should-not-leak" }] }],
+    omittedFailures: 0, token: "should-not-leak",
+  };
+  const state = {};
+  observeLine(state, "CINE026_TRANSPORT_DIAGNOSTICS " + JSON.stringify(good));
+  assert.equal(state.transport.failures[0].category, "client_deadline");
+  assert.equal(JSON.stringify(state).includes("should-not-leak"), false);
+  const bad = { ...good, failures: [{ ...good.failures[0], category: "https://should-not-leak.invalid" }] };
+  const rejected = {};
+  observeLine(rejected, "CINE026_TRANSPORT_DIAGNOSTICS " + JSON.stringify(bad));
+  assert.equal(rejected.transport, undefined);
+  assert.equal(JSON.stringify(rejected).includes("should-not-leak"), false);
 });
 
 test("an unacknowledged release, stranded process or missing evidence never passes cleanup", () => {
