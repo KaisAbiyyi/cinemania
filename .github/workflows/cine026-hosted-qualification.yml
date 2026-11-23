@@ -38,6 +38,9 @@ env:
 jobs:
   verify:
     name: Validate harness without staging access
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
@@ -59,7 +62,14 @@ jobs:
         run: npm ci
       - name: Verify target selection and all 39 entries without credentials
         run: node scripts/cine026-actions/qualification.cjs list
-      - name: Check manual dispatch and live PR
+      - name: Verify live draft candidate with GitHub's read-only token
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          CINE026_GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/cine026-actions/qualification.cjs check-pr
+      - name: Check manual dispatch consent
         if: github.event_name == 'workflow_dispatch'
         env:
           DISPATCH_SHA: ${{ inputs.candidate }}

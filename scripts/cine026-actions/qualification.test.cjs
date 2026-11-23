@@ -3,7 +3,7 @@
 
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { authorize, configureStaging, observeLine, readBrowserReport, stableWorkload, verifiedCleanup } =
+const { authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, stableWorkload, verifiedCleanup } =
   require("./qualification.cjs");
 
 const sha = "cb84ded1fbba19e55d0df94276ecf048c60ed27a";
@@ -82,4 +82,21 @@ test("an unacknowledged release, stranded process or missing evidence never pass
   assert.equal(verifiedCleanup({ ...state, metrics: { ...metrics, leaseRelease: "verified_absent" } }), false);
   assert.equal(verifiedCleanup({ ...state, metrics: { ...metrics, final: {} } }), false);
   assert.equal(stableWorkload({ ...state, metrics: { ...metrics, counts: { ...metrics.counts, capacity: 1 } } }), false);
+});
+
+test("PR lookup uses the runner token without redirects and rejects failed or changed evidence", async () => {
+  const pr = { state: "open", draft: true,
+    head: { sha, ref: "feature/cine-026-063-integration", repo: { full_name: "KaisAbiyyi/cinemania" } } };
+  const request = async (url, options) => {
+    assert.equal(url, "https://api.github.com/repos/KaisAbiyyi/cinemania/pulls/66");
+    assert.equal(options.headers.authorization, "Bearer test-token");
+    assert.equal(options.redirect, "error");
+    return { ok: true, json: async () => pr };
+  };
+  await assert.doesNotReject(() => verifyLivePR("test-token", request));
+  await assert.rejects(() => verifyLivePR("", request), /PR_LOOKUP_TOKEN_MISSING/);
+  await assert.rejects(() => verifyLivePR("test-token", async () => ({ ok: false, status: 403 })),
+    /PR_LOOKUP_HTTP_403/);
+  pr.head.sha = "0".repeat(40);
+  await assert.rejects(() => verifyLivePR("test-token", request), /PR_CANDIDATE_MISMATCH/);
 });

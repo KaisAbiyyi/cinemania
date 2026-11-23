@@ -55,11 +55,18 @@ function verifyCheckout() {
   requireCondition(head === sha, "CHECKOUT_SHA_MISMATCH");
 }
 
-async function verifyLivePR() {
-  const response = await fetch("https://api.github.com/repos/KaisAbiyyi/cinemania/pulls/66", {
-    redirect: "error", signal: AbortSignal.timeout(15_000),
-  });
-  requireCondition(response.ok, "PR_LOOKUP_FAILED");
+async function verifyLivePR(token, request = fetch) {
+  requireCondition(token, "PR_LOOKUP_TOKEN_MISSING");
+  let response;
+  try {
+    response = await request("https://api.github.com/repos/KaisAbiyyi/cinemania/pulls/66", {
+      headers: { authorization: "Bearer " + token, accept: "application/vnd.github+json" },
+      redirect: "error", signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw new Error("PR_LOOKUP_TRANSPORT_FAILED");
+  }
+  requireCondition(response.ok, "PR_LOOKUP_HTTP_" + response.status);
   const pr = await response.json();
   requireCondition(pr.state === "open" && pr.draft === true && pr.head?.sha === sha &&
     pr.head?.ref === "feature/cine-026-063-integration" && pr.head?.repo?.full_name === "KaisAbiyyi/cinemania",
@@ -324,7 +331,7 @@ function stableWorkload(result) {
 }
 
 const preflightCodes = new Set([
-  "DISPATCH_CONTEXT_REFUSED", "DISPATCH_CONSENT_REFUSED", "CHECKOUT_SHA_MISMATCH", "PR_LOOKUP_FAILED",
+  "DISPATCH_CONTEXT_REFUSED", "DISPATCH_CONSENT_REFUSED", "CHECKOUT_SHA_MISMATCH",
   "PR_CANDIDATE_MISMATCH", "STAGING_CONFIGURATION_MISSING", "SESSION_POOL_BUDGET_UNCONFIRMED",
   "STAGING_ISOLATION_FAILED", "SERVER_SESSION_BUDGET_INSUFFICIENT", "STAGING_HTTPS_HEALTH_FAILED",
   "STAGING_PG_CONNECTION_FAILED",
@@ -344,7 +351,6 @@ async function qualify(directory) {
   try {
     authorize(process.env);
     verifyCheckout();
-    await verifyLivePR();
     const env = configureStaging(directory, process.env);
     evidence.preflight = { status: "PASS", ...await preflight(env) };
     if (evidence.mode === "full") {
@@ -405,10 +411,14 @@ function validateListings(directory) {
 
 async function main() {
   const mode = process.argv[2];
+  if (mode === "check-pr") {
+    verifyCheckout();
+    await verifyLivePR(process.env.CINE026_GITHUB_TOKEN);
+    return;
+  }
   if (mode === "authorize") {
     authorize(process.env);
     verifyCheckout();
-    await verifyLivePR();
     return;
   }
   requireCondition(temp && (mode === "list" || (mode === "run" && process.platform === "linux")), "INVALID_INVOCATION");
@@ -430,7 +440,9 @@ async function main() {
 }
 
 if (require.main === module) main().catch(error => {
-  process.stderr.write((preflightCodes.has(error?.message) ? error.message : "QUALIFICATION_HARNESS_FAILED") + "\n");
+  const message = error?.message;
+  const safe = preflightCodes.has(message) || /^PR_LOOKUP_(?:HTTP_[1-5]\d\d|TOKEN_MISSING|TRANSPORT_FAILED)$/.test(message);
+  process.stderr.write((safe ? message : "QUALIFICATION_HARNESS_FAILED") + "\n");
   process.exitCode = 1;
 });
-module.exports = { authorize, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
+module.exports = { authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
