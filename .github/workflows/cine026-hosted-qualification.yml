@@ -21,11 +21,11 @@ on:
         default: false
         type: boolean
       mode:
-        description: Read-only preflight, or all hosted gates
+        description: Read-only preflight, Gate A only, or all hosted gates
         required: true
         default: preflight
         type: choice
-        options: [preflight, full]
+        options: [preflight, gate-a-only, full]
 
 permissions:
   contents: read
@@ -109,7 +109,7 @@ jobs:
         working-directory: candidate
         run: npm ci
       - name: Install locked Playwright browsers and system dependencies
-        if: inputs.mode == 'full'
+        if: inputs.mode == 'full' || inputs.mode == 'gate-a-only'
         working-directory: candidate
         run: npx --no-install playwright install --with-deps chromium firefox webkit
       - name: Run guarded qualification

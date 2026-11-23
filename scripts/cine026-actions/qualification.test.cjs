@@ -3,7 +3,7 @@
 
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, stableWorkload, verifiedCleanup } =
+const { runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, stableWorkload, verifiedCleanup } =
   require("./qualification.cjs");
 
 const sha = "00555c03d4173ac54750677207b78252e2063257";
@@ -119,4 +119,83 @@ test("PR lookup uses the runner token without redirects and rejects failed or ch
     /PR_LOOKUP_HTTP_403/);
   pr.head.sha = "0".repeat(40);
   await assert.rejects(() => verifyLivePR("test-token", request), /PR_CANDIDATE_MISMATCH/);
+});
+
+const freshEvidence = (mode, preflight = "PASS") => ({ mode, preflight: { status: preflight },
+  gates: { A: "NOT RUN", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" }, workload: [] });
+const recorder = failAt => {
+  const calls = [];
+  const run = async (gate, browser) => { calls.push(gate + (browser ? ":" + browser : "")); return calls.length !== failAt; };
+  return { calls, run };
+};
+
+test("gate-a-only is an authorized mode, and unknown modes remain refused", () => {
+  assert.doesNotThrow(() => authorize({ ...dispatch, DISPATCH_MODE: "gate-a-only" }));
+  assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "gate-a" }), /^Error: DISPATCH_CONSENT_REFUSED$/);
+  assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "gate-a-only", DISPATCH_EXCLUSIVE: "false" }), /^Error: DISPATCH_/);
+  assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "gate-a-only", DISPATCH_SHA: "a".repeat(40) }), /^Error: DISPATCH_/);
+});
+
+test("a fully passing Gate A under gate-a-only never dispatches Gate B or C", async () => {
+  const { calls, run } = recorder(0);
+  const evidence = freshEvidence("gate-a-only");
+  await runGateSequence("gate-a-only", run, evidence);
+  assert.deepEqual(calls, ["A:chromium", "A:firefox", "A:webkit"]);
+  assert.deepEqual(evidence.gates, { A: "PASS", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" });
+  evidence.gates.D = "PASS";
+  assert.equal(decideVerdict(evidence, false), "GATE A ONLY PASSED");
+});
+
+test("full mode still proceeds from Gate A to B and C, and only then reports complete acceptance", async () => {
+  const { calls, run } = recorder(0);
+  const evidence = freshEvidence("full");
+  await runGateSequence("full", run, evidence);
+  assert.deepEqual(calls, ["A:chromium", "A:firefox", "A:webkit", "B", "C"]);
+  evidence.gates.D = "PASS";
+  assert.equal(decideVerdict(evidence, false), "ALL GATES PASSED");
+});
+
+test("a Gate A failure stops execution before later browsers and never passes", async () => {
+  for (const mode of ["gate-a-only", "full"]) {
+    const { calls, run } = recorder(2);
+    const evidence = freshEvidence(mode);
+    await runGateSequence(mode, run, evidence);
+    assert.deepEqual(calls, ["A:chromium", "A:firefox"]);
+    assert.deepEqual(evidence.gates, { A: "FAIL", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" });
+    evidence.gates.D = "PASS";
+    assert.equal(decideVerdict(evidence, false), "HOLD");
+  }
+});
+
+test("unconfirmed cleanup, setup failure, interruption or missing workload keep gate-a-only on HOLD", async () => {
+  const { run } = recorder(0);
+  const passed = () => ({ ...freshEvidence("gate-a-only") });
+  const evidence = passed();
+  await runGateSequence("gate-a-only", run, evidence);
+  assert.equal(decideVerdict({ ...evidence, gates: { ...evidence.gates, D: "UNCONFIRMED" } }, false), "HOLD");
+  assert.equal(decideVerdict({ ...evidence, gates: { ...evidence.gates, D: "NOT RUN" } }, false), "HOLD");
+  const clean = { ...evidence, gates: { ...evidence.gates, D: "PASS" } };
+  assert.equal(decideVerdict(clean, false), "GATE A ONLY PASSED");
+  assert.equal(decideVerdict(clean, true), "HOLD");
+  assert.equal(decideVerdict({ ...clean, failure: { phase: "qualification" } }, false), "HOLD");
+  assert.equal(decideVerdict({ ...clean, preflight: { status: "FAIL" } }, false), "HOLD");
+  // B or C ever running under the scoped mode cannot yield the scoped verdict.
+  assert.equal(decideVerdict({ ...clean, gates: { ...clean.gates, B: "PASS" } }, false), "HOLD");
+  assert.equal(decideVerdict(freshEvidence("preflight"), false), "READ-ONLY PREFLIGHT PASSED");
+});
+
+test("a workload with unverified cleanup fails its Gate A stage, so cleanup failures stay blocking", () => {
+  const zero = keys => Object.fromEntries(keys.split(" ").map(key => [key, 0]));
+  const metrics = { leaseRelease: "released", cleanupVerified: true,
+    counts: zero("capacity escapedReset checkedOutReset idleReset lockTimeout providerTransport providerStatus"),
+    peaks: zero("pending poison retries oldest_pending_ms advisory_waiters idle_transactions other_role_sessions"),
+    final: zero("rooms participants votes events pending poison retries oldest_pending_ms advisory_locks advisory_waiters idle_transactions other_role_sessions other_role_nonidle_sessions") };
+  const ok = { exitCode: 0, metrics };
+  assert.equal(stableWorkload(ok), true);
+  for (const broken of [
+    { ...ok, metrics: { ...metrics, cleanupVerified: false } },
+    { ...ok, metrics: { ...metrics, final: { ...metrics.final, rooms: 1 } } },
+    { ...ok, metrics: { ...metrics, counts: { ...metrics.counts, providerTransport: 1 } } },
+    { ...ok, remainingProcesses: true }, { ...ok, deadline: true }, { ...ok, interrupted: true },
+  ]) assert.equal(stableWorkload(broken), false);
 });

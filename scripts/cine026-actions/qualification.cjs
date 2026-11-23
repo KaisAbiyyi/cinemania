@@ -10,6 +10,7 @@ const candidate = path.resolve("candidate");
 const temp = process.env.RUNNER_TEMP;
 const project = "dmrbticnsczhyaiftrar";
 const sha = "00555c03d4173ac54750677207b78252e2063257";
+const dispatchModes = ["preflight", "gate-a-only", "full"];
 const browsers = ["chromium", "firefox", "webkit"];
 const fields = ["rooms", "participants", "votes", "events", "pending", "poison",
   "retries", "oldest_pending_ms", "advisory_locks", "advisory_waiters",
@@ -46,7 +47,7 @@ function authorize(env) {
     env.GITHUB_REPOSITORY === "KaisAbiyyi/cinemania" && env.GITHUB_REF === "refs/heads/main" &&
     env.GITHUB_RUN_ATTEMPT === "1", "DISPATCH_CONTEXT_REFUSED");
   requireCondition(env.DISPATCH_SHA === sha && env.DISPATCH_PROJECT === project &&
-    env.DISPATCH_EXCLUSIVE === "true" && ["preflight", "full"].includes(env.DISPATCH_MODE),
+    env.DISPATCH_EXCLUSIVE === "true" && dispatchModes.includes(env.DISPATCH_MODE),
   "DISPATCH_CONSENT_REFUSED");
 }
 
@@ -380,19 +381,46 @@ function summarize(evidence) {
     "Candidate: " + evidence.candidate, "Mode: " + evidence.mode,
     "Preflight: " + evidence.preflight.status,
     ...Object.entries(evidence.gates).map(([gate, status]) => "Gate " + gate + ": " + status),
-    "Verdict: " + evidence.verdict, "", "Evidence contains allowlisted counts and timings only.", ""].join("\n");
+    "Verdict: " + evidence.verdict,
+    ...(evidence.mode === "gate-a-only" ? ["Scope: Gate A only. Gates B and C were intentionally not run; this is not A-D acceptance."] : []),
+    "", "Evidence contains allowlisted counts and timings only.", ""].join("\n");
+}
+
+const workloadModes = ["gate-a-only", "full"];
+
+// Gate order. `gate-a-only` runs the five targeted browser scenarios and never dispatches Gate B or C,
+// even when Gate A passes completely. Execution stops at the first failing Gate A workload.
+async function runGateSequence(mode, run, evidence) {
+  for (const [browser, targets] of browserTargets) {
+    evidence.gates.A = await run("A", browser, targets) ? "PASS" : "FAIL";
+    if (evidence.gates.A === "FAIL") break;
+  }
+  if (mode !== "full") return;
+  if (evidence.gates.A === "PASS") evidence.gates.B = await run("B") ? "PASS" : "FAIL";
+  if (evidence.gates.B === "PASS") evidence.gates.C = await run("C") ? "PASS" : "FAIL";
+}
+
+// A scoped Gate A pass is never reported as complete A-D acceptance.
+function decideVerdict(evidence, wasInterrupted) {
+  if (evidence.failure || wasInterrupted || evidence.preflight.status !== "PASS") return "HOLD";
+  if (evidence.mode === "preflight") return "READ-ONLY PREFLIGHT PASSED";
+  if (evidence.mode === "gate-a-only") {
+    return evidence.gates.A === "PASS" && evidence.gates.D === "PASS" &&
+      evidence.gates.B === "NOT RUN" && evidence.gates.C === "NOT RUN" ? "GATE A ONLY PASSED" : "HOLD";
+  }
+  return Object.values(evidence.gates).every(gate => gate === "PASS") ? "ALL GATES PASSED" : "HOLD";
 }
 
 async function qualify(directory) {
   const evidence = { candidate: sha, workflowSha: process.env.GITHUB_SHA,
-    mode: process.env.DISPATCH_MODE === "full" ? "full" : "preflight", preflight: { status: "FAIL" },
+    mode: workloadModes.includes(process.env.DISPATCH_MODE) ? process.env.DISPATCH_MODE : "preflight", preflight: { status: "FAIL" },
     gates: { A: "NOT RUN", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" }, workload: [] };
   try {
     authorize(process.env);
     verifyCheckout();
     const env = configureStaging(directory, process.env);
     evidence.preflight = { status: "PASS", ...await preflight(env) };
-    if (evidence.mode === "full") {
+    if (workloadModes.includes(evidence.mode)) {
       const run = async (gate, browser = null, targets = null) => {
         const file = path.join(directory, "playwright.json");
         fs.rmSync(file, { force: true });
@@ -405,12 +433,7 @@ async function qualify(directory) {
         evidence.workload.push({ gate, browser, ...result, ...(report ? { report } : {}) });
         return stableWorkload(result) && (gate === "B" ? Boolean(result.worker) : report.valid);
       };
-      for (const [browser, targets] of browserTargets) {
-        evidence.gates.A = await run("A", browser, targets) ? "PASS" : "FAIL";
-        if (evidence.gates.A === "FAIL") break;
-      }
-      if (evidence.gates.A === "PASS") evidence.gates.B = await run("B") ? "PASS" : "FAIL";
-      if (evidence.gates.B === "PASS") evidence.gates.C = await run("C") ? "PASS" : "FAIL";
+      await runGateSequence(evidence.mode, run, evidence);
     }
   } catch (error) {
     evidence.failure = { phase: evidence.preflight.status === "PASS" ? "qualification" : "preflight",
@@ -419,9 +442,8 @@ async function qualify(directory) {
       at: new Date().toISOString() };
   } finally {
     if (evidence.workload.length) evidence.gates.D = evidence.workload.every(verifiedCleanup) ? "PASS" : "UNCONFIRMED";
-    const passed = !evidence.failure && !interrupted && evidence.preflight.status === "PASS" &&
-      (evidence.mode === "preflight" || Object.values(evidence.gates).every(gate => gate === "PASS"));
-    evidence.verdict = passed ? (evidence.mode === "full" ? "ALL GATES PASSED" : "READ-ONLY PREFLIGHT PASSED") : "HOLD";
+    evidence.verdict = decideVerdict(evidence, interrupted);
+    const passed = evidence.verdict !== "HOLD";
     fs.writeFileSync(path.join(temp, "cine026-qualification-evidence.json"), JSON.stringify(evidence, null, 2) + "\n",
       { flag: "wx", mode: 0o600 });
     const summary = summarize(evidence);
@@ -484,4 +506,4 @@ if (require.main === module) main().catch(error => {
   process.stderr.write((safe ? message : "QUALIFICATION_HARNESS_FAILED") + "\n");
   process.exitCode = 1;
 });
-module.exports = { authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
+module.exports = { runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
