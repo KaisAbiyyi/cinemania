@@ -13,7 +13,7 @@ const http = require('http');
 const { PassThrough } = require('stream');
 const fs = require('fs');
 const path = require('path');
-const logPath = path.resolve(__dirname, 'request-logs.json');
+const logPath = process.env.CINE026_MOCK_REQUEST_LOG || path.resolve(__dirname, 'request-logs.json');
 
 const requestLog = [];
 

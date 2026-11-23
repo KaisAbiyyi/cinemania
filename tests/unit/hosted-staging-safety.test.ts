@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 const { validateHostedStaging, PROJECT } = createRequire(import.meta.url)("../hosted-supabase/environment.cjs");
-const { createCapabilitySecret } = createRequire(import.meta.url)("../../scripts/cine026/run-hosted-staging.cjs");
+const { createCapabilitySecret, assertQuiescent, assertClean } = createRequire(import.meta.url)("../../scripts/cine026/run-hosted-staging.cjs");
 const consent = { CINE018_STAGING_PROJECT: PROJECT };
 const valid = `SUPABASE_URL=https://${PROJECT}.supabase.co
 SUPABASE_PUBLISHABLE_KEY=synthetic-publishable
@@ -13,6 +13,20 @@ SUPABASE_PG_DATABASE=postgres
 SUPABASE_PG_USER=postgres
 SUPABASE_PG_PASSWORD=synthetic-password`;
 describe("hosted staging safety boundary", () => {
+  const emptyState = {
+    rooms: 0, participants: 0, votes: 0, events: 0, advisory_locks: 0, advisory_waiters: 0,
+    idle_transactions: 0, other_role_nonidle_sessions: 0, other_role_sessions: 0,
+  };
+  it("allows an idle pooler drain observation and still requires final session count zero", () => {
+    const retained = { ...emptyState, other_role_sessions: 6 };
+    expect(() => assertQuiescent(retained)).not.toThrow();
+    expect(() => assertClean(retained)).toThrow(/other_role_sessions/);
+    expect(() => assertClean(emptyState)).not.toThrow();
+  });
+  it.each(["rooms", "participants", "votes", "events", "advisory_locks", "advisory_waiters",
+    "idle_transactions", "other_role_nonidle_sessions"])("refuses any remaining %s before the drain window", field => {
+    expect(() => assertQuiescent({ ...emptyState, [field]: 1 })).toThrow(field);
+  });
   it("creates an independent cryptographically random 32-byte capability secret per run", () => {
     const first = createCapabilitySecret();
     const second = createCapabilitySecret();
