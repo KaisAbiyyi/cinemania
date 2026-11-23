@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
+import { Client } from "pg";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const requireLocal = createRequire(import.meta.url);
@@ -37,7 +38,7 @@ function fixture() {
   };
   const options = {
     unlock: () => ({ rows: [{ released: true }] }),
-    sample: () => ({ rows: [cleanState] }),
+    sample: async () => ({ rows: [cleanState] }),
     shutdown: () => ({ rows: [cleanState] }),
     audit: () => ({ rows: [cleanState] }),
   };
@@ -73,7 +74,10 @@ beforeEach(() => {
   vi.stubEnv("CINE018_STAGING_ENV_FILE", "synthetic-do-not-open");
 });
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
 it("keeps the initiating monitoring socket error when the pending query also fails", async () => {
   const f = fixture();
@@ -165,4 +169,30 @@ it("requires a new read-only audit after explicit release even when the first sn
   const release = f.supervisor.query.mock.calls.findIndex(([sql]) => sql.includes("pg_advisory_unlock"));
   expect(f.supervisor.query.mock.invocationCallOrder[release]).toBeLessThan(f.audit.connect.mock.invocationCallOrder[0]!);
   expect(f.audit.query.mock.calls[0]).toEqual(["BEGIN READ ONLY"]);
+});
+
+it("bounds a monitoring query when the driver receives neither a response nor a socket error", async () => {
+  vi.useFakeTimers();
+  const f = fixture();
+  const queued = Promise.withResolvers<Client>();
+  f.options.sample = () => {
+    // The installed driver queues this query without a server response. Use
+    // the runner's client configuration rather than a timer in the mock.
+    const silent = new Client(f.makeClient.mock.calls[0]![0]);
+    const query = silent.query<typeof cleanState>("SELECT 1");
+    queued.resolve(silent);
+    return query;
+  };
+  const run = f.run();
+  const driver = await queued.promise;
+  try {
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(await run).toMatchObject({
+      exitCode: 1, cleanupVerified: true, leaseRelease: "verified_absent",
+      firstFailure: { code: "PG_READ_TIMEOUT", phase: "monitor" },
+    });
+    expect(f.makeClient.mock.calls[1]![0]).toMatchObject({ query_timeout: 12_000 });
+  } finally {
+    await driver.end();
+  }
 });

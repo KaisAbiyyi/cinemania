@@ -15,6 +15,8 @@ const LEASE_KEY = "cinematch:hosted-qualification";
 // Supavisor's tenant shutdown runs after the last subscriber disconnects, on a
 // two-minute timer. A connected SQL monitor itself prevents that shutdown.
 const POOLER_QUIET_WINDOW_MS = 135_000;
+// A server-side statement limit cannot answer a client over a stalled socket.
+const SUPERVISOR_QUERY_TIMEOUT_MS = 12_000;
 const SAFE_ERROR_CODES = new Set([
   "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ENETDOWN", "ENETUNREACH",
   "EHOSTUNREACH", "ENOTFOUND", "EAI_AGAIN", "08000", "08001", "08003", "08006",
@@ -24,7 +26,16 @@ const LOST_CONNECTION_CODES = new Set([
   "ECONNRESET", "EPIPE", "ENETDOWN", "ENETUNREACH", "08003", "08006", "57P01", "57P02",
 ]);
 
+function isReadTimeout(error) {
+  return error instanceof Error && error.message === "Query read timeout";
+}
+
+function isUnusable(error) {
+  return isReadTimeout(error) || LOST_CONNECTION_CODES.has(error?.code);
+}
+
 function safeCode(error, fallback) {
+  if (isReadTimeout(error)) return "PG_READ_TIMEOUT";
   return SAFE_ERROR_CODES.has(error?.code) ? error.code : fallback;
 }
 
@@ -172,7 +183,8 @@ async function main({
 
   // One lease/monitor session, one inspector, one serial worker and up to five
   // app sessions. The owner must verify hosted capacity under this budget first.
-  const db = makeClient({ ...staging.pgConfig, application_name: "cine026-hosted-supervisor", statement_timeout: 10000 });
+  const supervisorConfig = { ...staging.pgConfig, statement_timeout: 10000, query_timeout: SUPERVISOR_QUERY_TIMEOUT_MS };
+  const db = makeClient({ ...supervisorConfig, application_name: "cine026-hosted-supervisor" });
   const counts = { capacity: 0, escapedReset: 0, checkedOutReset: 0, idleReset: 0, lockTimeout: 0, providerTransport: 0, providerStatus: 0 };
   const peaks = { pending: 0, poison: 0, retries: 0, oldest_pending_ms: 0, advisory_waiters: 0, idle_transactions: 0, other_role_sessions: 0 };
   function observe(line) {
@@ -291,7 +303,7 @@ async function main({
         await wait(3000);
       }
     })().catch(error => {
-      connectionLost ||= LOST_CONNECTION_CODES.has(error?.code);
+      connectionLost ||= isUnusable(error);
       record("monitor", error, "MONITOR_FAILED");
       void stopWork();
     });
@@ -305,7 +317,7 @@ async function main({
   try {
     await runWork();
   } catch (error) {
-    connectionLost ||= LOST_CONNECTION_CODES.has(error?.code);
+    connectionLost ||= isUnusable(error);
     record(operation, error, "SUPERVISOR_OPERATION_FAILED");
   } finally {
     monitored = false;
@@ -318,7 +330,7 @@ async function main({
         try {
           immediate = await readState(db);
         } catch (error) {
-          connectionLost ||= LOST_CONNECTION_CODES.has(error?.code);
+          connectionLost ||= isUnusable(error);
           throw error;
         }
         assertQuiescent(immediate);
@@ -329,7 +341,10 @@ async function main({
     if (leaseRelease === "unconfirmed") {
       operation = "lease_release";
       const unlocked = !connectionLost && await attempt(operation, "LEASE_RELEASE_UNCONFIRMED", async () => {
-        const unlock = await db.query("SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS released", [LEASE_KEY]);
+        const unlock = await db.query("SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS released", [LEASE_KEY]).catch(error => {
+          connectionLost ||= isUnusable(error);
+          throw error;
+        });
         if (unlock.rows[0].released !== true) throw new Error("Lease unlock was not acknowledged");
       });
       if (unlocked) leaseRelease = "released";
@@ -343,7 +358,7 @@ async function main({
       let audit;
       let auditFault = false;
       const inspected = await attempt("cleanup_audit", "CLEANUP_UNCONFIRMED", async () => {
-        audit = makeClient({ ...staging.pgConfig, statement_timeout: 10000 });
+        audit = makeClient(supervisorConfig);
         audit.on("error", error => {
           auditFault = true;
           record("cleanup_audit", error, "AUDIT_CONNECTION_FAILED");
