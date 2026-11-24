@@ -16,10 +16,12 @@
 
 const { STALL_MS } = require("./execution-budget.cjs");
 
-const PREFIXES = /^(CINE026_PROGRESS|CINE026_DB_SAMPLE|CINE026_NESTED) (.+)$/;
+const PREFIXES = /^(CINE026_PROGRESS|CINE026_DB_SAMPLE|CINE026_NESTED|CINE026_PUBLISH_FIRST) (.+)$/;
 const CASE_STATUSES = new Set(["passed", "failed", "timedOut", "skipped", "interrupted"]);
 const RUN_STATUSES = new Set(["passed", "failed", "timedout", "interrupted"]);
-const KINDS = new Set(["app", "worker", "fault", "other"]);
+const STREAM_KINDS = new Set(["app", "worker", "fault"]);
+const FIRST_KINDS = new Set(["http", "transport"]);
+const FIRST_VIA = new Set(["worker", "workload"]);
 const STEP_KEYS = ["api", "expect", "step", "hook", "fixture", "other"];
 const MAX_CASES = 24;
 const MAX_SAMPLES = 40;
@@ -33,7 +35,9 @@ function createProgress() {
     events: 0, rejected: 0, cases: [], samples: [], sampleCount: 0,
     peaks: { rttMs: 0, oldestPendingMs: 0, continuousPendingMs: 0 },
     runEnd: null, lastSignalAfterMs: null,
-    nested: { tapReady: false, generations: { app: 0, worker: 0, fault: 0, other: 0 }, streams: [] },
+    nested: { tapReady: false, generations: { app: 0, worker: 0, fault: 0 }, streams: [], received: 0,
+      invalid: { duplicate: 0, orphan: 0, outOfOrder: 0, overflow: 0, rejected: 0 } },
+    firstPublish: null,
   };
 }
 
@@ -138,32 +142,56 @@ function observeSample(progress, payload, afterMs) {
   return true;
 }
 
+// Lifecycle accounting for nested processes. Anything that does not fit the lifecycle is counted in `invalid`
+// (never repaired or ignored), so the evidence reader can refuse it: a duplicate spawn, an event for a process
+// that was never reported (out of order), a generation that skips a number, a table overflow, a malformed event.
 function observeNested(progress, payload) {
   const nested = progress.nested;
+  const flag = name => { nested.invalid[name]++; return true; };
   if (!payload || typeof payload.ev !== "string") return false;
-  if (payload.ev === "tap_ready") { nested.tapReady = true; return true; }
-  if (!KINDS.has(payload.kind) || !Number.isSafeInteger(payload.n) || payload.n < 1 || payload.n > 64) return false;
-  let stream = nested.streams.find(item => item.kind === payload.kind && item.n === payload.n);
+  if (payload.ev === "tap_ready") {
+    if (nested.tapReady) return flag("duplicate");
+    nested.tapReady = true;
+    return true;
+  }
+  if (!STREAM_KINDS.has(payload.kind) || !Number.isSafeInteger(payload.n) || payload.n < 1 || payload.n > 64) return false;
+  const stream = nested.streams.find(item => item.kind === payload.kind && item.n === payload.n);
   if (payload.ev === "spawn") {
-    if (!stream && nested.streams.length < MAX_STREAMS) {
-      stream = { kind: payload.kind, n: payload.n, forwarded: 0, dropped: 0, exit: null };
-      nested.streams.push(stream);
-    }
-    nested.generations[payload.kind] = Math.max(nested.generations[payload.kind], payload.n);
+    if (typeof payload.piped !== "boolean") return false;
+    if (stream) return flag("duplicate");
+    if (payload.n !== nested.generations[payload.kind] + 1) return flag("outOfOrder");
+    nested.generations[payload.kind] = payload.n;
+    if (nested.streams.length >= MAX_STREAMS) return flag("overflow");
+    nested.streams.push({ kind: payload.kind, n: payload.n, piped: payload.piped, forwarded: 0, dropped: 0, exit: null });
     return true;
   }
-  if (!stream) return true; // Bounded: beyond MAX_STREAMS only the generation maximum above is kept.
-  if (payload.ev === "lines") {
-    if (!bounded(payload.forwarded, 100_000_000) || !bounded(payload.dropped, 100_000_000)) return false;
-    stream.forwarded = payload.forwarded;
-    stream.dropped = payload.dropped;
-    return true;
-  }
+  if (payload.ev !== "lines" && payload.ev !== "exit") return false;
+  if (!bounded(payload.forwarded, 100_000_000) || !bounded(payload.dropped, 100_000_000)) return false;
+  if (payload.ev === "exit" && (!(payload.code === null || Number.isSafeInteger(payload.code)) || typeof payload.signal !== "boolean")) return false;
+  if (!stream) return flag("orphan");
   if (payload.ev === "exit") {
+    if (stream.exit !== null) return flag("duplicate");
     stream.exit = payload.code === 0 ? "exited" : payload.signal === true ? "killed" : "failed";
-    return true;
   }
-  return false;
+  stream.forwarded = payload.forwarded;
+  stream.dropped = payload.dropped;
+  return true;
+}
+
+// The first publish attempt of the workload as the adapter saw it. The time is when the supervisor received the
+// line, not the provider's or the network's: it is an upper bound on when the attempt finished, and `attemptMs` is
+// the duration the application itself reported for that attempt.
+function observeFirstPublish(progress, payload, afterMs, context) {
+  if (progress.firstPublish) return false;
+  if (!payload || !FIRST_KINDS.has(payload.kind) || !FIRST_VIA.has(payload.via) || !bounded(payload.ms, 600_000) ||
+    !(payload.status === null || (Number.isSafeInteger(payload.status) && payload.status >= 100 && payload.status <= 599))) return false;
+  const nowMs = context.nowMs?.() ?? Date.now();
+  const sinceW3 = Number.isFinite(context.w3EndMs) ? Math.round(nowMs - context.w3EndMs) : null;
+  progress.firstPublish = { kind: payload.kind, via: payload.via, status: payload.status, attemptMs: payload.ms,
+    observedAfterWorkloadStartMs: afterMs, observedAfterW3Ms: sinceW3 !== null && sinceW3 >= 0 ? sinceW3 : null,
+    basis: "supervisor_arrival" };
+  signal(progress, afterMs);
+  return true;
 }
 
 // Returns true when the line belongs to this ledger (valid or not); never stores the line itself.
@@ -174,11 +202,21 @@ function observeProgressLine(state, line, context = {}) {
   const progress = state.progress;
   const afterMs = Math.max(0, Math.round((context.nowMs?.() ?? Date.now()) - (context.startedMs ?? Date.now())));
   let payload;
-  try { payload = JSON.parse(match[2]); } catch { progress.rejected++; return true; }
+  try {
+    payload = JSON.parse(match[2]);
+  } catch {
+    progress.rejected++;
+    if (match[1] === "CINE026_NESTED") progress.nested.invalid.rejected++;
+    return true;
+  }
   const accepted = match[1] === "CINE026_PROGRESS" ? observeReporter(progress, payload, afterMs) :
-    match[1] === "CINE026_DB_SAMPLE" ? observeSample(progress, payload, afterMs) : observeNested(progress, payload);
+    match[1] === "CINE026_DB_SAMPLE" ? observeSample(progress, payload, afterMs) :
+      match[1] === "CINE026_PUBLISH_FIRST" ? observeFirstPublish(progress, payload, afterMs, context) : observeNested(progress, payload);
   if (accepted) progress.events++;
-  else progress.rejected++;
+  else {
+    progress.rejected++;
+    if (match[1] === "CINE026_NESTED") progress.nested.invalid.rejected++;
+  }
   if (payload?.ev === "run_end" && accepted) state.playwrightEnded = true;
   return true;
 }
@@ -194,4 +232,4 @@ function classifyProgress(progress, atAfterMs) {
   return fresh ? "BETWEEN_CASES_PROGRESSING" : "BETWEEN_CASES_STALLED";
 }
 
-module.exports = { createProgress, observeProgressLine, classifyProgress, MAX_CASES, MAX_SAMPLES };
+module.exports = { createProgress, observeProgressLine, classifyProgress, MAX_CASES, MAX_SAMPLES, MAX_STREAMS };

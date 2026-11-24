@@ -9,13 +9,18 @@ const { readWarmup, warmRealtimeTenant } = require("./realtime-warmup.cjs");
 
 const { planWorkload, superviseWorkload, CLEANUP_MS, FORCE_GRACE_MS, JOB_MS, JOB_RESERVE_MS } = require("./workload-supervision.cjs");
 const { requiredExecutionMs } = require("./execution-budget.cjs");
-const { observeProgressLine } = require("./workload-progress.cjs");
+const { createProgress, observeProgressLine } = require("./workload-progress.cjs");
+const { CANONICAL } = require("./nested-stream-lines.cjs");
 
 const candidate = path.resolve("candidate");
 const temp = process.env.RUNNER_TEMP;
 const project = "dmrbticnsczhyaiftrar";
 const sha = "00555c03d4173ac54750677207b78252e2063257";
 const dispatchModes = ["preflight", "cold-start-probe", "gate-a-only", "full"];
+// `full` is not admitted. Its declared case limits do not fit one 120 minute job, Gate C has no source-bound
+// per-browser coverage (the progress reporter gets no title list for it and the ledger holds 24 cases for 39),
+// and Gate B evidence has not been re-reviewed. Lifting this needs a separate, independently reviewed change.
+const FULL_MODE_ADMITTED = false;
 const browsers = ["chromium", "firefox", "webkit"];
 const fields = ["rooms", "participants", "votes", "events", "pending", "poison",
   "retries", "oldest_pending_ms", "advisory_locks", "advisory_waiters",
@@ -54,6 +59,8 @@ function authorize(env) {
   requireCondition(env.DISPATCH_SHA === sha && env.DISPATCH_PROJECT === project &&
     env.DISPATCH_EXCLUSIVE === "true" && dispatchModes.includes(env.DISPATCH_MODE),
   "DISPATCH_CONSENT_REFUSED");
+  // Fail-closed admission: refused before any staging step runs (this check is part of the consent step).
+  requireCondition(FULL_MODE_ADMITTED || env.DISPATCH_MODE !== "full", "FULL_MODE_NOT_ADMITTED");
 }
 
 function verifyCheckout() {
@@ -170,6 +177,8 @@ function readTransport(value) {
 
 function observeLine(state, line, context) {
   if (observeProgressLine(state, line, context)) return true;
+  // Count the canonical diagnostic lines that reach this reader so the nested tap's forwarded totals can be reconciled.
+  if (CANONICAL.test(line)) (state.progress ??= createProgress()).nested.received++;
   const match = /^(CINE026_HOSTED_FAILURE|CINE026_HOSTED_SHUTDOWN|CINE026_HOSTED_METRICS|CINE026_WORKER_RECOVERY|CINE026_TRANSPORT_DIAGNOSTICS|CINE026_TRANSPORT_PARTIAL) (.+)$/.exec(line);
   if (!match) return;
   let payload;
@@ -337,7 +346,7 @@ async function preflight(stagedEnv) {
 
 const cancellation = new AbortController();
 
-function runWorkload(args, env, budget, onCheckpoint) {
+function runWorkload(args, env, budget, onCheckpoint, w3EndMs = null) {
   const child = spawn(process.execPath, [require.resolve("./workload-supervision.cjs"), ...args], {
     cwd: candidate, env, detached: true, stdio: ["ignore", "pipe", "pipe"],
   });
@@ -352,9 +361,17 @@ function runWorkload(args, env, budget, onCheckpoint) {
     }
   }
   return superviseWorkload(child, {
-    budget, signal: cancellation.signal, observe: observeLine, onCheckpoint,
+    budget, signal: cancellation.signal, onCheckpoint,
+    observe: (state, line, context) => observeLine(state, line, { ...context, w3EndMs }),
     groupAlive: () => signalGroup(0), killGroup: signalGroup,
   });
+}
+
+// When the third warm-up request finished, from the supervisor's own clock: its start plus its measured duration.
+function warmupEndMs(warmup) {
+  const third = warmup?.requests?.[2];
+  const started = Date.parse(third?.startedAt);
+  return Number.isFinite(started) && Number.isSafeInteger(third?.ms) ? started + third.ms : null;
 }
 
 function verifiedCleanup(result) {
@@ -369,12 +386,38 @@ function hasTransportEvidence(result) {
   return result.transport?.http?.okCount > 0;
 }
 
-// Gate B only counts when the tap observed the nested processes: the tap loaded, and at least one app and one
-// worker generation were seen. Absent nested evidence is never read as zero nested failures.
-function nestedEvidence(result) {
+// Nested processes the pinned Gate B starts on its success path: two app instances at the start plus the first
+// instance after the committer kill (3), two workers at the start, two after the first restart and one after the
+// second (5), and two authority-commit children that are killed (2). drift guard
+// (nested-stream-tap.test.cjs) counts these call sites in the pinned source so a repin cannot silently change them.
+const EXPECTED_NESTED = Object.freeze({ app: 3, worker: 5, fault: 2 });
+
+// Why the nested evidence of a Gate B result is not complete, as enumerations. An empty list means every expected
+// generation was reported with its output attached (the fault committers run with ignored stdio by design), ended
+// with a terminal record, was not an unexpected crash, and every forwarded line was received. Intentional kills
+// (restart, cleanup) are fine; absent, partial, duplicated, malformed or overflowing records are not. Nothing is
+// inferred from spawn alone or from silence.
+function nestedProblems(result) {
   const nested = result.progress?.nested;
-  return nested?.tapReady === true && nested.generations.app >= 1 && nested.generations.worker >= 1 &&
-    nested.streams.length > 0;
+  if (!nested || nested.tapReady !== true) return ["tap_not_loaded"];
+  const problems = new Set();
+  if (Object.values(nested.invalid).some(count => count > 0)) problems.add("invalid_events");
+  for (const [kind, expected] of Object.entries(EXPECTED_NESTED)) {
+    const streams = nested.streams.filter(stream => stream.kind === kind).sort((x, y) => x.n - y.n);
+    if (streams.length !== expected || streams.some((stream, index) => stream.n !== index + 1)) problems.add(kind + "_generations");
+    for (const stream of streams) {
+      if (kind !== "fault" && stream.piped !== true) problems.add(kind + "_not_attached");
+      if (stream.exit === null) problems.add(kind + "_no_terminal_record");
+      else if (stream.exit === "failed") problems.add(kind + "_crashed");
+    }
+  }
+  const forwarded = nested.streams.reduce((sum, stream) => sum + stream.forwarded, 0);
+  if (nested.received < forwarded) problems.add("forwarded_lines_lost");
+  return [...problems];
+}
+
+function nestedEvidence(result) {
+  return nestedProblems(result).length === 0;
 }
 
 function stableWorkload(result) {
@@ -391,7 +434,7 @@ const preflightCodes = new Set([
   "PR_CANDIDATE_MISMATCH", "STAGING_CONFIGURATION_MISSING", "SESSION_POOL_BUDGET_UNCONFIRMED",
   "STAGING_ISOLATION_FAILED", "SERVER_SESSION_BUDGET_INSUFFICIENT", "STAGING_HTTPS_HEALTH_FAILED",
   "STAGING_PG_CONNECTION_FAILED", "CANDIDATE_SUPERVISOR_UNSUPPORTED", "LEASE_BUSY", "WARMUP_CONFIGURATION_INVALID", "WARMUP_NOT_READY",
-  "WARMUP_CLEANUP_UNCONFIRMED", "WORKFLOW_BUDGET_EXHAUSTED", "WORKLOAD_INTERRUPTED",
+  "WARMUP_CLEANUP_UNCONFIRMED", "WORKFLOW_BUDGET_EXHAUSTED", "WORKLOAD_INTERRUPTED", "FULL_MODE_NOT_ADMITTED",
 ]);
 function summarize(evidence) {
   return ["## CINE-026/063 staging qualification", "",
@@ -403,6 +446,8 @@ function summarize(evidence) {
       (w.executionTimedOut ? "; execution timeout" + (w.budgetBinding ? " (budget clipped by the job ceiling)" : "") : "") +
       (w.teardownStalled ? "; Playwright teardown stalled after run end" : "") +
       (w.progressAtStop ? "; progress at stop " + w.progressAtStop : "") +
+      (w.progress?.firstPublish ? "; first publish attempt observed " + (w.progress.firstPublish.observedAfterW3Ms ?? "n/a") +
+        " ms after W3 (via " + w.progress.firstPublish.via + ", attempt " + w.progress.firstPublish.attemptMs + " ms)" : "") +
       (w.progress ? "; cases ended " + w.progress.cases.filter(item => item.endedAfterMs !== null).length + "/" + w.progress.cases.length +
         "; peak pending " + w.progress.peaks.continuousPendingMs + " ms continuous, db round trip " + w.progress.peaks.rttMs + " ms" : "") + "."),
     ...(evidence.warmup ? ["Realtime warm-up (qualification-only): " + evidence.warmup.status + "; " +
@@ -616,12 +661,13 @@ async function qualify(directory) {
         }
         checkpoint({});
         const result = await runWorkload(args, { ...env, PLAYWRIGHT_JSON_OUTPUT_FILE: file,
-          CINE026_PROGRESS_TITLES: JSON.stringify(targets ?? []) }, budget, checkpoint);
+          CINE026_PROGRESS_TITLES: JSON.stringify(targets ?? []) }, budget, checkpoint, warmupEndMs(evidence.warmup));
         const report = gate === "B" ? null : readBrowserReport(parseReport(file), browser ? { [browser]: targets } : fullMatrix);
         evidence.workload.push({ ...workload, ...result,
           missingEvidence: [!result.terminalMilestone && "terminal_milestone", !result.metrics && "terminal_metrics",
             !result.transport && "terminal_transport", result.transport && !hasTransportEvidence(result) && "observed_transport",
             gate === "B" && !nestedEvidence(result) && "nested_streams"].filter(Boolean),
+          ...(gate === "B" ? { nestedProblems: nestedProblems(result) } : {}),
           ...(report ? { report } : {}) });
         delete evidence.activeWorkload;
         fs.rmSync(file, { force: true });
@@ -697,4 +743,4 @@ if (require.main === module) main().catch(error => {
   process.stderr.write((safe ? message : "QUALIFICATION_HARNESS_FAILED") + "\n");
   process.exitCode = 1;
 });
-module.exports = { nestedEvidence, checkGateAEnvelope, gateAPlan, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
+module.exports = { EXPECTED_NESTED, nestedProblems, warmupEndMs, nestedEvidence, checkGateAEnvelope, gateAPlan, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };

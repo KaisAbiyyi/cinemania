@@ -3,56 +3,55 @@
 
 // Preload for the Gate B (worker restart) process of the pinned candidate (CINE-026/063).
 //
-// The candidate's two-instance qualification starts nested Next.js and worker processes and keeps only the
-// last few kilobytes of their output in memory, printing it when the run fails. The workflow therefore cannot
-// tell zero transport failures from missing evidence. This preload (`--require`, injected by the adapter, the
-// candidate is not modified) wraps child_process.spawn in the Gate B process and, for every nested process:
-//   * counts generations per kind (app, worker, fault, other) so a restart is visible as generation 2,
-//   * forwards ONLY lines that carry the candidate's own transport/database diagnostic tags to this process's
-//     stdout, where the adapter's existing diagnostics parser and counters read them. The parser keeps counts
-//     and allowlisted fields; raw lines are never stored or published,
-//   * reports per-generation forwarded/dropped line counts and how the process ended.
-// Output of untagged lines is counted and dropped, never forwarded. The tap does not alter streams, exit codes
-// or arguments, and an error inside it can never fail the process it observes.
+// The candidate's two-instance qualification starts nested Next.js, worker and authority-commit processes and keeps
+// only the last few kilobytes of their output in memory, printing it when the run fails. The workflow therefore
+// cannot tell zero transport failures from missing evidence. This preload (`--require`, injected by the adapter;
+// the candidate is not modified) wraps child_process.spawn in the Gate B process and, for every nested app, worker
+// and fault process:
+//   * numbers its generation per kind (a restart is generation 2, 3, ...) and reports whether its output streams
+//     are attached (`piped`), how many diagnostic lines were forwarded and dropped, and how it ended,
+//   * forwards ONLY canonical diagnostic lines that this file rebuilds itself from allowlisted fields (see
+//     sanitizeLine). The raw line is never forwarded: free text, hosts, identifiers and any extra field are dropped
+//     at the source. The adapter's existing diagnostics parser reads the canonical lines and keeps counts only.
+// Other children (for example the browser that Playwright launches) are neither attached to nor reported.
+// The tap does not alter streams, exit codes or arguments, and an error inside it can never fail the process it observes.
 
 const childProcess = require("node:child_process");
 const { createInterface } = require("node:readline");
+const { kindOf, sanitizeLine } = require("./nested-stream-lines.cjs");
 
-const FORWARD = /^(?:\[CINEMATCH_(?:REALTIME|DB)_[A-Z_]+\]|.*"category":"outbox_lock_timeout"|.*uncaughtException:.*ECONNRESET)/;
-const counters = { app: 0, worker: 0, fault: 0, other: 0 };
-
+const counters = { app: 0, worker: 0, fault: 0 };
 function emit(payload) {
   try { process.stdout.write("CINE026_NESTED " + JSON.stringify(payload) + "\n"); } catch { /* observation only */ }
 }
 
-function kindOf(command, args) {
-  const text = [command, ...(Array.isArray(args) ? args : [])].map(String).join(" ");
-  if (/\bnext\b.*\bdev\b|\bnext(?:\.js)?\b.* start\b/.test(text) || /dist[\\/]bin[\\/]next\b/.test(text)) return "app";
-  if (text.includes("scripts/realtime-worker.ts")) return "worker";
-  if (/fault/i.test(text)) return "fault";
-  return "other";
-}
-
 function attach(child, command, args) {
-  if (!child?.stdout || !child.stderr) return;
   const kind = kindOf(command, args);
+  if (kind === "other") return;
   const n = ++counters[kind];
+  const piped = Boolean(child?.stdout && child?.stderr);
   const tally = { forwarded: 0, dropped: 0 };
-  emit({ ev: "spawn", kind, n });
-  for (const stream of [child.stdout, child.stderr]) {
-    createInterface({ input: stream }).on("line", line => {
-      if (FORWARD.test(line)) {
+  emit({ ev: "spawn", kind, n, piped });
+  if (piped) {
+    for (const stream of [child.stdout, child.stderr]) {
+      createInterface({ input: stream }).on("line", line => {
+        const clean = sanitizeLine(line);
+        if (clean === null) {
+          tally.dropped++;
+          return;
+        }
         tally.forwarded++;
-        try { process.stdout.write(line + "\n"); } catch { /* observation only */ }
-      } else {
-        tally.dropped++;
-      }
-    });
+        try { process.stdout.write(clean + "\n"); } catch { /* observation only */ }
+      });
+    }
   }
-  child.once("close", (code, signal) => {
-    emit({ ev: "lines", kind, n, forwarded: tally.forwarded, dropped: tally.dropped });
-    emit({ ev: "exit", kind, n, code: Number.isInteger(code) ? code : null, signal: signal != null });
+  // `exit` is terminal evidence: it carries the tally at that instant. `close` can lag when a descendant keeps a pipe
+  // open after its parent was killed; if it does arrive, it only refines the tally.
+  child.once("exit", (code, signal) => {
+    emit({ ev: "exit", kind, n, code: Number.isInteger(code) ? code : null, signal: signal != null,
+      forwarded: tally.forwarded, dropped: tally.dropped });
   });
+  child.once("close", () => emit({ ev: "lines", kind, n, forwarded: tally.forwarded, dropped: tally.dropped }));
 }
 
 if (!childProcess.spawn.__cine026Tap) {
@@ -71,4 +70,3 @@ if (!childProcess.spawn.__cine026Tap) {
   emit({ ev: "tap_ready" });
 }
 
-module.exports = { kindOf, FORWARD };

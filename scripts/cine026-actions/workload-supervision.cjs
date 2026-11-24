@@ -239,6 +239,21 @@ async function runSupervisor({
   function phase(name) {
     emit("CINE026_SUPERVISOR_PHASE " + name);
   }
+  // Reports the first publish attempt of the workload exactly once, as enumerations and bounded integers. The
+  // outer supervisor timestamps its arrival; nothing from the line is copied beyond these fields.
+  let firstSeen = false;
+  function firstPublish(line, kind) {
+    if (firstSeen || !line.includes("[CINEMATCH_REALTIME_ATTEMPT] ")) return;
+    const match = /\[CINEMATCH_REALTIME_ATTEMPT\] (\{.*\})/.exec(line);
+    let record;
+    try { record = match ? JSON.parse(match[1]) : null; } catch { return; }
+    if (!record || typeof record.r !== "string" || !/^[0-9a-f]{8}$/.test(record.r) || !Number.isSafeInteger(record.ms) || record.ms < 0) return;
+    const http = record.kind === "http" && Number.isSafeInteger(record.status) && record.status >= 100 && record.status <= 599;
+    if (!http && record.kind !== "transport") return;
+    firstSeen = true;
+    emit("CINE026_PUBLISH_FIRST " + JSON.stringify({ kind: record.kind, via: kind === "worker_start" ? "worker" : "workload",
+      status: http ? record.status : null, ms: record.ms }));
+  }
   function teardown() {
     if (tearingDown) return;
     tearingDown = true;
@@ -276,6 +291,7 @@ async function runSupervisor({
         const child = start(childArgs, childEnv, line => {
           observe(line);
           diagnostics.observe(line);
+          firstPublish(line, kind);
           const attemptFailed = line.includes("[CINEMATCH_REALTIME_ATTEMPT]") && line.includes('"kind":"transport"');
           if (attemptFailed || (line.includes("[CINEMATCH_REALTIME_") && now() - lastSnapshot >= 5_000)) snapshot();
           // The outer runner rebuilds the worker proof from its allowlist.

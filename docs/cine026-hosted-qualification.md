@@ -56,6 +56,8 @@ Verdict codes: `COLD_START_REPRODUCED` (P1 above 1500 ms, sequential warm probes
 
 ## Realtime warm-up and the two evidence classes (`gate-a-only` and `full`)
 
+> `full` is currently refused by the consent step before any staging step (`FULL_MODE_NOT_ADMITTED`); see the last section. Statements below about `full` describe the verdict logic that remains in code, not an admitted mode.
+
 The cold-start probe (above, run 45274114936) showed that the first private broadcast after the Supabase Realtime tenant has shut down took 2632 ms (2481 ms at the provider, with a 1335 ms `CheckConnection`), while later broadcasts to the same or other rooms took 377 to 428 ms. The application publisher's 1500 ms deadline is therefore shorter than a tenant start. Hosted gates are split into two evidence classes so that neither can be mistaken for the other.
 
 ### Warm-path acceptance (this workflow)
@@ -135,7 +137,7 @@ Anggaran baru dihitung, bukan sekadar dinaikkan: `startup + jumlah batas kasus t
 
 Anggaran tetap terbatas dan dipotong oleh ceiling job 120 menit lewat `planWorkload`. Pemotongan dicatat sebagai `budgetBinding` pada workload, sehingga timeout karena ceiling dapat dibedakan dari child yang macet. Sebelum staging disentuh, runner menolak Gate A jika jumlah ketiga anggaran, cleanup dan grace tidak muat dalam sisa job (`WORKFLOW_BUDGET_EXHAUSTED`). Worst case Gate A: 2175 detik eksekusi + 738 detik cleanup dan grace. Timeout per kasus tetap ditegakkan oleh Playwright. Tidak ada assertion, timeout kasus, atau ambang transport yang berubah.
 
-**Keterbatasan yang tetap terbuka untuk `full` (perlu keputusan owner dan review terpisah, tidak diubah di sini):** batas deklarasi tiga browser x 13 kasus berjumlah 2820 detik per browser, sekitar 146 menit dengan startup, lebih dari ceiling 120 menit. Anggaran nominal Gate B 19 menit dan Gate C 55 menit tidak dihitung ulang di PR ini. Gate C kemungkinan tidak muat dalam satu job pada laju yang teramati (perkiraan, belum diukur: exhaustion saja sekitar 7 menit per browser). Opsi yang perlu diputuskan terpisah: memecah `full` per browser, atau menaikkan ceiling job dengan alasan yang direview. Test `the full matrix cannot be guaranteed inside one 120 minute job` menjaga klaim ini.
+**Keterbatasan `full` (kini diblokir fail-closed sebelum staging, lihat bagian mode `full`; mengangkatnya perlu keputusan owner dan review terpisah):** batas deklarasi tiga browser x 13 kasus berjumlah 2820 detik per browser, sekitar 146 menit dengan startup, lebih dari ceiling 120 menit. Anggaran nominal Gate B 19 menit dan Gate C 55 menit tidak dihitung ulang di PR ini. Gate C kemungkinan tidak muat dalam satu job pada laju yang teramati (perkiraan, belum diukur: exhaustion saja sekitar 7 menit per browser). Opsi yang perlu diputuskan terpisah: memecah `full` per browser, atau menaikkan ceiling job dengan alasan yang direview. Test `the full matrix cannot be guaranteed inside one 120 minute job` menjaga klaim ini.
 
 ### Progres terstruktur per kasus
 
@@ -149,7 +151,33 @@ Jika Playwright sudah melaporkan `run_end` tetapi supervisor kandidat tidak masu
 
 ### Celah diagnostik proses turunan Gate B
 
-`two-instance-qualification.cjs` kandidat menyimpan hanya ekor kecil output proses Next dan worker turunan dan mencetaknya saat gagal, sehingga nol kegagalan transport tidak dapat dibedakan dari bukti yang hilang. `nested-stream-tap.cjs` dimuat dengan `--require` hanya pada proses Gate B, membungkus `child_process.spawn`, dan untuk setiap generasi proses turunan (app, worker, fault, other) mencatat spawn, jumlah baris yang diteruskan dan dibuang, serta cara berakhir (`exited`, `killed`, `failed`). Hanya baris bertag diagnostik kandidat (`[CINEMATCH_REALTIME_*]`, `[CINEMATCH_DB_*]`, `outbox_lock_timeout`, `uncaughtException ... ECONNRESET`) diteruskan ke parser yang sudah ada. Baris lain dibuang dan tidak pernah disimpan atau dipublikasikan. Preload dilepas dari `NODE_OPTIONS` proses turunan. Gate B kini hanya dapat PASS jika tap termuat dan minimal satu generasi app serta satu generasi worker teramati; bukti turunan yang hilang tidak pernah dibaca sebagai nol kegagalan. Restart worker terlihat sebagai generasi 2. Kandidat tidak diubah. Jika review menghendaki perubahan pada harness kandidat, delta dan repin dipisah dan direview eksak.
+`two-instance-qualification.cjs` kandidat menyimpan hanya ekor kecil output proses Next, worker dan committer turunan dan mencetaknya saat gagal, sehingga nol kegagalan transport tidak dapat dibedakan dari bukti yang hilang. `nested-stream-tap.cjs` dimuat dengan `--require` hanya pada proses Gate B, membungkus `child_process.spawn`, dan untuk setiap proses turunan app, worker dan fault mencatat nomor generasi, apakah stream output terpasang (`piped`), jumlah baris yang diteruskan dan dibuang, serta cara berakhir. Proses lain (misalnya browser yang diluncurkan Playwright) tidak dipasangi dan tidak dilaporkan. Preload dilepas dari `NODE_OPTIONS` proses turunan.
+
+**Sanitasi di sumber.** Baris mentah tidak pernah diteruskan. `nested-stream-lines.cjs` membangun ulang baris kanonik dari field yang diizinkan (`r` delapan heksadesimal, `v`, `ms`, `kind`, `status`, `category`, `code`, `phase`, `startedAt`, `attempt`, `outcome`, dengan pola nilai ketat) atau mengembalikan null. Teks bebas, host, identifier, dan field tambahan dibuang sebelum baris meninggalkan proses turunan (test memakai kanari rahasia pada setiap tag). Parser diagnostik kandidat dan counter supervisor tetap membaca baris kanonik yang sama, sehingga hitungan `providerTransport`, `providerStatus`, `capacity`, `lockTimeout` dan reset ikut mencakup proses turunan. Batasnya: sanitasi ini menjamin isi baris yang diteruskan, bukan bahwa proses turunan tidak menulis hal lain ke pipenya sendiri (itu tetap di dalam proses Gate B dan tidak dipublikasikan).
+
+**Kelengkapan.** Gate B hanya dapat PASS jika `nestedProblems` kosong. Rencana generasi adalah tepat, bukan minimum, dan diturunkan dari titik panggilan pada jalur sukses sumber yang dipin: 3 app (dua instance awal dan instance pertama setelah committer dibunuh), 5 worker (dua awal, dua setelah restart pertama, satu setelah restart kedua), dan 2 committer fault. Test menghitung titik panggilan itu pada sumber yang dipin sehingga repin yang mengubahnya gagal. Setiap generasi harus:
+
+- punya catatan spawn berurutan tanpa lompatan nomor, dan stream app dan worker terpasang (committer fault berjalan dengan stdio diabaikan oleh desain dan tidak diwajibkan);
+- punya catatan terminal `exit`. Spawn tanpa exit, atau diam, tidak pernah dianggap bersih;
+- tidak berakhir dengan crash tak terduga (kode non-nol tanpa sinyal). Pembunuhan yang disengaja (restart, cleanup) sah;
+- tidak perlu menghasilkan lalu lintas HTTP, karena generasi yang sengaja idle tetap sah.
+
+Catatan duplikat, tidak berurutan, tanpa spawn (orphan), malformed, atau melebihi tabel (16 stream) dihitung sebagai `invalid` dan menolak Gate B. Terakhir, jumlah baris kanonik yang diterima supervisor harus sama atau lebih besar daripada jumlah yang dilaporkan diteruskan oleh seluruh stream; selisih berarti baris hilang di jalan. `exit` membawa tally pada saat itu karena `close` dapat tertunda jika turunan memegang pipe. Evidence Gate B memuat `nestedProblems` sebagai daftar enumerasi.
+
+### Mode `full` tidak diadmisi
+
+`authorize` menolak `DISPATCH_MODE=full` dengan `FULL_MODE_NOT_ADMITTED` setelah konsen lain valid. Langkah ini berjalan di job `verify` (tanpa kredensial dan environment staging) dan job staging bergantung padanya, sehingga penolakan terjadi sebelum langkah staging mana pun (test statis menjaga urutan itu). Konstanta `FULL_MODE_ADMITTED` bernilai false. Alasan: batas deklarasi `full` melampaui ceiling job 120 menit; Gate C tidak punya cakupan terikat sumber per browser (reporter tidak menerima daftar judul untuk `full` sehingga kasus berindeks -1 dan ledger memuat 24 kasus untuk 39); dan bukti Gate B belum direview ulang. Mengangkat penolakan memerlukan perubahan terpisah yang direview independen: misalnya sesi terpisah per browser dengan identitas browser dan kasus terikat sumber serta cleanup dan lease per sesi.
+
+### Timing publikasi aplikasi pertama setelah W3
+
+Adapter mengamati baris `[CINEMATCH_REALTIME_ATTEMPT]` pertama dari child workload mana pun dan memancarkan `CINE026_PUBLISH_FIRST` satu kali, hanya berisi enumerasi dan integer terbatas: `kind` (`http` atau `transport`), `via` (`worker` jika baris datang dari worker, `workload` jika dari proses Playwright dan server aplikasinya), `status`, dan `ms` durasi percobaan yang dilaporkan aplikasi sendiri. Supervisor luar mencap waktu kedatangannya dengan jam sendiri dan mencatat `observedAfterWorkloadStartMs` serta `observedAfterW3Ms` (dari akhir permintaan W3: `startedAt + ms` pada evidence warm-up). Label `basis: "supervisor_arrival"` berarti ini waktu observasi lokal. Ini batas atas waktu percobaan itu selesai, bukan waktu jaringan atau provider; durasi percobaan datang dari `attemptMs`. Jika W3 tidak diketahui atau nilai negatif, `observedAfterW3Ms` bernilai null, bukan angka palsu. Percobaan pertama bisa berasal dari worker, bukan jalur cepat aplikasi; `via` menunjukkan mana yang teramati. Ini tidak membuktikan publikasi pertama kasus mana pun, hanya yang pertama yang terlihat pada workload itu.
+
+### Batas atribusi dan asumsi kebijakan
+
+- Selisih jumlah votes adalah agregat seluruh staging yang teramati oleh monitor, bukan bukti penyelesaian putaran per room; selama satu room aktif per waktu, ia sekadar konsisten dengan progres putaran.
+- `continuousPendingMs` adalah kehadiran baris pending yang terambil sampel setiap 3 detik. Ia dapat menggabungkan event berbeda dan bukan latensi satu event.
+- Ambang diam 150 detik dan batas 120 detik setelah `run_end` adalah asumsi kebijakan saya (tunggu diam terpanjang yang dideklarasikan 100 detik ditambah 50%, dan jeda teardown), bukan ambang yang diukur. Timeout tetap HOLD; klasifikasi hanya atribusi dan dibedakan dari timeout yang sebenarnya.
+- Progres yang dibawa reporter adalah penghitung dan durasi, bukan bukti penyelesaian putaran individual.
 
 ### Investigasi 64 lock timeout dan pending 10,28 detik (hipotesis, bukan kesimpulan)
 

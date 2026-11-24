@@ -21,7 +21,7 @@ on:
         default: false
         type: boolean
       mode:
-        description: Read-only preflight, cold-start probe, or hosted gates (Gate A only or all; both start with a bounded qualification-only Realtime warm-up)
+        description: Read-only preflight, cold-start probe, or hosted Gate A only (starts with a bounded qualification-only Realtime warm-up). The full mode is refused before any staging step until a separately reviewed change admits it
         required: true
         default: preflight
         type: choice

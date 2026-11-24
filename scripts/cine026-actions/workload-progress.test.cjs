@@ -5,9 +5,9 @@ const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const { PassThrough } = require("node:stream");
 const { test } = require("node:test");
-const { createProgress, observeProgressLine, classifyProgress, MAX_SAMPLES } = require("./workload-progress.cjs");
+const { createProgress, observeProgressLine, classifyProgress, MAX_SAMPLES, MAX_STREAMS } = require("./workload-progress.cjs");
 const { superviseWorkload, runSupervisor, observeSamples, NESTED_TAP } = require("./workload-supervision.cjs");
-const { observeLine, nestedEvidence, stableWorkload } = require("./qualification.cjs");
+const { observeLine, nestedEvidence, nestedProblems, warmupEndMs, stableWorkload, EXPECTED_NESTED } = require("./qualification.cjs");
 const { STALL_MS, RUN_END_GRACE_MS } = require("./execution-budget.cjs");
 
 const steps = (extra = {}) => ({ api: 0, expect: 0, step: 0, hook: 2, fixture: 0, other: 0, ...extra });
@@ -301,37 +301,209 @@ test("only the Gate B process receives the nested-stream tap and the tap is appe
 
 // --- Gate B evidence ------------------------------------------------------------------------------------
 
-function nestedResult(lines) {
+const lifecycle = {
+  spawn: (kind, n, piped = kind !== "fault") => nestedLine({ ev: "spawn", kind, n, piped }),
+  exit: (kind, n, { code = null, signal = true, forwarded = 0, dropped = 0 } = {}) => nestedLine({ ev: "exit", kind, n, code, signal, forwarded, dropped }),
+  lines: (kind, n, forwarded, dropped) => nestedLine({ ev: "lines", kind, n, forwarded, dropped }),
+};
+
+// Every generation the pinned Gate B starts on its success path, ended by an intentional kill.
+function completeGateB({ without = () => false, forwardedBy = () => 0 } = {}) {
+  const lines = [nestedLine({ ev: "tap_ready" })];
+  for (const [kind, expected] of Object.entries(EXPECTED_NESTED)) {
+    for (let n = 1; n <= expected; n++) {
+      if (without(kind, n, "spawn")) continue;
+      lines.push(lifecycle.spawn(kind, n));
+      if (!without(kind, n, "exit")) lines.push(lifecycle.exit(kind, n, { forwarded: forwardedBy(kind, n), dropped: 4 }));
+    }
+  }
+  return lines;
+}
+
+function gateB(lines, received = 0) {
   const ledger = feed(lines);
+  if (ledger.state.progress) ledger.state.progress.nested.received += received;
   return { progress: ledger.state.progress };
 }
 
-test("Gate B counts only with observed nested app and worker generations; absence is never zero failures", () => {
-  assert.equal(nestedEvidence({}), false);
-  assert.equal(nestedEvidence(nestedResult([])), false);
-  assert.equal(nestedEvidence(nestedResult([nestedLine({ ev: "spawn", kind: "app", n: 1 }), nestedLine({ ev: "spawn", kind: "worker", n: 1 })])), false, "tap never loaded");
-  assert.equal(nestedEvidence(nestedResult([nestedLine({ ev: "tap_ready" }), nestedLine({ ev: "spawn", kind: "app", n: 1 })])), false, "no worker seen");
-  assert.equal(nestedEvidence(nestedResult([nestedLine({ ev: "tap_ready" }), nestedLine({ ev: "spawn", kind: "worker", n: 1 })])), false, "no app seen");
-  const restarted = nestedResult([
-    nestedLine({ ev: "tap_ready" }),
-    nestedLine({ ev: "spawn", kind: "app", n: 1 }), nestedLine({ ev: "spawn", kind: "app", n: 2 }),
-    nestedLine({ ev: "spawn", kind: "worker", n: 1 }), nestedLine({ ev: "lines", kind: "worker", n: 1, forwarded: 12, dropped: 300 }),
-    nestedLine({ ev: "exit", kind: "worker", n: 1, code: null, signal: true }),
-    nestedLine({ ev: "spawn", kind: "worker", n: 2 }),
-  ]);
-  assert.equal(nestedEvidence(restarted), true);
-  assert.deepEqual(restarted.progress.nested.generations, { app: 2, worker: 2, fault: 0, other: 0 });
-  const worker1 = restarted.progress.nested.streams.find(item => item.kind === "worker" && item.n === 1);
-  assert.deepEqual([worker1.forwarded, worker1.dropped, worker1.exit], [12, 300, "killed"]);
+test("a complete Gate B lifecycle is accepted, including intentionally killed children and restarts", () => {
+  const result = gateB(completeGateB({ forwardedBy: (kind, n) => (kind === "worker" && n === 1 ? 6 : 0) }), 6);
+  assert.deepEqual(nestedProblems(result), []);
+  assert.equal(nestedEvidence(result), true);
+  assert.deepEqual(result.progress.nested.generations, EXPECTED_NESTED);
+  // a restarted worker is its own generation and nothing here needed HTTP traffic from every idle generation
+  assert.equal(result.progress.nested.streams.find(item => item.kind === "worker" && item.n === 5).forwarded, 0);
+  // a child that ended by itself with code 0 is also terminal
+  const clean = gateB(completeGateB().map(line => line.includes('"kind":"app","n":3,"code"') ? lifecycle.exit("app", 3, { code: 0, signal: false }) : line));
+  assert.deepEqual(nestedProblems(clean), []);
 });
 
-test("malformed nested lines are rejected and the stream table stays bounded", () => {
-  const ledger = feed([nestedLine({ ev: "tap_ready" }), nestedLine({ ev: "spawn", kind: "app", n: 1 })]);
-  for (const bad of [{ ev: "spawn", kind: "evil", n: 1 }, { ev: "spawn", kind: "app", n: 0 }, { ev: "lines", kind: "app", n: 1, forwarded: -1, dropped: 0 },
-    { ev: "exit", kind: "app", n: 99 }, { ev: 7 }]) ledger.send(nestedLine(bad));
-  assert.equal(ledger.state.progress.rejected, 5);
-  for (let n = 1; n <= 40; n++) ledger.send(nestedLine({ ev: "spawn", kind: "other", n: Math.min(n, 64) }));
-  assert.ok(ledger.state.progress.nested.streams.length <= 16);
+test("Gate B rejects absent nested evidence instead of reading it as zero failures", () => {
+  assert.deepEqual(nestedProblems({}), ["tap_not_loaded"]);
+  assert.deepEqual(nestedProblems(gateB([])), ["tap_not_loaded"]);
+  assert.deepEqual(nestedProblems(gateB(completeGateB().slice(1))), ["tap_not_loaded"], "the tap never reported ready");
+  for (const result of [{}, gateB([])]) assert.equal(nestedEvidence(result), false);
+});
+
+test("Gate B rejects spawn-only evidence: every generation needs a terminal record", () => {
+  const spawnOnly = completeGateB({ without: (_kind, _n, part) => part === "exit" });
+  const problems = nestedProblems(gateB(spawnOnly));
+  assert.deepEqual(problems.sort(), ["app_no_terminal_record", "fault_no_terminal_record", "worker_no_terminal_record"]);
+  // one stream with a terminal record does not vouch for the others
+  const one = completeGateB({ without: (kind, n, part) => part === "exit" && !(kind === "worker" && n === 1) });
+  assert.ok(nestedProblems(gateB(one)).includes("worker_no_terminal_record"));
+});
+
+test("Gate B rejects a run where one stream is successful and another generation is missing", () => {
+  // the failed-worker generation (the restart) never reported at all
+  const missingRestart = gateB(completeGateB({ without: (kind, n) => kind === "worker" && n === 5 }));
+  assert.deepEqual(nestedProblems(missingRestart), ["worker_generations"]);
+  // only one app instance reported although the pinned Gate B starts three
+  const oneApp = gateB(completeGateB({ without: (kind, n) => kind === "app" && n > 1 }));
+  assert.deepEqual(nestedProblems(oneApp), ["app_generations"]);
+  // a missing fault committer is as incomplete as a missing worker
+  assert.deepEqual(nestedProblems(gateB(completeGateB({ without: kind => kind === "fault" }))), ["fault_generations"]);
+  // surplus generations are also refused: the plan is exact, not a minimum
+  const extra = completeGateB().concat([lifecycle.spawn("worker", 6), lifecycle.exit("worker", 6)]);
+  assert.ok(nestedProblems(gateB(extra)).includes("worker_generations"));
+});
+
+test("Gate B rejects a child whose output was never attached, but not a fault committer that has none by design", () => {
+  const unpiped = completeGateB().map(line => line.includes('"kind":"app","n":2,"piped"') ? lifecycle.spawn("app", 2, false) : line);
+  assert.deepEqual(nestedProblems(gateB(unpiped)), ["app_not_attached"]);
+  const worker = completeGateB().map(line => line.includes('"kind":"worker","n":3,"piped"') ? lifecycle.spawn("worker", 3, false) : line);
+  assert.deepEqual(nestedProblems(gateB(worker)), ["worker_not_attached"]);
+  assert.deepEqual(nestedProblems(gateB(completeGateB())), [], "fault children are unpiped in the pinned source");
+});
+
+test("Gate B rejects an unexpected crash but accepts an intentional kill", () => {
+  const crash = completeGateB().map(line => line.includes('"kind":"worker","n":2,"code"') ? lifecycle.exit("worker", 2, { code: 1, signal: false }) : line);
+  assert.deepEqual(nestedProblems(gateB(crash)), ["worker_crashed"]);
+  assert.deepEqual(nestedProblems(gateB(completeGateB())), []);
+});
+
+test("Gate B rejects invalid, duplicate, out-of-order, orphaned and overflowing records", () => {
+  const base = completeGateB();
+  const cases = {
+    duplicateSpawn: base.concat(lifecycle.spawn("app", 2)),
+    duplicateExit: base.concat(lifecycle.exit("worker", 1)),
+    duplicateTap: base.concat(nestedLine({ ev: "tap_ready" })),
+    outOfOrder: base.concat(lifecycle.spawn("worker", 9)),
+    orphanExit: base.concat(lifecycle.exit("worker", 12)),
+    orphanLines: base.concat(lifecycle.lines("app", 20, 1, 1)),
+    malformed: base.concat(nestedLine({ ev: "spawn", kind: "evil", n: 1, piped: true })),
+    malformedExit: base.concat(nestedLine({ ev: "exit", kind: "app", n: 1, code: "x", signal: true, forwarded: 0, dropped: 0 })),
+    notJson: base.concat("CINE026_NESTED {nope"),
+    missingPiped: base.concat(nestedLine({ ev: "spawn", kind: "fault", n: 3 })),
+  };
+  for (const [name, lines] of Object.entries(cases)) {
+    const problems = nestedProblems(gateB(lines));
+    assert.ok(problems.includes("invalid_events"), name + " " + JSON.stringify(problems));
+  }
+  // overflow: more generations than the table can hold is invalid, never silently truncated
+  const flood = [nestedLine({ ev: "tap_ready" })];
+  for (let n = 1; n <= 20; n++) flood.push(lifecycle.spawn("worker", n), lifecycle.exit("worker", n));
+  const overflow = gateB(flood);
+  assert.ok(overflow.progress.nested.invalid.overflow > 0);
+  assert.ok(nestedProblems(overflow).includes("invalid_events"));
+  assert.ok(overflow.progress.nested.streams.length <= MAX_STREAMS);
+});
+
+test("forwarded lines are reconciled against what the supervisor actually received", () => {
+  const lines = completeGateB({ forwardedBy: (kind, n) => (kind === "worker" ? n : 0) }); // 1+2+3+4+5 = 15 forwarded
+  assert.ok(nestedProblems(gateB(lines, 14)).includes("forwarded_lines_lost"));
+  assert.deepEqual(nestedProblems(gateB(lines, 15)), []);
+  assert.deepEqual(nestedProblems(gateB(lines, 40)), [], "the candidate's own lines may add to the received total");
+  // the shared observer counts canonical lines as they arrive
+  const state = {};
+  for (const line of ['[CINEMATCH_REALTIME_ATTEMPT] {"r":"abcdef01","v":1,"ms":5,"kind":"http","status":202}', "[CINEMATCH_DB_CAPACITY]",
+    "[CINEMATCH_REALTIME_ATTEMPT_FAILURE] transport", "an ordinary line"]) observeLine(state, line, { startedMs: 0, nowMs: () => 1 });
+  assert.equal(state.progress.nested.received, 3);
+});
+
+test("a successful HTTP attempt elsewhere cannot make incomplete nested evidence stable", () => {
+  const worker = { gate: "B" };
+  const result = { exitCode: 0, worker: { versions: [6, 7] }, transport: { http: { count: 8, okCount: 8, nonOkCount: 0 }, failures: [], omittedFailures: 0 },
+    progress: gateB(completeGateB({ without: (kind, n) => kind === "worker" && n === 5 })).progress, ...worker };
+  assert.equal(nestedEvidence(result), false);
+  assert.equal(stableWorkload({ ...result, terminalMilestone: true }), false);
+});
+
+// --- first application publish ----------------------------------------------------------------------------
+
+const firstLine = (payload = {}) => "CINE026_PUBLISH_FIRST " + JSON.stringify({ kind: "http", via: "workload", status: 202, ms: 412, ...payload });
+
+test("the first publish attempt is timed from W3 by the supervisor's own clock and labelled as such", () => {
+  const w3EndMs = 1_000_000;
+  const state = {};
+  const at = nowMs => observeProgressLine(state, firstLine(), { startedMs: 1_030_000, nowMs: () => nowMs, w3EndMs });
+  at(1_062_400);
+  assert.deepEqual(state.progress.firstPublish, { kind: "http", via: "workload", status: 202, attemptMs: 412,
+    observedAfterWorkloadStartMs: 32_400, observedAfterW3Ms: 62_400, basis: "supervisor_arrival" });
+  // only the first attempt counts; a later line is rejected, not allowed to move the timing
+  at(1_090_000);
+  assert.equal(state.progress.firstPublish.observedAfterW3Ms, 62_400);
+  assert.equal(state.progress.rejected, 1);
+});
+
+test("first publish timing stays bounded and honest when W3 is unknown, the clock is inconsistent or the line is malformed", () => {
+  const noW3 = {};
+  observeProgressLine(noW3, firstLine({ via: "worker", kind: "transport", status: null, ms: 1500 }), { startedMs: 0, nowMs: () => 5_000 });
+  assert.deepEqual([noW3.progress.firstPublish.observedAfterW3Ms, noW3.progress.firstPublish.via, noW3.progress.firstPublish.status], [null, "worker", null]);
+  const early = {};
+  observeProgressLine(early, firstLine(), { startedMs: 0, nowMs: () => 900_000, w3EndMs: 1_000_000 });
+  assert.equal(early.progress.firstPublish.observedAfterW3Ms, null, "a publish that appears to precede W3 is not reported as a duration");
+  for (const bad of [{ kind: "grpc" }, { via: "browser" }, { status: 99 }, { status: "202" }, { ms: -1 }, { ms: 700_000 }]) {
+    const state = {};
+    observeProgressLine(state, firstLine(bad), { startedMs: 0, nowMs: () => 1 });
+    assert.equal(state.progress.firstPublish, null, JSON.stringify(bad));
+    assert.equal(state.progress.rejected, 1);
+  }
+  const free = {};
+  observeProgressLine(free, firstLine({ url: "https://project.supabase.co/x", room: "9f1c" }), { startedMs: 0, nowMs: () => 1 });
+  assert.doesNotMatch(JSON.stringify(free.progress.firstPublish), /supabase|9f1c|url|room/);
+});
+
+test("W3 end is taken from the warm-up evidence and refused when it is incomplete", () => {
+  const warmup = { requests: [{ startedAt: "2026-11-24T04:43:49.412Z", ms: 2947 }, { startedAt: "2026-11-24T04:43:52.360Z", ms: 376 },
+    { startedAt: "2026-11-24T04:43:52.736Z", ms: 340 }] };
+  assert.equal(warmupEndMs(warmup), Date.parse("2026-11-24T04:43:52.736Z") + 340);
+  assert.equal(warmupEndMs(undefined), null);
+  assert.equal(warmupEndMs({ requests: [{}, {}] }), null);
+  assert.equal(warmupEndMs({ requests: [{}, {}, { startedAt: "nope", ms: 3 }] }), null);
+});
+
+test("the adapter reports the first publish attempt once, from enumerations and bounded integers only", async () => {
+  const emitted = [];
+  const canary = "https://project.supabase.co/room/9f1c-secret";
+  let onLine;
+  let finish;
+  const outcome = runSupervisor({
+    args: ["--reporter=json"], createClient: () => ({}), emit: line => emitted.push(line), wait: async () => {},
+    diagnostics: { observe: () => {}, summary: () => ({}) },
+    async main(options) {
+      const worker = options.startChild(["--conditions=react-server", "--import", "tsx", "scripts/realtime-worker.ts"], {}, () => {});
+      const workload = options.startChild(["cli.js", "test"], {}, () => {});
+      await Promise.all([worker.done, workload.done]);
+      return { exitCode: 0 };
+    },
+    start(childArgs, _env, read) {
+      if (childArgs.includes("scripts/realtime-worker.ts")) {
+        onLine = read;
+        return { done: Promise.resolve(0), stop: async () => {} };
+      }
+      return { done: new Promise(resolve => { finish = resolve; }), stop: async () => {} };
+    },
+  });
+  onLine("[CINEMATCH_REALTIME_ATTEMPT] {not json");
+  onLine('[CINEMATCH_REALTIME_ATTEMPT] {"r":"nothex","v":1,"ms":5,"kind":"http","status":202}');
+  onLine(`[CINEMATCH_REALTIME_ATTEMPT] {"r":"abcdef01","v":3,"ms":412,"kind":"http","status":202,"url":"${canary}"}`);
+  onLine('[CINEMATCH_REALTIME_ATTEMPT] {"r":"abcdef02","v":4,"ms":90,"kind":"http","status":202}');
+  finish(0);
+  await outcome;
+  const first = emitted.filter(line => line.startsWith("CINE026_PUBLISH_FIRST "));
+  assert.deepEqual(first, ['CINE026_PUBLISH_FIRST {"kind":"http","via":"worker","status":202,"ms":412}']);
+  assert.ok(!emitted.some(line => line.includes("supabase") || line.includes("9f1c")));
 });
 
 test("the shared observer still reads the existing terminal lines next to progress lines", () => {

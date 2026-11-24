@@ -10,7 +10,7 @@ const sha = "00555c03d4173ac54750677207b78252e2063257";
 const dispatch = {
   GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REPOSITORY: "KaisAbiyyi/cinemania",
   GITHUB_REF: "refs/heads/main", GITHUB_RUN_ATTEMPT: "1", DISPATCH_SHA: sha,
-  DISPATCH_PROJECT: "dmrbticnsczhyaiftrar", DISPATCH_EXCLUSIVE: "true", DISPATCH_MODE: "full",
+  DISPATCH_PROJECT: "dmrbticnsczhyaiftrar", DISPATCH_EXCLUSIVE: "true", DISPATCH_MODE: "gate-a-only",
 };
 
 test("only a fresh main dispatch can authorize the exact candidate and exclusive project", () => {
@@ -20,6 +20,13 @@ test("only a fresh main dispatch can authorize the exact candidate and exclusive
     GITHUB_RUN_ATTEMPT: "2", DISPATCH_SHA: "a".repeat(40), DISPATCH_PROJECT: "other",
     DISPATCH_EXCLUSIVE: "false", DISPATCH_MODE: "resume",
   })) assert.throws(() => authorize({ ...dispatch, [key]: value }), /^Error: DISPATCH_/);
+});
+
+test("full mode is refused by the consent step itself, before any staging step, whatever else is valid", () => {
+  assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "full" }), /^Error: FULL_MODE_NOT_ADMITTED$/);
+  for (const mode of ["preflight", "cold-start-probe", "gate-a-only"]) assert.doesNotThrow(() => authorize({ ...dispatch, DISPATCH_MODE: mode }));
+  // An invalid request still reports the consent failure first; only a fully consented full request reports the guard.
+  assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "full", DISPATCH_EXCLUSIVE: "false" }), /^Error: DISPATCH_CONSENT_REFUSED$/);
 });
 
 test("missing or multiline credentials fail before touching disk", () => {
@@ -204,4 +211,18 @@ test("a workload with unverified cleanup fails its Gate A stage, so cleanup fail
     { ...ok, transport: { http: { okCount: 1, nonOkCount: 0 }, failures: [], omittedFailures: 1 } },
     { ...ok, remainingProcesses: true }, { ...ok, executionTimedOut: true }, { ...ok, interrupted: true },
   ]) assert.equal(stableWorkload(broken), false);
+});
+
+// The refusal of full mode must happen in the job that has no staging access, before the staging job can start.
+test("the consent step that refuses full mode runs in the verify job and the staging job depends on it", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const workflow = fs.readFileSync(path.join(__dirname, "../../.github/workflows/cine026-hosted-qualification.yml"), "utf8");
+  const verify = workflow.slice(workflow.indexOf("\n  verify:"), workflow.indexOf("\n  qualify:"));
+  const qualify = workflow.slice(workflow.indexOf("\n  qualify:"));
+  assert.match(verify, /run: node scripts\/cine026-actions\/qualification\.cjs authorize/);
+  assert.match(verify, /DISPATCH_MODE: \$\{\{ inputs\.mode \}\}/);
+  assert.doesNotMatch(verify, /SUPABASE_|environment:/, "the verify job has no staging credentials or environment");
+  assert.match(qualify, /needs: verify/);
+  assert.match(qualify, /environment: cine026-staging/);
 });
