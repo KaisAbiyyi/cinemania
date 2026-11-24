@@ -197,7 +197,7 @@ test("all five workloads share the job envelope and reserve cleanup plus artifac
   const jobStarted = 1_800_000_000_000;
   let now = jobStarted + 18 * MINUTE;
   const first = planWorkload("A", jobStarted, now);
-  assert.deepEqual(first, budget);
+  assert.deepEqual(first, { ...budget, runEndGraceMs: 90_000, budgetBinding: false });
   for (const gate of ["A", "A", "A", "B"]) {
     const stage = planWorkload(gate, jobStarted, now);
     now += stage.executionMs + stage.cleanupMs + stage.forceGraceMs;

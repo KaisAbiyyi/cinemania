@@ -7,7 +7,9 @@ const path = require("node:path");
 const { readProbe, runColdStartProbe } = require("./cold-start-probe.cjs");
 const { readWarmup, warmRealtimeTenant } = require("./realtime-warmup.cjs");
 
-const { planWorkload, superviseWorkload } = require("./workload-supervision.cjs");
+const { planWorkload, superviseWorkload, CLEANUP_MS, FORCE_GRACE_MS, JOB_MS, JOB_RESERVE_MS } = require("./workload-supervision.cjs");
+const { requiredExecutionMs } = require("./execution-budget.cjs");
+const { observeProgressLine } = require("./workload-progress.cjs");
 
 const candidate = path.resolve("candidate");
 const temp = process.env.RUNNER_TEMP;
@@ -166,7 +168,8 @@ function readTransport(value) {
   return { http, outcomes, failures, omittedFailures: value.omittedFailures };
 }
 
-function observeLine(state, line) {
+function observeLine(state, line, context) {
+  if (observeProgressLine(state, line, context)) return true;
   const match = /^(CINE026_HOSTED_FAILURE|CINE026_HOSTED_SHUTDOWN|CINE026_HOSTED_METRICS|CINE026_WORKER_RECOVERY|CINE026_TRANSPORT_DIAGNOSTICS|CINE026_TRANSPORT_PARTIAL) (.+)$/.exec(line);
   if (!match) return;
   let payload;
@@ -272,8 +275,12 @@ const browserTargets = [
   ["webkit", [titles[8], titles[9], titles[12]]],
 ];
 
-function browserArgs(browser, targets) {
-  return ["--reporter=json", ...(browser ? ["--project", browser, "--grep", targets.map(title => RegExp.escape(title)).join("|")] : [])];
+const PROGRESS_REPORTER = path.join(__dirname, "progress-reporter.cjs");
+
+// The workflow's own reporter rides along with the JSON reporter for runs (not for listings). It prints only
+// counters and durations; see progress-reporter.cjs.
+function browserArgs(browser, targets, withProgress = false) {
+  return [withProgress ? "--reporter=json," + PROGRESS_REPORTER : "--reporter=json", ...(browser ? ["--project", browser, "--grep", targets.map(title => RegExp.escape(title)).join("|")] : [])];
 }
 
 function parseReport(file) {
@@ -362,6 +369,14 @@ function hasTransportEvidence(result) {
   return result.transport?.http?.okCount > 0;
 }
 
+// Gate B only counts when the tap observed the nested processes: the tap loaded, and at least one app and one
+// worker generation were seen. Absent nested evidence is never read as zero nested failures.
+function nestedEvidence(result) {
+  const nested = result.progress?.nested;
+  return nested?.tapReady === true && nested.generations.app >= 1 && nested.generations.worker >= 1 &&
+    nested.streams.length > 0;
+}
+
 function stableWorkload(result) {
   return result.exitCode === 0 && !result.executionTimedOut && !result.firstFailure && !result.metrics?.firstFailure &&
     verifiedCleanup(result) && hasTransportEvidence(result) && result.transport.http.nonOkCount === 0 &&
@@ -384,6 +399,12 @@ function summarize(evidence) {
     "Preflight: " + evidence.preflight.status,
     ...Object.entries(evidence.gates).map(([gate, status]) => "Gate " + gate + ": " + status),
     "Verdict: " + evidence.verdict,
+    ...evidence.workload.map(w => "Workload " + w.gate + (w.browser ? "/" + w.browser : "") + ": exit " + w.exitCode +
+      (w.executionTimedOut ? "; execution timeout" + (w.budgetBinding ? " (budget clipped by the job ceiling)" : "") : "") +
+      (w.teardownStalled ? "; Playwright teardown stalled after run end" : "") +
+      (w.progressAtStop ? "; progress at stop " + w.progressAtStop : "") +
+      (w.progress ? "; cases ended " + w.progress.cases.filter(item => item.endedAfterMs !== null).length + "/" + w.progress.cases.length +
+        "; peak pending " + w.progress.peaks.continuousPendingMs + " ms continuous, db round trip " + w.progress.peaks.rttMs + " ms" : "") + "."),
     ...(evidence.warmup ? ["Realtime warm-up (qualification-only): " + evidence.warmup.status + "; " +
       evidence.warmup.requests.map(r => r.id + " " + (r.http ?? r.failure) + " " + r.ms + " ms").join(", ") + "."] : []),
     ...(evidence.coverage ? ["Warm-path acceptance: " + evidence.coverage.warmPathAcceptance +
@@ -535,10 +556,22 @@ function decideVerdict(evidence, wasInterrupted) {
 const PREFLIGHT_HEADROOM_MS = 150_000;
 const WARMUP_HEADROOM_MS = 8 * 60_000;
 
-function checkWorkloadBudget(gate, startedAt, reservedMs = 0) {
-  const budget = planWorkload(gate, startedAt, Date.now(), reservedMs);
+function checkWorkloadBudget(gate, startedAt, reservedMs = 0, requiredMs = null) {
+  const budget = planWorkload(gate, startedAt, Date.now(), reservedMs, requiredMs);
   requireCondition(budget, "WORKFLOW_BUDGET_EXHAUSTED");
   return budget;
+}
+
+// Gate A runs its browser workloads one after another, each with its own cleanup. The declared limits of all
+// of them, with cleanup and forced-stop grace, must fit in what is left of the job before staging is touched;
+// otherwise the run stops with HOLD instead of being cut off halfway.
+function gateAPlan() {
+  return browserTargets.map(([browser, targets]) => ({ browser, requiredMs: requiredExecutionMs(targets) }));
+}
+function checkGateAEnvelope(startedAt, reservedMs = 0, now = Date.now()) {
+  const remaining = startedAt + JOB_MS - now - JOB_RESERVE_MS - reservedMs;
+  const needed = gateAPlan().reduce((sum, item) => sum + item.requiredMs + CLEANUP_MS + FORCE_GRACE_MS, 0);
+  requireCondition(Number.isSafeInteger(startedAt) && startedAt > 0 && needed <= remaining, "WORKFLOW_BUDGET_EXHAUSTED");
 }
 
 function writeEvidence(evidence, status) {
@@ -559,7 +592,10 @@ async function qualify(directory) {
     requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
     const stagedWorkload = workloadModes.includes(evidence.mode);
     const jobStartedAt = Number(process.env.CINE026_JOB_STARTED_MS);
-    if (stagedWorkload) checkWorkloadBudget("A", jobStartedAt, PREFLIGHT_HEADROOM_MS + WARMUP_HEADROOM_MS);
+    if (stagedWorkload) {
+      checkWorkloadBudget("A", jobStartedAt, PREFLIGHT_HEADROOM_MS + WARMUP_HEADROOM_MS);
+      checkGateAEnvelope(jobStartedAt, PREFLIGHT_HEADROOM_MS + WARMUP_HEADROOM_MS);
+    }
     const env = configureStaging(directory, process.env);
     evidence.preflight = { status: "PASS", ...await preflight(env) };
     requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
@@ -568,27 +604,29 @@ async function qualify(directory) {
       checkWorkloadBudget("A", jobStartedAt, WARMUP_HEADROOM_MS);
       const run = async (gate, browser = null, targets = null) => {
         requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
-        const budget = checkWorkloadBudget(gate, jobStartedAt);
+        const budget = checkWorkloadBudget(gate, jobStartedAt, 0, gate === "A" ? requiredExecutionMs(targets) : null);
         const workload = { gate, browser, budget, startedAt: new Date().toISOString() };
         const file = path.join(directory, "playwright.json");
         fs.rmSync(file, { force: true });
         const args = gate === "B" ? ["--worker-qualification"] :
-          [...browserArgs(browser, targets), "--output", path.join(directory, "browser-output")];
+          [...browserArgs(browser, targets, true), "--output", path.join(directory, "browser-output")];
         function checkpoint(state) {
           evidence.activeWorkload = { ...workload, ...state };
           writeEvidence(evidence, "partial");
         }
         checkpoint({});
-        const result = await runWorkload(args, { ...env, PLAYWRIGHT_JSON_OUTPUT_FILE: file }, budget, checkpoint);
+        const result = await runWorkload(args, { ...env, PLAYWRIGHT_JSON_OUTPUT_FILE: file,
+          CINE026_PROGRESS_TITLES: JSON.stringify(targets ?? []) }, budget, checkpoint);
         const report = gate === "B" ? null : readBrowserReport(parseReport(file), browser ? { [browser]: targets } : fullMatrix);
         evidence.workload.push({ ...workload, ...result,
           missingEvidence: [!result.terminalMilestone && "terminal_milestone", !result.metrics && "terminal_metrics",
-            !result.transport && "terminal_transport", result.transport && !hasTransportEvidence(result) && "observed_transport"].filter(Boolean),
+            !result.transport && "terminal_transport", result.transport && !hasTransportEvidence(result) && "observed_transport",
+            gate === "B" && !nestedEvidence(result) && "nested_streams"].filter(Boolean),
           ...(report ? { report } : {}) });
         delete evidence.activeWorkload;
         fs.rmSync(file, { force: true });
         writeEvidence(evidence, "partial");
-        return stableWorkload(result) && (gate === "B" ? Boolean(result.worker) : report.valid);
+        return stableWorkload(result) && (gate === "B" ? Boolean(result.worker) && nestedEvidence(result) : report.valid);
       };
       await runWarmedGates(env, evidence, run);
     }
@@ -659,4 +697,4 @@ if (require.main === module) main().catch(error => {
   process.stderr.write((safe ? message : "QUALIFICATION_HARNESS_FAILED") + "\n");
   process.exitCode = 1;
 });
-module.exports = { runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
+module.exports = { nestedEvidence, checkGateAEnvelope, gateAPlan, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
