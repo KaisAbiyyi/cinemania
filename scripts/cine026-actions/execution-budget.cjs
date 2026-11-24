@@ -33,7 +33,8 @@ const STARTUP_MS = WEB_SERVER_MS + WORKER_READY_MS + BUILD_ALLOWANCE_MS;
 const LONGEST_SILENT_WAIT_MS = 100_000;
 const STALL_MS = 150_000;
 // After Playwright reports the end of the run the process should exit; webServer and browser teardown get this long.
-const RUN_END_GRACE_MS = 90_000;
+// Every case result and the JSON report already exist by then, so waiting longer costs little against a hung exit.
+const RUN_END_GRACE_MS = 120_000;
 
 function declaredCaseMs(title) {
   return Object.hasOwn(CASE_OVERRIDES_MS, title) ? CASE_OVERRIDES_MS[title] : DEFAULT_CASE_MS;

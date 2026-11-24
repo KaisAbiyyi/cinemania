@@ -145,7 +145,7 @@ Adapter supervisor menambah `CINE026_DB_SAMPLE` dari hasil `readState` milik mon
 
 Ledger `workload-progress.cjs` membangun ulang semuanya dari enumerasi dan integer terbatas. Waktu memakai jam kedatangan supervisor, bukan stempel dari anak. Seri sampel dibatasi 40 titik (puncak disimpan terpisah), kasus 24, stream proses turunan 16. Saat timeout, progres diklasifikasi `CASE_ACTIVE_PROGRESSING` atau `CASE_ACTIVE_STALLED` (ambang 150 detik: tunggu diam terpanjang yang dideklarasikan, 100 detik, ditambah 50%), `BETWEEN_CASES_*`, `RUN_ENDED`, atau `NO_PROGRESS_EVIDENCE`. Klasifikasi hanya atribusi; timeout tetap HOLD.
 
-Jika Playwright sudah melaporkan `run_end` tetapi supervisor kandidat tidak masuk fase `teardown` dalam 90 detik, workload dihentikan sebagai `PLAYWRIGHT_TEARDOWN_STALLED` (HOLD) alih-alih menunggu sisa anggaran eksekusi. Pemeriksaan ini membedakan teardown yang macet dari kasus yang lambat. Quiet window 135 detik berada sesudah fase `teardown` dan tidak memicunya.
+Jika Playwright sudah melaporkan `run_end` tetapi supervisor kandidat tidak masuk fase `teardown` dalam 120 detik, workload dihentikan sebagai `PLAYWRIGHT_TEARDOWN_STALLED` (HOLD) alih-alih menunggu sisa anggaran eksekusi. Pemeriksaan ini membedakan teardown yang macet dari kasus yang lambat. Quiet window 135 detik berada sesudah fase `teardown` dan tidak memicunya.
 
 ### Celah diagnostik proses turunan Gate B
 

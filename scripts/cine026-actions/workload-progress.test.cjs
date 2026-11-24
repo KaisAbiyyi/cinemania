@@ -229,7 +229,7 @@ test("a run that ends and tears down normally is never flagged, including throug
   run.clock.advance(5_000);
   run.line("CINE026_SUPERVISOR_PHASE teardown");
   await run.settle();
-  run.clock.advance(135_000 + RUN_END_GRACE_MS);
+  run.clock.advance(135_000 + 60_000); // past the quiet window and the run-end grace would have fired, still inside the 240 s cleanup budget
   const last = run.checkpoints.at(-1);
   assert.equal(last.teardownStalled, undefined);
   assert.equal(last.firstFailure, undefined);

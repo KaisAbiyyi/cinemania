@@ -9,6 +9,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const Reporter = require("./progress-reporter.cjs");
 const { observeProgressLine } = require("./workload-progress.cjs");
+const { browserArgs } = require("./qualification.cjs");
 
 const REPORTER = path.join(__dirname, "progress-reporter.cjs");
 
@@ -107,10 +108,17 @@ test("case beta slow", async () => { await new Promise(r => setTimeout(r, 1500))
 test("case gamma timeout", async () => { test.setTimeout(700); await new Promise(r => setTimeout(r, 4000)); });
 `);
     const titles = ["case alpha", "case beta slow", "case gamma timeout"];
-    const run = spawnSync(process.execPath, [cli, "test", "--config=playwright.config.js", "--reporter=" + REPORTER], {
+    // The exact reporter argument the workflow passes for runs, with the JSON reporter writing its file as in production.
+    const reporterArg = browserArgs("chromium", titles, true)[0];
+    assert.equal(reporterArg, "--reporter=json," + REPORTER);
+    const jsonFile = path.join(work, "playwright.json");
+    const run = spawnSync(process.execPath, [cli, "test", "--config=playwright.config.js", reporterArg], {
       cwd: work, encoding: "utf8", timeout: 90_000,
-      env: { ...process.env, CINE026_PROGRESS_TITLES: JSON.stringify(titles), PW_TEST_HTML_REPORT_OPEN: "never", CI: "1" },
+      env: { ...process.env, CINE026_PROGRESS_TITLES: JSON.stringify(titles), PLAYWRIGHT_JSON_OUTPUT_FILE: jsonFile, CI: "1" },
     });
+    const report = JSON.parse(fs.readFileSync(jsonFile, "utf8"));
+    assert.equal(report.stats.expected, 2);
+    assert.equal(report.stats.unexpected, 1);
     const progress = run.stdout.split(/\r?\n/).filter(line => line.startsWith("CINE026_PROGRESS "));
     assert.ok(progress.length >= 7, run.stdout + run.stderr);
     for (const line of progress) assert.doesNotMatch(line, /secret-room|token=abc|inner private|room\/abc|case (alpha|beta|gamma)/);
