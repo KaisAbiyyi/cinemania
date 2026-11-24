@@ -4,9 +4,10 @@
 const { execFileSync, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
-const { createInterface } = require("node:readline");
 const { readProbe, runColdStartProbe } = require("./cold-start-probe.cjs");
 const { readWarmup, warmRealtimeTenant } = require("./realtime-warmup.cjs");
+
+const { planWorkload, superviseWorkload } = require("./workload-supervision.cjs");
 
 const candidate = path.resolve("candidate");
 const temp = process.env.RUNNER_TEMP;
@@ -143,7 +144,7 @@ const count = value => Number.isSafeInteger(value) && value >= 0;
 function readTransport(value) {
   const http = numericFields(value?.http, ["count", "okCount", "nonOkCount", "maxMs", "over1000Ms", "over1400Ms"]);
   const outcomes = numericFields(value?.outcomes, [...transportOutcomes]);
-  if (!http || !outcomes || !Array.isArray(value.failures) || value.failures.length > 10 || !count(value.omittedFailures)) return null;
+  if (!http || http.count !== http.okCount + http.nonOkCount || !outcomes || !Array.isArray(value.failures) || value.failures.length > 10 || !count(value.omittedFailures)) return null;
   const failures = [];
   for (const failure of value.failures) {
     if (!transportCategories.has(failure?.category) || !transportPhases.has(failure.phase) || !count(failure.ms) ||
@@ -166,14 +167,24 @@ function readTransport(value) {
 }
 
 function observeLine(state, line) {
-  const match = /^(CINE026_HOSTED_FAILURE|CINE026_HOSTED_METRICS|CINE026_WORKER_RECOVERY|CINE026_TRANSPORT_DIAGNOSTICS) (.+)$/.exec(line);
+  const match = /^(CINE026_HOSTED_FAILURE|CINE026_HOSTED_SHUTDOWN|CINE026_HOSTED_METRICS|CINE026_WORKER_RECOVERY|CINE026_TRANSPORT_DIAGNOSTICS|CINE026_TRANSPORT_PARTIAL) (.+)$/.exec(line);
   if (!match) return;
   let payload;
   try { payload = JSON.parse(match[2]); } catch { return; }
   if (match[1] === "CINE026_HOSTED_FAILURE") state.firstFailure ??= readFailure(payload) ?? undefined;
+  if (match[1] === "CINE026_HOSTED_SHUTDOWN") {
+    state.shutdownSnapshot = { counts: numericFields(payload?.counts, countFields),
+      peaks: numericFields(payload?.peaks, peakFields), observed: numericFields(payload?.immediate, fields) };
+  }
   if (match[1] === "CINE026_HOSTED_METRICS") state.metrics = readMetrics(payload);
   if (match[1] === "CINE026_WORKER_RECOVERY") state.worker = readWorker(payload);
   if (match[1] === "CINE026_TRANSPORT_DIAGNOSTICS") state.transport = readTransport(payload) ?? undefined;
+  if (match[1] === "CINE026_TRANSPORT_PARTIAL") {
+    const snapshot = readTransport(payload);
+    if (!snapshot) return false;
+    state.partialTransport = snapshot;
+  }
+  return true;
 }
 
 function readBrowserReport(report, expected, listing = false) {
@@ -317,57 +328,45 @@ async function preflight(stagedEnv) {
   return { tls: "verify-full", probes: 3, sessionPoolLowerBound: budget, baselineEmpty: true };
 }
 
-let active;
-let interrupted = false;
-function terminateGroup(signal) {
-  if (!active) return;
-  try { process.kill(-active.pid, signal); } catch { /* Process group already exited. */ }
-}
+const cancellation = new AbortController();
 
-function runWorkload(args, env, limit) {
-  const state = {};
-  let deadline = false;
-  return new Promise(resolve => {
-    const child = spawn(process.execPath, ["scripts/cine026/run-hosted-staging.cjs", ...args], {
-      cwd: candidate, env, detached: true, stdio: ["ignore", "pipe", "pipe"],
-    });
-    active = child;
-    for (const stream of [child.stdout, child.stderr]) {
-      createInterface({ input: stream }).on("line", line => observeLine(state, line));
+function runWorkload(args, env, budget, onCheckpoint) {
+  const child = spawn(process.execPath, [require.resolve("./workload-supervision.cjs"), ...args], {
+    cwd: candidate, env, detached: true, stdio: ["ignore", "pipe", "pipe"],
+  });
+  function signalGroup(signal) {
+    if (!child.pid) return false;
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch (error) {
+      // A missing group is normal after exit. Other errors cannot prove it stopped.
+      return signal === 0 && error.code !== "ESRCH";
     }
-    const timer = setTimeout(() => {
-      deadline = true;
-      terminateGroup("SIGTERM");
-    }, limit);
-    const killTimer = setTimeout(() => terminateGroup("SIGKILL"), limit + 6_000);
-    child.once("error", () => { state.spawnFailed = true; });
-    child.once("exit", () => {
-      // A descendant that still holds the pipes open must not block evidence or be counted as clean.
-      try {
-        process.kill(-child.pid, 0);
-        state.remainingProcesses = true;
-        terminateGroup("SIGKILL");
-      } catch { /* The process group ended normally. */ }
-    });
-    child.once("close", code => {
-      clearTimeout(timer);
-      clearTimeout(killTimer);
-      active = undefined;
-      resolve({ ...state, exitCode: code, deadline, interrupted });
-    });
+  }
+  return superviseWorkload(child, {
+    budget, signal: cancellation.signal, observe: observeLine, onCheckpoint,
+    groupAlive: () => signalGroup(0), killGroup: signalGroup,
   });
 }
 
 function verifiedCleanup(result) {
   const m = result.metrics;
-  return !result.deadline && !result.interrupted && !result.remainingProcesses &&
+  return result.terminalMilestone === true && !result.cleanupTimedOut && !result.forcedTermination &&
+    !result.interrupted && !result.remainingProcesses && !result.spawnFailed && !result.evidenceWriteFailed &&
     m?.leaseRelease === "released" && m.cleanupVerified &&
-    m.final !== null && fields.every(key => m.final[key] === 0);
+    m.final != null && fields.every(key => m.final[key] === 0);
+}
+
+function hasTransportEvidence(result) {
+  return result.transport?.http?.okCount > 0;
 }
 
 function stableWorkload(result) {
-  return result.exitCode === 0 && !result.firstFailure && !result.metrics?.firstFailure &&
-    verifiedCleanup(result) && result.metrics.counts != null && result.metrics.peaks != null &&
+  return result.exitCode === 0 && !result.executionTimedOut && !result.firstFailure && !result.metrics?.firstFailure &&
+    verifiedCleanup(result) && hasTransportEvidence(result) && result.transport.http.nonOkCount === 0 &&
+    result.transport.failures.length === 0 && result.transport.omittedFailures === 0 &&
+    result.metrics.counts != null && result.metrics.peaks != null &&
     ["capacity", "escapedReset", "checkedOutReset", "idleReset", "providerTransport", "providerStatus"]
       .every(key => result.metrics.counts[key] === 0);
 }
@@ -376,8 +375,8 @@ const preflightCodes = new Set([
   "DISPATCH_CONTEXT_REFUSED", "DISPATCH_CONSENT_REFUSED", "CHECKOUT_SHA_MISMATCH",
   "PR_CANDIDATE_MISMATCH", "STAGING_CONFIGURATION_MISSING", "SESSION_POOL_BUDGET_UNCONFIRMED",
   "STAGING_ISOLATION_FAILED", "SERVER_SESSION_BUDGET_INSUFFICIENT", "STAGING_HTTPS_HEALTH_FAILED",
-  "STAGING_PG_CONNECTION_FAILED", "LEASE_BUSY", "WARMUP_CONFIGURATION_INVALID", "WARMUP_NOT_READY",
-  "WARMUP_CLEANUP_UNCONFIRMED",
+  "STAGING_PG_CONNECTION_FAILED", "CANDIDATE_SUPERVISOR_UNSUPPORTED", "LEASE_BUSY", "WARMUP_CONFIGURATION_INVALID", "WARMUP_NOT_READY",
+  "WARMUP_CLEANUP_UNCONFIRMED", "WORKFLOW_BUDGET_EXHAUSTED", "WORKLOAD_INTERRUPTED",
 ]);
 function summarize(evidence) {
   return ["## CINE-026/063 staging qualification", "",
@@ -533,28 +532,62 @@ function decideVerdict(evidence, wasInterrupted) {
     "WARM-PATH ACCEPTANCE: ALL GATES PASSED; COLD-PATH RECOVERY NOT QUALIFIED" : "HOLD";
 }
 
+const PREFLIGHT_HEADROOM_MS = 150_000;
+const WARMUP_HEADROOM_MS = 8 * 60_000;
+
+function checkWorkloadBudget(gate, startedAt, reservedMs = 0) {
+  const budget = planWorkload(gate, startedAt, Date.now(), reservedMs);
+  requireCondition(budget, "WORKFLOW_BUDGET_EXHAUSTED");
+  return budget;
+}
+
+function writeEvidence(evidence, status) {
+  const artifact = path.join(temp, "cine026-qualification-evidence.json");
+  const next = artifact + ".tmp";
+  fs.writeFileSync(next, JSON.stringify({ ...evidence, artifactStatus: status }, null, 2) + "\n", { mode: 0o600 });
+  fs.renameSync(next, artifact);
+}
+
 async function qualify(directory) {
   const evidence = { candidate: sha, workflowSha: process.env.GITHUB_SHA,
     mode: [...workloadModes, "cold-start-probe"].includes(process.env.DISPATCH_MODE) ? process.env.DISPATCH_MODE : "preflight", preflight: { status: "FAIL" },
-    gates: { A: "NOT RUN", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" }, workload: [] };
+    gates: { A: "NOT RUN", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" }, workload: [], verdict: "HOLD" };
+  writeEvidence(evidence, "partial");
   try {
     authorize(process.env);
     verifyCheckout();
+    requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
+    const stagedWorkload = workloadModes.includes(evidence.mode);
+    const jobStartedAt = Number(process.env.CINE026_JOB_STARTED_MS);
+    if (stagedWorkload) checkWorkloadBudget("A", jobStartedAt, PREFLIGHT_HEADROOM_MS + WARMUP_HEADROOM_MS);
     const env = configureStaging(directory, process.env);
     evidence.preflight = { status: "PASS", ...await preflight(env) };
+    requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
     if (evidence.mode === "cold-start-probe") await runProbeSession(env, evidence);
-    if (workloadModes.includes(evidence.mode)) {
+    if (stagedWorkload) {
+      checkWorkloadBudget("A", jobStartedAt, WARMUP_HEADROOM_MS);
       const run = async (gate, browser = null, targets = null) => {
-        const startedAt = new Date().toISOString();
+        requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
+        const budget = checkWorkloadBudget(gate, jobStartedAt);
+        const workload = { gate, browser, budget, startedAt: new Date().toISOString() };
         const file = path.join(directory, "playwright.json");
         fs.rmSync(file, { force: true });
         const args = gate === "B" ? ["--worker-qualification"] :
           [...browserArgs(browser, targets), "--output", path.join(directory, "browser-output")];
-        const minutes = gate === "C" ? 55 : gate === "B" ? 19 : 7;
-        const result = await runWorkload(args, { ...env, PLAYWRIGHT_JSON_OUTPUT_FILE: file }, minutes * 60_000);
+        function checkpoint(state) {
+          evidence.activeWorkload = { ...workload, ...state };
+          writeEvidence(evidence, "partial");
+        }
+        checkpoint({});
+        const result = await runWorkload(args, { ...env, PLAYWRIGHT_JSON_OUTPUT_FILE: file }, budget, checkpoint);
         const report = gate === "B" ? null : readBrowserReport(parseReport(file), browser ? { [browser]: targets } : fullMatrix);
+        evidence.workload.push({ ...workload, ...result,
+          missingEvidence: [!result.terminalMilestone && "terminal_milestone", !result.metrics && "terminal_metrics",
+            !result.transport && "terminal_transport", result.transport && !hasTransportEvidence(result) && "observed_transport"].filter(Boolean),
+          ...(report ? { report } : {}) });
+        delete evidence.activeWorkload;
         fs.rmSync(file, { force: true });
-        evidence.workload.push({ gate, browser, startedAt, ...result, ...(report ? { report } : {}) });
+        writeEvidence(evidence, "partial");
         return stableWorkload(result) && (gate === "B" ? Boolean(result.worker) : report.valid);
       };
       await runWarmedGates(env, evidence, run);
@@ -566,20 +599,21 @@ async function qualify(directory) {
       at: new Date().toISOString() };
   } finally {
     if (evidence.workload.length) evidence.gates.D = evidence.workload.every(verifiedCleanup) ? "PASS" : "UNCONFIRMED";
-    evidence.verdict = decideVerdict(evidence, interrupted);
+    evidence.verdict = decideVerdict(evidence, cancellation.signal.aborted);
     evidence.coverage = coverageOf(evidence);
-    const passed = evidence.verdict !== "HOLD";
-    fs.writeFileSync(path.join(temp, "cine026-qualification-evidence.json"), JSON.stringify(evidence, null, 2) + "\n",
-      { flag: "wx", mode: 0o600 });
+    writeEvidence(evidence, "terminal");
     const summary = summarize(evidence);
     if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
     process.stdout.write(summary);
-    if (!passed) process.exitCode = 1;
+    if (evidence.verdict === "HOLD") process.exitCode = 1;
   }
 }
 
 function validateListings(directory) {
   verifyCheckout();
+  requireCondition(typeof require(path.join(candidate, "scripts/cine026/run-hosted-staging.cjs")).main === "function" &&
+    typeof require(path.join(candidate, "scripts/cine026/transport-diagnostics.cjs")).createTransportDiagnostics === "function",
+  "CANDIDATE_SUPERVISOR_UNSUPPORTED");
   const env = configureStaging(directory, process.env, true);
   const playwright = path.join(candidate, "node_modules/playwright/cli.js");
   for (const [browser, targets] of [[null, null], ...browserTargets]) {
@@ -609,13 +643,7 @@ async function main() {
   }
   requireCondition(temp && (mode === "list" || (mode === "run" && process.platform === "linux")), "INVALID_INVOCATION");
   process.umask(0o077);
-  for (const signal of ["SIGINT", "SIGTERM"]) {
-    process.on(signal, () => {
-      interrupted = true;
-      terminateGroup("SIGTERM");
-      setTimeout(() => terminateGroup("SIGKILL"), 6_000).unref();
-    });
-  }
+  for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => cancellation.abort());
   const directory = fs.mkdtempSync(path.join(temp, "cine026-private-"));
   try {
     if (mode === "list") validateListings(directory);
