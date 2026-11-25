@@ -68,9 +68,4 @@ function sanitizeLine(line) {
   return null;
 }
 
-
-// The canonical lines sanitizeLine can produce. The outer supervisor counts the lines it receives that look like
-// these, to reconcile them against what the tap reports as forwarded.
-const CANONICAL = /^(?:\[CINEMATCH_REALTIME_(?:ATTEMPT|OUTBOX)\] \{|\[CINEMATCH_REALTIME_ATTEMPT_FAILURE\] (?:transport|status)$|\[CINEMATCH_DB_CAPACITY\]$|\[CINEMATCH_DB_CONNECTION_ERROR\] \{|Room notification dispatch failed; retry remains pending\. \{"category":"outbox_lock_timeout"\}$|uncaughtException: ECONNRESET$)/;
-
-module.exports = { kindOf, sanitizeLine, CANONICAL };
+module.exports = { kindOf, sanitizeLine };

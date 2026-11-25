@@ -320,14 +320,14 @@ function completeGateB({ without = () => false, forwardedBy = () => 0 } = {}) {
   return lines;
 }
 
-function gateB(lines, received = 0) {
-  const ledger = feed(lines);
-  if (ledger.state.progress) ledger.state.progress.nested.received += received;
-  return { progress: ledger.state.progress };
+const diagnostics = (kind, n, count) => Array.from({ length: count }, () => nestedLine({ ev: "diagnostic", kind, n }));
+
+function gateB(lines) {
+  return { progress: feed(lines).state.progress };
 }
 
 test("a complete Gate B lifecycle is accepted, including intentionally killed children and restarts", () => {
-  const result = gateB(completeGateB({ forwardedBy: (kind, n) => (kind === "worker" && n === 1 ? 6 : 0) }), 6);
+  const result = gateB(completeGateB({ forwardedBy: (kind, n) => (kind === "worker" && n === 1 ? 6 : 0) }).concat(diagnostics("worker", 1, 6)));
   assert.deepEqual(nestedProblems(result), []);
   assert.equal(nestedEvidence(result), true);
   assert.deepEqual(result.progress.nested.generations, EXPECTED_NESTED);
@@ -411,14 +411,18 @@ test("Gate B rejects invalid, duplicate, out-of-order, orphaned and overflowing 
 
 test("forwarded lines are reconciled against what the supervisor actually received", () => {
   const lines = completeGateB({ forwardedBy: (kind, n) => (kind === "worker" ? n : 0) }); // 1+2+3+4+5 = 15 forwarded
-  assert.ok(nestedProblems(gateB(lines, 14)).includes("forwarded_lines_lost"));
-  assert.deepEqual(nestedProblems(gateB(lines, 15)), []);
-  assert.deepEqual(nestedProblems(gateB(lines, 40)), [], "the candidate's own lines may add to the received total");
-  // the shared observer counts canonical lines as they arrive
+  const arrived = extra => lines.concat([1, 2, 3, 4, 5].flatMap(n => diagnostics("worker", n, n + (extra[n] ?? 0))));
+  assert.deepEqual(nestedProblems(gateB(arrived({}))), []);
+  assert.deepEqual(nestedProblems(gateB(arrived({ 5: -1 }))), ["forwarded_lines_lost"]);
+  assert.deepEqual(nestedProblems(gateB(arrived({ 2: 1 }))), ["unaccounted_lines"]);
+  // the total matches (15 of 15) but one generation's surplus must not cover another one's loss
+  assert.deepEqual(nestedProblems(gateB(arrived({ 2: 1, 5: -1 }))).sort(), ["forwarded_lines_lost", "unaccounted_lines"]);
+  assert.ok(nestedProblems(gateB(completeGateB().concat(diagnostics("worker", 9, 1)))).includes("invalid_events"));
+  // a canonical line without a relayed origin is not evidence for any generation
   const state = {};
   for (const line of ['[CINEMATCH_REALTIME_ATTEMPT] {"r":"abcdef01","v":1,"ms":5,"kind":"http","status":202}', "[CINEMATCH_DB_CAPACITY]",
     "[CINEMATCH_REALTIME_ATTEMPT_FAILURE] transport", "an ordinary line"]) observeLine(state, line, { startedMs: 0, nowMs: () => 1 });
-  assert.equal(state.progress.nested.received, 3);
+  assert.equal(state.progress, undefined);
 });
 
 test("a successful HTTP attempt elsewhere cannot make incomplete nested evidence stable", () => {

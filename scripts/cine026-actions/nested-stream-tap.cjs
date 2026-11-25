@@ -12,7 +12,8 @@
 //     are attached (`piped`), how many diagnostic lines were forwarded and dropped, and how it ended,
 //   * forwards ONLY canonical diagnostic lines that this file rebuilds itself from allowlisted fields (see
 //     sanitizeLine). The raw line is never forwarded: free text, hosts, identifiers and any extra field are dropped
-//     at the source. The adapter's existing diagnostics parser reads the canonical lines and keeps counts only.
+//     at the source. Each line carries its origin (`CINE026_STREAM <kind> <generation>`). The adapter's existing
+//     diagnostics parser reads the canonical part; event-relay.cjs passes only the origin on to the outer reader.
 // Other children (for example the browser that Playwright launches) are neither attached to nor reported.
 // The tap does not alter streams, exit codes or arguments, and an error inside it can never fail the process it observes.
 
@@ -41,7 +42,7 @@ function attach(child, command, args) {
           return;
         }
         tally.forwarded++;
-        try { process.stdout.write(clean + "\n"); } catch { /* observation only */ }
+        try { process.stdout.write("CINE026_STREAM " + kind + " " + n + " " + clean + "\n"); } catch { /* observation only */ }
       });
     }
   }

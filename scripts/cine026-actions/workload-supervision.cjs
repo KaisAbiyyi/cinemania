@@ -7,6 +7,7 @@ const { createInterface } = require("node:readline");
 const { setTimeout: delay } = require("node:timers/promises");
 const { RUN_END_GRACE_MS } = require("./execution-budget.cjs");
 const { classifyProgress } = require("./workload-progress.cjs");
+const { createRelay } = require("./event-relay.cjs");
 
 const EXECUTION_MINUTES = { A: 7, B: 19, C: 55 };
 const CLEANUP_MS = 240_000;
@@ -232,6 +233,7 @@ async function runSupervisor({
   let firstClient = true;
   let stopped = false;
   let lastSnapshot = -Infinity;
+  const relay = createRelay({ gateB: args[0] === "--worker-qualification" });
   function snapshot() {
     lastSnapshot = now();
     emit("CINE026_TRANSPORT_PARTIAL " + JSON.stringify(diagnostics.summary()));
@@ -292,6 +294,9 @@ async function runSupervisor({
           observe(line);
           diagnostics.observe(line);
           firstPublish(line, kind);
+          // Progress and nested events reach the outer reader only through this relay.
+          const relayed = relay(line, kind === "workload");
+          if (relayed) emit(relayed);
           const attemptFailed = line.includes("[CINEMATCH_REALTIME_ATTEMPT]") && line.includes('"kind":"transport"');
           if (attemptFailed || (line.includes("[CINEMATCH_REALTIME_") && now() - lastSnapshot >= 5_000)) snapshot();
           // The outer runner rebuilds the worker proof from its allowlist.

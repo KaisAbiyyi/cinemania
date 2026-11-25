@@ -34,7 +34,7 @@ function createProgress() {
   return {
     events: 0, rejected: 0, cases: [], samples: [], sampleCount: 0,
     peaks: { rttMs: 0, oldestPendingMs: 0, continuousPendingMs: 0 },
-    runEnd: null, lastSignalAfterMs: null,
+    runEnd: null, lastSignalAfterMs: null, reporter: { total: null, rejected: 0 },
     nested: { tapReady: false, generations: { app: 0, worker: 0, fault: 0 }, streams: [], received: 0,
       invalid: { duplicate: 0, orphan: 0, outOfOrder: 0, overflow: 0, rejected: 0 } },
     firstPublish: null,
@@ -62,7 +62,7 @@ function signal(progress, afterMs) {
 function caseFor(progress, index, afterMs, create = true) {
   let item = progress.cases.find(entry => entry.index === index && entry.endedAfterMs === null);
   if (!item && create && progress.cases.length < MAX_CASES) {
-    item = { index, status: "running", startedAfterMs: afterMs, endedAfterMs: null, durationMs: null, timeoutMs: null,
+    item = { index, status: "running", startSeen: false, startedAfterMs: afterMs, endedAfterMs: null, durationMs: null, timeoutMs: null,
       steps: null, post: null, setupMs: null, teardownMs: null, votesAtStart: progress.lastVotes ?? null,
       votesLast: progress.lastVotes ?? null, lastEventAfterMs: afterMs };
     progress.cases.push(item);
@@ -72,7 +72,14 @@ function caseFor(progress, index, afterMs, create = true) {
 
 function observeReporter(progress, payload, afterMs) {
   if (!payload || typeof payload.ev !== "string") return false;
-  if (payload.ev === "begin") return bounded(payload.total, 10_000) && (signal(progress, afterMs), true);
+  // Nothing follows the end of the run, and the run begins once.
+  if (progress.runEnd) return false;
+  if (payload.ev === "begin") {
+    if (progress.reporter.total !== null || !bounded(payload.total, 10_000)) return false;
+    progress.reporter.total = payload.total;
+    signal(progress, afterMs);
+    return true;
+  }
   if (payload.ev === "run_end") {
     if (!RUN_STATUSES.has(payload.status) || !bounded(payload.ms)) return false;
     progress.runEnd = { status: payload.status, durationMs: payload.ms, afterMs };
@@ -84,7 +91,8 @@ function observeReporter(progress, payload, afterMs) {
   if (payload.ev === "case_start") {
     if (!bounded(payload.timeout, 3_600_000)) return false;
     const item = caseFor(progress, index, afterMs);
-    if (item) item.timeoutMs = payload.timeout;
+    if (item?.startSeen) return false;
+    if (item) Object.assign(item, { timeoutMs: payload.timeout, startSeen: true });
     signal(progress, afterMs);
     return true;
   }
@@ -162,7 +170,14 @@ function observeNested(progress, payload) {
     if (payload.n !== nested.generations[payload.kind] + 1) return flag("outOfOrder");
     nested.generations[payload.kind] = payload.n;
     if (nested.streams.length >= MAX_STREAMS) return flag("overflow");
-    nested.streams.push({ kind: payload.kind, n: payload.n, piped: payload.piped, forwarded: 0, dropped: 0, exit: null });
+    nested.streams.push({ kind: payload.kind, n: payload.n, piped: payload.piped, received: 0, forwarded: 0, dropped: 0, exit: null });
+    return true;
+  }
+  // One canonical diagnostic line of this generation arrived (its text stays in the adapter).
+  if (payload.ev === "diagnostic") {
+    if (!stream) return flag("orphan");
+    stream.received++;
+    nested.received++;
     return true;
   }
   if (payload.ev !== "lines" && payload.ev !== "exit") return false;
@@ -206,6 +221,7 @@ function observeProgressLine(state, line, context = {}) {
     payload = JSON.parse(match[2]);
   } catch {
     progress.rejected++;
+    if (match[1] === "CINE026_PROGRESS") progress.reporter.rejected++;
     if (match[1] === "CINE026_NESTED") progress.nested.invalid.rejected++;
     return true;
   }
@@ -215,9 +231,10 @@ function observeProgressLine(state, line, context = {}) {
   if (accepted) progress.events++;
   else {
     progress.rejected++;
+    if (match[1] === "CINE026_PROGRESS") progress.reporter.rejected++;
     if (match[1] === "CINE026_NESTED") progress.nested.invalid.rejected++;
   }
-  if (payload?.ev === "run_end" && accepted) state.playwrightEnded = true;
+  if (match[1] === "CINE026_PROGRESS" && payload?.ev === "run_end" && accepted) state.playwrightEnded = true;
   return true;
 }
 

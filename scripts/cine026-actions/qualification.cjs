@@ -9,8 +9,7 @@ const { readWarmup, warmRealtimeTenant } = require("./realtime-warmup.cjs");
 
 const { planWorkload, superviseWorkload, CLEANUP_MS, FORCE_GRACE_MS, JOB_MS, JOB_RESERVE_MS } = require("./workload-supervision.cjs");
 const { requiredExecutionMs } = require("./execution-budget.cjs");
-const { createProgress, observeProgressLine } = require("./workload-progress.cjs");
-const { CANONICAL } = require("./nested-stream-lines.cjs");
+const { observeProgressLine } = require("./workload-progress.cjs");
 
 const candidate = path.resolve("candidate");
 const temp = process.env.RUNNER_TEMP;
@@ -177,8 +176,6 @@ function readTransport(value) {
 
 function observeLine(state, line, context) {
   if (observeProgressLine(state, line, context)) return true;
-  // Count the canonical diagnostic lines that reach this reader so the nested tap's forwarded totals can be reconciled.
-  if (CANONICAL.test(line)) (state.progress ??= createProgress()).nested.received++;
   const match = /^(CINE026_HOSTED_FAILURE|CINE026_HOSTED_SHUTDOWN|CINE026_HOSTED_METRICS|CINE026_WORKER_RECOVERY|CINE026_TRANSPORT_DIAGNOSTICS|CINE026_TRANSPORT_PARTIAL) (.+)$/.exec(line);
   if (!match) return;
   let payload;
@@ -409,15 +406,46 @@ function nestedProblems(result) {
       if (kind !== "fault" && stream.piped !== true) problems.add(kind + "_not_attached");
       if (stream.exit === null) problems.add(kind + "_no_terminal_record");
       else if (stream.exit === "failed") problems.add(kind + "_crashed");
+      // Per generation, so a surplus of one stream cannot cover for lines lost from another.
+      if (stream.received < stream.forwarded) problems.add("forwarded_lines_lost");
+      if (stream.received > stream.forwarded) problems.add("unaccounted_lines");
     }
   }
-  const forwarded = nested.streams.reduce((sum, stream) => sum + stream.forwarded, 0);
-  if (nested.received < forwarded) problems.add("forwarded_lines_lost");
   return [...problems];
 }
 
 function nestedEvidence(result) {
   return nestedProblems(result).length === 0;
+}
+
+// Why the per-case progress of a Gate A result is not complete, as enumerations. It never replaces the Playwright
+// report, the terminal metrics or the transport report: Gate A needs all of them.
+function progressProblems(result, expectedCases) {
+  const progress = result.progress;
+  if (!progress || progress.reporter.total === null) return ["reporter_not_observed"];
+  const problems = new Set();
+  if (progress.reporter.rejected > 0) problems.add("invalid_events");
+  if (progress.reporter.total !== expectedCases) problems.add("selection_mismatch");
+  if (progress.runEnd === null) problems.add("run_end_missing");
+  else if (progress.runEnd.status !== "passed") problems.add("run_not_passed");
+  const indices = progress.cases.map(item => item.index).sort((x, y) => x - y);
+  if (indices.length !== expectedCases || indices.some((value, position) => value !== position)) problems.add("case_mismatch");
+  for (const item of progress.cases) {
+    if (!item.startSeen || item.endedAfterMs === null) problems.add("case_incomplete");
+    else if (item.status !== "passed") problems.add("case_not_passed");
+  }
+  return [...problems];
+}
+
+function progressEvidence(result, expectedCases) {
+  return progressProblems(result, expectedCases).length === 0;
+}
+
+// The decision for one workload. `report` is the Playwright report (Gates A and C), `expectedCases` the Gate A selection.
+function workloadPasses(gate, result, report, expectedCases) {
+  if (!stableWorkload(result)) return false;
+  if (gate === "B") return Boolean(result.worker) && nestedEvidence(result);
+  return report?.valid === true && (gate !== "A" || progressEvidence(result, expectedCases));
 }
 
 function stableWorkload(result) {
@@ -666,13 +694,15 @@ async function qualify(directory) {
         evidence.workload.push({ ...workload, ...result,
           missingEvidence: [!result.terminalMilestone && "terminal_milestone", !result.metrics && "terminal_metrics",
             !result.transport && "terminal_transport", result.transport && !hasTransportEvidence(result) && "observed_transport",
-            gate === "B" && !nestedEvidence(result) && "nested_streams"].filter(Boolean),
+            gate === "B" && !nestedEvidence(result) && "nested_streams",
+            gate === "A" && !progressEvidence(result, targets.length) && "case_progress"].filter(Boolean),
           ...(gate === "B" ? { nestedProblems: nestedProblems(result) } : {}),
+          ...(gate === "A" ? { progressProblems: progressProblems(result, targets.length) } : {}),
           ...(report ? { report } : {}) });
         delete evidence.activeWorkload;
         fs.rmSync(file, { force: true });
         writeEvidence(evidence, "partial");
-        return stableWorkload(result) && (gate === "B" ? Boolean(result.worker) && nestedEvidence(result) : report.valid);
+        return workloadPasses(gate, result, report, targets?.length);
       };
       await runWarmedGates(env, evidence, run);
     }
@@ -743,4 +773,4 @@ if (require.main === module) main().catch(error => {
   process.stderr.write((safe ? message : "QUALIFICATION_HARNESS_FAILED") + "\n");
   process.exitCode = 1;
 });
-module.exports = { EXPECTED_NESTED, nestedProblems, warmupEndMs, nestedEvidence, checkGateAEnvelope, gateAPlan, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
+module.exports = { EXPECTED_NESTED, nestedProblems, progressProblems, workloadPasses, warmupEndMs, nestedEvidence, checkGateAEnvelope, gateAPlan, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };

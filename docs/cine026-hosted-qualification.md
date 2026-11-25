@@ -162,7 +162,20 @@ Jika Playwright sudah melaporkan `run_end` tetapi supervisor kandidat tidak masu
 - tidak berakhir dengan crash tak terduga (kode non-nol tanpa sinyal). Pembunuhan yang disengaja (restart, cleanup) sah;
 - tidak perlu menghasilkan lalu lintas HTTP, karena generasi yang sengaja idle tetap sah.
 
-Catatan duplikat, tidak berurutan, tanpa spawn (orphan), malformed, atau melebihi tabel (16 stream) dihitung sebagai `invalid` dan menolak Gate B. Terakhir, jumlah baris kanonik yang diterima supervisor harus sama atau lebih besar daripada jumlah yang dilaporkan diteruskan oleh seluruh stream; selisih berarti baris hilang di jalan. `exit` membawa tally pada saat itu karena `close` dapat tertunda jika turunan memegang pipe. Evidence Gate B memuat `nestedProblems` sebagai daftar enumerasi.
+Catatan duplikat, tidak berurutan, tanpa spawn (orphan), malformed, atau melebihi tabel (16 stream) dihitung sebagai `invalid` dan menolak Gate B. Terakhir, untuk setiap generasi jumlah baris kanonik yang diterima pembaca luar harus tepat sama dengan jumlah yang dilaporkan diteruskan. Kelebihan pada satu generasi tidak menutupi kehilangan pada generasi lain. `exit` membawa tally pada saat itu karena `close` dapat tertunda jika turunan memegang pipe. Evidence Gate B memuat `nestedProblems` sebagai daftar enumerasi.
+
+### Relay adapter ke pembaca luar (epoch 11)
+
+Baris anak workload hanya terlihat oleh adapter (`runSupervisor`). Sebelum epoch 11 adapter tidak meneruskan `CINE026_PROGRESS` dan `CINE026_NESTED`, sehingga ledger, watchdog `run_end` dan akuntansi Gate B tidak dapat bekerja pada jalur hosted ([review R2](https://github.com/KaisAbiyyi/cinemania/pull/75#pullrequestreview-6035810251)). `event-relay.cjs` kini menjadi satu-satunya jalan:
+
+- Event diterima hanya bila field-nya tepat sama dengan skema (tanpa field tambahan) dan setiap nilai berupa enumerasi, boolean, atau integer terbatas. Baris yang dikirim dicetak ulang dari nilai tervalidasi.
+- Baris yang menyebut prefix tetapi tidak valid (termasuk terpotong, tertempel teks lain, terlalu panjang, atau berasal dari anak yang salah) menjadi penanda tetap `{"ev":"rejected"}`, paling banyak 64 per workload. Teks aslinya tidak ikut. Pembaca luar menghitungnya sebagai penolakan.
+- `CINE026_PROGRESS` hanya dari proses Playwright, `CINE026_NESTED` hanya dari proses Gate B. Build dan worker mandiri tidak boleh mengirim keduanya.
+- Tap memberi asal pada setiap baris kanonik (`CINE026_STREAM <kind> <generasi>`). Adapter memeriksa bahwa teksnya kanonik, lalu hanya meneruskan asalnya (`ev: diagnostic`). Counter kandidat dan parser transport tetap membaca baris itu di dalam adapter.
+
+**Gate A** kini juga memerlukan `progressProblems` kosong: reporter terlihat, tanpa event reporter yang ditolak, jumlah seleksi cocok, setiap indeks mulai dan selesai tepat satu kali dengan `passed`, dan `run_end` `passed`. Ini syarat tambahan yang fail-closed. Laporan Playwright, metrik terminal, transport, dan cleanup tetap wajib seperti sebelumnya.
+
+Batas: relay tidak dapat membedakan reporter dari kode lain di proses Playwright yang sama yang sengaja mencetak event valid. `exit` juga bukan EOF, sehingga penguatan Gate B (EOF per stream, bukti pembunuhan yang disengaja) tetap pekerjaan terpisah dan mode `full` tetap ditolak.
 
 ### Mode `full` tidak diadmisi
 

@@ -6,7 +6,8 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { test } = require("node:test");
-const { kindOf, sanitizeLine, CANONICAL } = require("./nested-stream-lines.cjs");
+const { createRelay } = require("./event-relay.cjs");
+const { kindOf, sanitizeLine } = require("./nested-stream-lines.cjs");
 const { observeProgressLine } = require("./workload-progress.cjs");
 const { EXPECTED_NESTED, nestedProblems } = require("./qualification.cjs");
 
@@ -41,7 +42,7 @@ test("only canonical lines rebuilt from allowlisted fields can leave a nested pr
     const clean = sanitizeLine(raw);
     assert.equal(clean, expected);
     assert.doesNotMatch(clean, /hunter2|supabase\.co|9f1c|SECRET/);
-    assert.match(clean, CANONICAL, clean);
+    assert.equal(sanitizeLine(clean), clean, "the canonical form is a fixed point, which the relay relies on");
   }
   for (const dropped of ["GET /api/rooms/abc 200 in 12ms", `Authorization: Bearer ${CANARY}`, "", "[CINEMATCH_REALTIME_ATTEMPT] {not json",
     `[CINEMATCH_REALTIME_ATTEMPT] {"r":"nothex","v":1,"ms":1}`, `[CINEMATCH_REALTIME_ATTEMPT] [1,2]`]) {
@@ -75,15 +76,20 @@ test("a preloaded Gate B process reports every nested generation, lifecycle and 
   assert.equal(run.status, 0, run.stderr);
   const lines = run.stdout.split(/\r?\n/);
   assert.ok(lines.includes('CINE026_NESTED {"ev":"tap_ready"}'));
-  assert.ok(lines.includes('[CINEMATCH_REALTIME_ATTEMPT] {"r":"abcdef01","v":1,"ms":5,"kind":"http","status":202}'), run.stdout);
-  assert.ok(lines.includes("[CINEMATCH_DB_CAPACITY]"));
+  assert.ok(lines.includes('CINE026_STREAM worker 1 [CINEMATCH_REALTIME_ATTEMPT] {"r":"abcdef01","v":1,"ms":5,"kind":"http","status":202}'), run.stdout);
+  assert.ok(lines.includes("CINE026_STREAM worker 1 [CINEMATCH_DB_CAPACITY]"));
   assert.ok(!lines.some(line => /hunter2|host-secret|Authorization|9f1c|opts=/.test(line)), "raw and untagged output is never forwarded:\n" + run.stdout);
   const state = {};
-  for (const line of lines) observeProgressLine(state, line, { startedMs: 0, nowMs: () => 1 });
+  const relay = createRelay({ gateB: true });
+  for (const line of lines) {
+    const relayed = relay(line, true);
+    if (relayed) observeProgressLine(state, relayed, { startedMs: 0, nowMs: () => 1 });
+  }
   const { nested } = state.progress;
   assert.deepEqual(nested.generations, { app: 1, worker: 2, fault: 1 });
   const find = (kind, n) => nested.streams.find(item => item.kind === kind && item.n === n);
   assert.deepEqual([find("worker", 1).piped, find("worker", 1).forwarded, find("worker", 1).dropped, find("worker", 1).exit], [true, 3, 1, "exited"]);
+  assert.equal(find("worker", 1).received, 3);
   assert.equal(find("worker", 2).exit, "failed");
   assert.deepEqual([find("app", 1).piped, find("app", 1).forwarded, find("app", 1).dropped, find("app", 1).exit], [true, 0, 1, "exited"]);
   // fault committers run with ignored stdio: reported as not attached, still with a terminal record
