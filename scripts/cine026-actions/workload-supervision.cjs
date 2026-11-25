@@ -5,6 +5,9 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const { createInterface } = require("node:readline");
 const { setTimeout: delay } = require("node:timers/promises");
+const { RUN_END_GRACE_MS } = require("./execution-budget.cjs");
+const { classifyProgress } = require("./workload-progress.cjs");
+const { createRelay } = require("./event-relay.cjs");
 
 const EXECUTION_MINUTES = { A: 7, B: 19, C: 55 };
 const CLEANUP_MS = 240_000;
@@ -16,21 +19,28 @@ const PHASES = new Set([
   "shutdown_observed", "quiet_window", "cleanup_audit", "terminal",
 ]);
 
-function planWorkload(gate, jobStartedAt, now = Date.now(), preparationMs = 0) {
+// `requiredMs` is the budget derived from the candidate's declared case limits (execution-budget.cjs). It replaces the
+// nominal per-gate minutes when given. The job ceiling still clips it, and a clipped budget is marked binding so a
+// timeout can be told apart from a stalled child.
+function planWorkload(gate, jobStartedAt, now = Date.now(), preparationMs = 0, requiredMs = null) {
   if (!Number.isSafeInteger(jobStartedAt) || jobStartedAt <= 0 || jobStartedAt > now) return null;
   const remaining = jobStartedAt + JOB_MS - now - JOB_RESERVE_MS - preparationMs;
-  const executionMs = Math.min(EXECUTION_MINUTES[gate] * 60_000, remaining - CLEANUP_MS - FORCE_GRACE_MS);
-  return executionMs > 0 ? { executionMs, cleanupMs: CLEANUP_MS, forceGraceMs: FORCE_GRACE_MS } : null;
+  const nominalMs = requiredMs ?? EXECUTION_MINUTES[gate] * 60_000;
+  const available = remaining - CLEANUP_MS - FORCE_GRACE_MS;
+  const executionMs = Math.min(nominalMs, available);
+  return executionMs > 0 ? { executionMs, cleanupMs: CLEANUP_MS, forceGraceMs: FORCE_GRACE_MS,
+    runEndGraceMs: RUN_END_GRACE_MS, budgetBinding: available < nominalMs } : null;
 }
 
 // This process owns the group. The graceful signal targets only the supervisor,
 // leaving it alive to stop its children, release the lease and read back cleanup.
 function superviseWorkload(child, {
   budget, signal, observe, onCheckpoint = () => {}, killGroup, groupAlive,
-  setTimer = setTimeout, clearTimer = clearTimeout, now = () => new Date().toISOString(),
+  setTimer = setTimeout, clearTimer = clearTimeout, now = () => new Date().toISOString(), nowMs = Date.now,
 }) {
-  const state = { milestones: [], terminalMilestone: false };
-  let executionTimer, cleanupTimer, hardTimer, forceTimer;
+  const state = { milestones: [], terminalMilestone: false, budgetBinding: budget.budgetBinding === true };
+  const startedMs = nowMs();
+  let executionTimer, cleanupTimer, hardTimer, forceTimer, runEndTimer;
   let teardown = false;
   let finished = false;
 
@@ -53,7 +63,7 @@ function superviseWorkload(child, {
     function finish(exitCode) {
       if (finished) return;
       finished = true;
-      for (const timer of [executionTimer, cleanupTimer, hardTimer, forceTimer]) clearTimer(timer);
+      for (const timer of [executionTimer, cleanupTimer, hardTimer, forceTimer, runEndTimer]) clearTimer(timer);
       signal?.removeEventListener("abort", interrupt);
       state.exitCode = exitCode;
       resolve(state);
@@ -80,6 +90,7 @@ function superviseWorkload(child, {
       if (teardown || finished) return;
       teardown = true;
       clearTimer(executionTimer);
+      clearTimer(runEndTimer);
       cleanupTimer = setTimer(() => {
         state.cleanupTimedOut = true;
         recordFailure("cleanup", "WORKLOAD_CLEANUP_TIMEOUT");
@@ -110,7 +121,19 @@ function superviseWorkload(child, {
         if (phase === "stop_requested") recordFailure("supervisor", "WORKLOAD_SUPERVISOR_STOP_REQUESTED");
         if (phase === "terminal") state.terminalMilestone = true;
         checkpoint();
-      } else if (observe(state, line)) {
+      } else if (observe(state, line, { startedMs, nowMs })) {
+        // Playwright has reported the end of the run, so every case result already exists. The process is expected to
+        // exit; if it does not, that is a teardown stall, recorded as such instead of waiting out the execution budget.
+        if (state.playwrightEnded && !runEndTimer && !teardown) {
+          runEndTimer = setTimer(() => {
+            if (teardown || finished) return;
+            state.teardownStalled = true;
+            state.progressAtStop = classifyProgress(state.progress, nowMs() - startedMs);
+            recordFailure("teardown", "PLAYWRIGHT_TEARDOWN_STALLED");
+            stopGracefully();
+            checkpoint();
+          }, budget.runEndGraceMs ?? RUN_END_GRACE_MS);
+        }
         checkpoint();
       }
     }
@@ -120,6 +143,7 @@ function superviseWorkload(child, {
     }
     executionTimer = setTimer(() => {
       state.executionTimedOut = true;
+      state.progressAtStop = classifyProgress(state.progress, nowMs() - startedMs);
       recordFailure("execution", "WORKLOAD_EXECUTION_TIMEOUT");
       stopGracefully();
       checkpoint();
@@ -167,6 +191,37 @@ function startManagedChild(args, env, onLine) {
   };
 }
 
+const STATE_KEYS = ["rooms", "participants", "votes", "events", "pending", "poison", "retries", "oldest_pending_ms",
+  "advisory_locks", "advisory_waiters", "idle_transactions", "other_role_sessions", "other_role_nonidle_sessions"];
+const NESTED_TAP = path.join(__dirname, "nested-stream-tap.cjs");
+
+// Reports the aggregate counters the candidate's monitor already reads (the shape of its readState row) together
+// with the round-trip time of that read. Nothing is queried on top of it: no new session, no new statement. The
+// wrapper is passive: results and rejections pass through untouched and a failure here can never fail a query.
+function observeSamples(client, { emit, nowMs = Date.now }) {
+  const query = client?.query;
+  if (typeof query !== "function") return client;
+  client.query = function observedQuery(...args) {
+    if (args.some(arg => typeof arg === "function")) return query.apply(this, args);
+    const started = nowMs();
+    return Promise.resolve(query.apply(this, args)).then(value => {
+      try {
+        const row = value?.rows?.[0];
+        if (row && STATE_KEYS.every(key => Number.isFinite(Number(row[key])))) {
+          emit("CINE026_DB_SAMPLE " + JSON.stringify({
+            votes: Number(row.votes), events: Number(row.events), pending: Number(row.pending), rooms: Number(row.rooms),
+            participants: Number(row.participants), advisoryWaiters: Number(row.advisory_waiters),
+            idleTransactions: Number(row.idle_transactions), oldestPendingMs: Math.round(Number(row.oldest_pending_ms)),
+            rttMs: Math.max(0, Math.round(nowMs() - started)),
+          }));
+        }
+      } catch { /* observation only */ }
+      return value;
+    });
+  };
+  return client;
+}
+
 // Adapter for the pinned candidate's existing injection points. Guard, fixture
 // ownership, lease release and SQL audit stay in the candidate's supervisor.
 async function runSupervisor({
@@ -178,12 +233,28 @@ async function runSupervisor({
   let firstClient = true;
   let stopped = false;
   let lastSnapshot = -Infinity;
+  const relay = createRelay({ gateB: args[0] === "--worker-qualification" });
   function snapshot() {
     lastSnapshot = now();
     emit("CINE026_TRANSPORT_PARTIAL " + JSON.stringify(diagnostics.summary()));
   }
   function phase(name) {
     emit("CINE026_SUPERVISOR_PHASE " + name);
+  }
+  // Reports the first publish attempt of the workload exactly once, as enumerations and bounded integers. The
+  // outer supervisor timestamps its arrival; nothing from the line is copied beyond these fields.
+  let firstSeen = false;
+  function firstPublish(line, kind) {
+    if (firstSeen || !line.includes("[CINEMATCH_REALTIME_ATTEMPT] ")) return;
+    const match = /\[CINEMATCH_REALTIME_ATTEMPT\] (\{.*\})/.exec(line);
+    let record;
+    try { record = match ? JSON.parse(match[1]) : null; } catch { return; }
+    if (!record || typeof record.r !== "string" || !/^[0-9a-f]{8}$/.test(record.r) || !Number.isSafeInteger(record.ms) || record.ms < 0) return;
+    const http = record.kind === "http" && Number.isSafeInteger(record.status) && record.status >= 100 && record.status <= 599;
+    if (!http && record.kind !== "transport") return;
+    firstSeen = true;
+    emit("CINE026_PUBLISH_FIRST " + JSON.stringify({ kind: record.kind, via: kind === "worker_start" ? "worker" : "workload",
+      status: http ? record.status : null, ms: record.ms }));
   }
   function teardown() {
     if (tearingDown) return;
@@ -208,16 +279,24 @@ async function runSupervisor({
       makeClient(config) {
         if (firstClient) firstClient = false;
         else phase("cleanup_audit");
-        return createClient(config);
+        return observeSamples(createClient(config), { emit, nowMs: now });
       },
       startChild(childArgs, env, observe) {
         if (stopped || tearingDown) throw new Error("Execution is shutting down");
         const kind = childArgs[1] === "build" ? "build" :
           childArgs.includes("scripts/realtime-worker.ts") ? "worker_start" : "workload";
         phase(kind);
-        const child = start(childArgs, env, line => {
+        // Gate B nests app and worker processes whose output the candidate keeps only as a short tail.
+        // The tap forwards their diagnostic lines and generation counts without changing the candidate.
+        const childEnv = kind === "workload" && args[0] === "--worker-qualification" ?
+          { ...env, NODE_OPTIONS: [env.NODE_OPTIONS, "--require " + NESTED_TAP].filter(Boolean).join(" ") } : env;
+        const child = start(childArgs, childEnv, line => {
           observe(line);
           diagnostics.observe(line);
+          firstPublish(line, kind);
+          // Progress and nested events reach the outer reader only through this relay.
+          const relayed = relay(line, kind === "workload");
+          if (relayed) emit(relayed);
           const attemptFailed = line.includes("[CINEMATCH_REALTIME_ATTEMPT]") && line.includes('"kind":"transport"');
           if (attemptFailed || (line.includes("[CINEMATCH_REALTIME_") && now() - lastSnapshot >= 5_000)) snapshot();
           // The outer runner rebuilds the worker proof from its allowlist.
@@ -276,4 +355,6 @@ if (require.main === module) {
   });
 }
 
-module.exports = { planWorkload, superviseWorkload, runSupervisor };
+module.exports = {
+  planWorkload, superviseWorkload, runSupervisor, observeSamples, NESTED_TAP, CLEANUP_MS, FORCE_GRACE_MS, JOB_MS, JOB_RESERVE_MS,
+};

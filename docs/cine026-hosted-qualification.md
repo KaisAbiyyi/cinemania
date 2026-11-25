@@ -56,6 +56,8 @@ Verdict codes: `COLD_START_REPRODUCED` (P1 above 1500 ms, sequential warm probes
 
 ## Realtime warm-up and the two evidence classes (`gate-a-only` and `full`)
 
+> `full` is currently refused by the consent step before any staging step (`FULL_MODE_NOT_ADMITTED`); see the last section. Statements below about `full` describe the verdict logic that remains in code, not an admitted mode.
+
 The cold-start probe (above, run 45274114936) showed that the first private broadcast after the Supabase Realtime tenant has shut down took 2632 ms (2481 ms at the provider, with a 1335 ms `CheckConnection`), while later broadcasts to the same or other rooms took 377 to 428 ms. The application publisher's 1500 ms deadline is therefore shorter than a tenant start. Hosted gates are split into two evidence classes so that neither can be mistaken for the other.
 
 ### Warm-path acceptance (this workflow)
@@ -106,7 +108,7 @@ Supervisor Actions memakai adapter terhadap hook kandidat yang sudah dipin. Guar
 
 | Anggaran | Batas |
 | --- | --- |
-| Eksekusi nominal | Gate A 7 menit per browser, Gate B 19 menit, Gate C 55 menit. Build dan child workload memakai anggaran ini. |
+| Eksekusi | Gate A diturunkan dari batas kasus yang dideklarasikan spec kandidat (lihat bagian terakhir): Chromium dan Firefox 465 detik, WebKit 1245 detik. Gate B 19 menit dan Gate C 55 menit tetap nominal. Build dan child workload memakai anggaran ini. |
 | Teardown per workload | 240 detik sejak child selesai atau supervisor diminta berhenti. Cadangan ini mencakup quiet window 135 detik, penyelesaian child/monitor, pemeriksaan port, pelepasan lease, dan audit SQL dengan koneksi baru. |
 | Eskalasi dan ceiling absolut | SIGTERM hanya dikirim ke supervisor untuk meminta teardown. Jika teardown melewati batas, grup proses mendapat SIGKILL paling lambat setelah 6 detik. Ceiling per workload adalah anggaran eksekusi yang tersedia + 240 detik + 6 detik. |
 | Job kualifikasi | Tetap 120 menit. Jam dimulai dari langkah pertama job kualifikasi. Sebelum tiap workload, waktu untuk cleanup, eskalasi dan tiga menit untuk penutupan/upload disisihkan. Workload berikutnya tidak dimulai jika sisa waktu tidak cukup. Sebelum membuka preflight untuk mode workload, runner juga mencadangkan 150 detik untuk preflight dan delapan menit untuk warm-up beserta readback. Sisa waktu dicek lagi sebelum warm-up. |
@@ -116,3 +118,93 @@ Anggaran eksekusi nominal A/B/C berjumlah 95 menit. Lima cadangan teardown dan e
 Artefak diperbarui secara atomik saat fase berubah, saat ringkasan transport parsial tersedia, dan saat hasil akhir diterima. Status `partial` menandai checkpoint dengan verdict HOLD. Hasil akhir mencantumkan fase terakhir, timeout yang terjadi, dan bukti terminal yang hilang. Counter parsial dapat membantu diagnosis tetapi tidak mengesahkan Gate A–D. Ringkasan transport terminal yang kosong juga tidak membuktikan nol kegagalan. Respons non-2xx pada ringkasan terminal tetap menggagalkan gate, termasuk penolakan yang dicatat terpisah dari counter status supervisor. Kandidat sekarang menahan log proses app/worker turunan Gate B ketika sukses. Jika laporan transportnya kosong, recovery proof Gate B tidak cukup untuk PASS dan pengambilan bukti transport turunan perlu ditangani sebelum acceptance full. Cleanup memerlukan laporan supervisor yang lengkap, pelepasan lease terkonfirmasi dan readback nol dari sesi baru. Timeout saat eksekusi tetap menggagalkan gate meskipun cleanup berhasil. SIGKILL grup tidak mencakup program yang telah membuat grup terpisah, seperti server yang diluncurkan Playwright dalam keadaan detached. Jalur paksa tetap UNCONFIRMED dan membutuhkan audit read-only terpisah setelah job. Jika job dihentikan sebelum langkah upload berjalan, checkpoint lokal mungkin tidak tersedia sebagai artefak Actions.
 
 [Run 45281615554](https://github.com/KaisAbiyyi/cinemania/actions/runs/45281615554) · [Review independen](https://github.com/KaisAbiyyi/cinemania/pull/66#pullrequestreview-6031016598).
+
+## Anggaran turunan, progres terstruktur, dan bukti proses turunan (epoch 10)
+
+Run [45328006067](https://github.com/KaisAbiyyi/cinemania/actions/runs/45328006067) (`gate-a-only` pada `main` `0c3cc6f`): preflight dan warm-up lulus, Chromium 1/1 dan Firefox 1/1 lulus dengan cleanup terverifikasi, WebKit mencapai `WORKLOAD_EXECUTION_TIMEOUT` pada batas eksekusi tanpa laporan Playwright. Transport WebKit sebelum timeout: 40 dari 40 HTTP 202, tanpa kegagalan. Bagian ini memisahkan penyebab yang dapat dibuktikan dari sumber, hipotesis yang belum terbukti, dan alat ukur yang ditambahkan agar dispatch berikutnya dapat membedakannya.
+
+### Konflik anggaran 420 detik dan test 600 detik (diamati dari sumber)
+
+Spec kandidat `00555c0` menetapkan 180 detik untuk setiap kasus (blok describe), 240 detik untuk kasus host-grace alami, dan `test.setTimeout(600000)` untuk kasus exhaustion dua puluh kartu. Tiga kasus WebKit pada Gate A (interupsi socket halaman yang sama, transport cut, exhaustion) berjalan serial dalam satu workload. Batas lama 7 menit per workload tidak dapat memuat batas deklarasi kasus itu (180 + 180 + 600 detik) ditambah startup. Test pembanding di `execution-budget.test.cjs` membaca spec yang dipin dan gagal jika repin mengubah batas yang disalin.
+
+Anggaran baru dihitung, bukan sekadar dinaikkan: `startup + jumlah batas kasus terpilih + margin pelaporan`. Startup 255 detik = `webServer.timeout` 120 detik (konfigurasi staging) + kesiapan worker 15 detik (150 polling x 100 ms) + allowance `next build` 120 detik (supervisor kandidat tidak membatasinya; teramati 2 sampai 21 detik). Margin pelaporan 30 detik.
+
+| Workload Gate A | Kasus (batas deklarasi) | Anggaran eksekusi |
+| --- | --- | --- |
+| Chromium | 1 x 180 detik | 465 detik |
+| Firefox | 1 x 180 detik | 465 detik |
+| WebKit | 180 + 180 + 600 detik | 1245 detik |
+
+Anggaran tetap terbatas dan dipotong oleh ceiling job 120 menit lewat `planWorkload`. Pemotongan dicatat sebagai `budgetBinding` pada workload, sehingga timeout karena ceiling dapat dibedakan dari child yang macet. Sebelum staging disentuh, runner menolak Gate A jika jumlah ketiga anggaran, cleanup dan grace tidak muat dalam sisa job (`WORKFLOW_BUDGET_EXHAUSTED`). Worst case Gate A: 2175 detik eksekusi + 738 detik cleanup dan grace. Timeout per kasus tetap ditegakkan oleh Playwright. Tidak ada assertion, timeout kasus, atau ambang transport yang berubah.
+
+**Keterbatasan `full` (kini diblokir fail-closed sebelum staging, lihat bagian mode `full`; mengangkatnya perlu keputusan owner dan review terpisah):** batas deklarasi tiga browser x 13 kasus berjumlah 2820 detik per browser, sekitar 146 menit dengan startup, lebih dari ceiling 120 menit. Anggaran nominal Gate B 19 menit dan Gate C 55 menit tidak dihitung ulang di PR ini. Gate C kemungkinan tidak muat dalam satu job pada laju yang teramati (perkiraan, belum diukur: exhaustion saja sekitar 7 menit per browser). Opsi yang perlu diputuskan terpisah: memecah `full` per browser, atau menaikkan ceiling job dengan alasan yang direview. Test `the full matrix cannot be guaranteed inside one 120 minute job` menjaga klaim ini.
+
+### Progres terstruktur per kasus
+
+Reporter `progress-reporter.cjs` (milik repositori workflow, dimuat dengan `--reporter=json,<path>`, kandidat tidak diubah) mencetak baris `CINE026_PROGRESS` yang hanya memuat indeks kasus pada seleksi, status enum, durasi, batas kasus, penghitung langkah per kategori, jumlah POST API, serta durasi `Before Hooks` dan `After Hooks`. Judul kasus, judul langkah, URL, locator, pesan error, attachment, dan payload tidak pernah dicetak (test memakai judul dan URL kanari, termasuk dengan Playwright asli). `printsToStdio()` bernilai true agar Playwright tidak menambah reporter dot yang menempelkan karakter di depan baris.
+
+Adapter supervisor menambah `CINE026_DB_SAMPLE` dari hasil `readState` milik monitor kandidat setiap 3 detik: jumlah votes, events, pending, rooms, participants, advisory waiters, idle transactions, usia pending tertua, dan waktu round trip pembacaan itu. Tidak ada sesi atau statement baru; wrapper pasif. Progres exhaustion 20 putaran diturunkan dari kenaikan jumlah votes (dua permintaan vote per putaran, 40 vote untuk 20 putaran), bukan dari judul langkah. Ini turunan, bukan pengukuran langsung per putaran.
+
+Ledger `workload-progress.cjs` membangun ulang semuanya dari enumerasi dan integer terbatas. Waktu memakai jam kedatangan supervisor, bukan stempel dari anak. Seri sampel dibatasi 40 titik (puncak disimpan terpisah), kasus 24, stream proses turunan 16. Saat timeout, progres diklasifikasi `CASE_ACTIVE_PROGRESSING` atau `CASE_ACTIVE_STALLED` (ambang 150 detik: tunggu diam terpanjang yang dideklarasikan, 100 detik, ditambah 50%), `BETWEEN_CASES_*`, `RUN_ENDED`, atau `NO_PROGRESS_EVIDENCE`. Klasifikasi hanya atribusi; timeout tetap HOLD.
+
+Jika Playwright sudah melaporkan `run_end` tetapi supervisor kandidat tidak masuk fase `teardown` dalam 120 detik, workload dihentikan sebagai `PLAYWRIGHT_TEARDOWN_STALLED` (HOLD) alih-alih menunggu sisa anggaran eksekusi. Pemeriksaan ini membedakan teardown yang macet dari kasus yang lambat. Quiet window 135 detik berada sesudah fase `teardown` dan tidak memicunya.
+
+### Celah diagnostik proses turunan Gate B
+
+`two-instance-qualification.cjs` kandidat menyimpan hanya ekor kecil output proses Next, worker dan committer turunan dan mencetaknya saat gagal, sehingga nol kegagalan transport tidak dapat dibedakan dari bukti yang hilang. `nested-stream-tap.cjs` dimuat dengan `--require` hanya pada proses Gate B, membungkus `child_process.spawn`, dan untuk setiap proses turunan app, worker dan fault mencatat nomor generasi, apakah stream output terpasang (`piped`), jumlah baris yang diteruskan dan dibuang, serta cara berakhir. Proses lain (misalnya browser yang diluncurkan Playwright) tidak dipasangi dan tidak dilaporkan. Preload dilepas dari `NODE_OPTIONS` proses turunan.
+
+**Sanitasi di sumber.** Baris mentah tidak pernah diteruskan. `nested-stream-lines.cjs` membangun ulang baris kanonik dari field yang diizinkan (`r` delapan heksadesimal, `v`, `ms`, `kind`, `status`, `category`, `code`, `phase`, `startedAt`, `attempt`, `outcome`, dengan pola nilai ketat) atau mengembalikan null. Teks bebas, host, identifier, dan field tambahan dibuang sebelum baris meninggalkan proses turunan (test memakai kanari rahasia pada setiap tag). Parser diagnostik kandidat dan counter supervisor tetap membaca baris kanonik yang sama, sehingga hitungan `providerTransport`, `providerStatus`, `capacity`, `lockTimeout` dan reset ikut mencakup proses turunan. Batasnya: sanitasi ini menjamin isi baris yang diteruskan, bukan bahwa proses turunan tidak menulis hal lain ke pipenya sendiri (itu tetap di dalam proses Gate B dan tidak dipublikasikan).
+
+**Kelengkapan.** Gate B hanya dapat PASS jika `nestedProblems` kosong. Rencana generasi adalah tepat, bukan minimum, dan diturunkan dari titik panggilan pada jalur sukses sumber yang dipin: 3 app (dua instance awal dan instance pertama setelah committer dibunuh), 5 worker (dua awal, dua setelah restart pertama, satu setelah restart kedua), dan 2 committer fault. Test menghitung titik panggilan itu pada sumber yang dipin sehingga repin yang mengubahnya gagal. Setiap generasi harus:
+
+- punya catatan spawn berurutan tanpa lompatan nomor, dan stream app dan worker terpasang (committer fault berjalan dengan stdio diabaikan oleh desain dan tidak diwajibkan);
+- punya catatan terminal `exit`. Spawn tanpa exit, atau diam, tidak pernah dianggap bersih;
+- tidak berakhir dengan crash tak terduga (kode non-nol tanpa sinyal). Pembunuhan yang disengaja (restart, cleanup) sah;
+- tidak perlu menghasilkan lalu lintas HTTP, karena generasi yang sengaja idle tetap sah.
+
+Catatan duplikat, tidak berurutan, tanpa spawn (orphan), malformed, atau melebihi tabel (16 stream) dihitung sebagai `invalid` dan menolak Gate B. Terakhir, untuk setiap generasi jumlah baris kanonik yang diterima pembaca luar harus tepat sama dengan jumlah yang dilaporkan diteruskan. Kelebihan pada satu generasi tidak menutupi kehilangan pada generasi lain. `exit` membawa tally pada saat itu karena `close` dapat tertunda jika turunan memegang pipe. Evidence Gate B memuat `nestedProblems` sebagai daftar enumerasi.
+
+### Relay adapter ke pembaca luar (epoch 11)
+
+Baris anak workload hanya terlihat oleh adapter (`runSupervisor`). Sebelum epoch 11 adapter tidak meneruskan `CINE026_PROGRESS` dan `CINE026_NESTED`, sehingga ledger, watchdog `run_end` dan akuntansi Gate B tidak dapat bekerja pada jalur hosted ([review R2](https://github.com/KaisAbiyyi/cinemania/pull/75#pullrequestreview-6035810251)). `event-relay.cjs` kini menjadi satu-satunya jalan:
+
+- Event diterima hanya bila field-nya tepat sama dengan skema (tanpa field tambahan) dan setiap nilai berupa enumerasi, boolean, atau integer terbatas. Baris yang dikirim dicetak ulang dari nilai tervalidasi.
+- Baris yang menyebut prefix tetapi tidak valid (termasuk terpotong, tertempel teks lain, terlalu panjang, atau berasal dari anak yang salah) menjadi penanda tetap `{"ev":"rejected"}`, paling banyak 64 per workload. Teks aslinya tidak ikut. Pembaca luar menghitungnya sebagai penolakan.
+- `CINE026_PROGRESS` hanya dari proses Playwright, `CINE026_NESTED` hanya dari proses Gate B. Build dan worker mandiri tidak boleh mengirim keduanya.
+- Tap memberi asal pada setiap baris kanonik (`CINE026_STREAM <kind> <generasi>`). Adapter memeriksa bahwa teksnya kanonik, lalu hanya meneruskan asalnya (`ev: diagnostic`). Counter kandidat dan parser transport tetap membaca baris itu di dalam adapter.
+
+**Gate A** kini juga memerlukan `progressProblems` kosong: reporter terlihat, tanpa event reporter yang ditolak, jumlah seleksi cocok, setiap indeks mulai dan selesai tepat satu kali dengan `passed`, dan `run_end` `passed`. Ini syarat tambahan yang fail-closed. Laporan Playwright, metrik terminal, transport, dan cleanup tetap wajib seperti sebelumnya.
+
+Batas: relay tidak dapat membedakan reporter dari kode lain di proses Playwright yang sama yang sengaja mencetak event valid. `exit` juga bukan EOF, sehingga penguatan Gate B (EOF per stream, bukti pembunuhan yang disengaja) tetap pekerjaan terpisah dan mode `full` tetap ditolak.
+
+### Mode `full` tidak diadmisi
+
+`authorize` menolak `DISPATCH_MODE=full` dengan `FULL_MODE_NOT_ADMITTED` setelah konsen lain valid. Langkah ini berjalan di job `verify` (tanpa kredensial dan environment staging) dan job staging bergantung padanya, sehingga penolakan terjadi sebelum langkah staging mana pun (test statis menjaga urutan itu). Konstanta `FULL_MODE_ADMITTED` bernilai false. Alasan: batas deklarasi `full` melampaui ceiling job 120 menit; Gate C tidak punya cakupan terikat sumber per browser (reporter tidak menerima daftar judul untuk `full` sehingga kasus berindeks -1 dan ledger memuat 24 kasus untuk 39); dan bukti Gate B belum direview ulang. Mengangkat penolakan memerlukan perubahan terpisah yang direview independen: misalnya sesi terpisah per browser dengan identitas browser dan kasus terikat sumber serta cleanup dan lease per sesi.
+
+### Timing publikasi aplikasi pertama setelah W3
+
+Adapter mengamati baris `[CINEMATCH_REALTIME_ATTEMPT]` pertama dari child workload mana pun dan memancarkan `CINE026_PUBLISH_FIRST` satu kali, hanya berisi enumerasi dan integer terbatas: `kind` (`http` atau `transport`), `via` (`worker` jika baris datang dari worker, `workload` jika dari proses Playwright dan server aplikasinya), `status`, dan `ms` durasi percobaan yang dilaporkan aplikasi sendiri. Supervisor luar mencap waktu kedatangannya dengan jam sendiri dan mencatat `observedAfterWorkloadStartMs` serta `observedAfterW3Ms` (dari akhir permintaan W3: `startedAt + ms` pada evidence warm-up). Label `basis: "supervisor_arrival"` berarti ini waktu observasi lokal. Ini batas atas waktu percobaan itu selesai, bukan waktu jaringan atau provider; durasi percobaan datang dari `attemptMs`. Jika W3 tidak diketahui atau nilai negatif, `observedAfterW3Ms` bernilai null, bukan angka palsu. Percobaan pertama bisa berasal dari worker, bukan jalur cepat aplikasi; `via` menunjukkan mana yang teramati. Ini tidak membuktikan publikasi pertama kasus mana pun, hanya yang pertama yang terlihat pada workload itu.
+
+### Batas atribusi dan asumsi kebijakan
+
+- Selisih jumlah votes adalah agregat seluruh staging yang teramati oleh monitor, bukan bukti penyelesaian putaran per room; selama satu room aktif per waktu, ia sekadar konsisten dengan progres putaran.
+- `continuousPendingMs` adalah kehadiran baris pending yang terambil sampel setiap 3 detik. Ia dapat menggabungkan event berbeda dan bukan latensi satu event.
+- Ambang diam 150 detik dan batas 120 detik setelah `run_end` adalah asumsi kebijakan saya (tunggu diam terpanjang yang dideklarasikan 100 detik ditambah 50%, dan jeda teardown), bukan ambang yang diukur. Timeout tetap HOLD; klasifikasi hanya atribusi dan dibedakan dari timeout yang sebenarnya.
+- Progres yang dibawa reporter adalah penghitung dan durasi, bukan bukti penyelesaian putaran individual.
+
+### Investigasi 64 lock timeout dan pending 10,28 detik (hipotesis, bukan kesimpulan)
+
+Observasi dari artefak dan log provider run 45328006067 (dibaca agen ini; sumber `postgres_logs`):
+
+- Hitungan lock timeout aplikasi (Chromium 22, Firefox 7, WebKit 64, total 93) sepadan dengan 95 baris `canceling statement due to lock timeout` di `postgres_logs` pada jendela yang sama. Kategori ini berasal dari `SET LOCAL lock_timeout = '250ms'` pada `pg_advisory_xact_lock` per room di `postgresOutbox.ts`. Itu menandai kontensi antar-pengirim outbox untuk room yang sama (jalur cepat setelah commit pada dua permintaan vote bersamaan, dan worker yang polling tiap 1000 ms). Baris tetap pending untuk percobaan berikutnya; `retry_scheduled` dan `retries` tetap 0 dan tidak ada kegagalan provider.
+- `postgres_logs` juga memuat belasan `process N acquired ShareLock on transaction ... after ~4.3 s` (4,0 sampai 4,4 detik, berulang) dan beberapa `after ~1,3 s`. Itu menandai satu transaksi menunggu transaksi lain selama sekitar 4,3 detik, pola yang konsisten dengan dua permintaan vote bersamaan yang saling menunggu `SELECT ... FOR UPDATE` pada baris room.
+
+Hipotesis H1, pending 10,28 detik sebagian besar adalah artefak ukur. Dari sumber (`postgresRoomRepository.ts`, jalur vote): `recordVoteCoreWithClient` mengambil `nowIso = this.now().toISOString()` di awal operasi, sebelum `SELECT ... FOR UPDATE` pada baris room, lalu menyimpannya sebagai `created_at` event `VOTE_RECORDED` (bukan `DEFAULT NOW()` saat commit). Jalur room-created, join, reconnect dan host-transfer memakai pola yang sama. Maka `oldest_pending_ms = clock_timestamp() - min(created_at)` mencakup waktu menunggu lock baris, antre pool, dan round trip sebelum event terlihat. Dukungan tambahan: pola tunggu 4,3 detik dan nilai puncak serupa pada ketiga browser (7,3 / 9,3 / 10,3 detik). Belum terbukti: besar kontribusi setiap bagian, karena tidak ada pengukuran langsung dari commit ke dispatch dan jalur lain tidak dibaca semuanya.
+
+Hipotesis H2, latensi per permintaan didominasi round trip database melalui pooler dari runner ke project staging: tiap transaksi vote memuat banyak statement sehingga lock baris dipegang beberapa detik. Dukungan: tunggu 4,3 detik berulang. Belum terbukti: round trip tidak diukur sebelum ini.
+
+Alat ukur yang ditambahkan, tanpa sesi atau statement baru: (1) `continuousPendingMs`, lama pending terus-menerus yang diamati sejak sampel pertama dengan pending lebih dari nol (tidak bergantung pada `created_at`); (2) waktu round trip `readState` per sampel (`rttMs`) sebagai proksi latensi pooler; (3) kenaikan votes per kasus. Membandingkan `oldestPendingMs` dengan `continuousPendingMs` pada dispatch berikutnya menguji H1; `rttMs` menguji H2. Tidak diusulkan dispatch instrumentasi tersendiri: Gate A-only berikutnya sudah menghasilkan semuanya.
+
+Reproduksi offline (tanpa staging): `workload-progress.test.cjs` memodelkan timeline tiga kasus WebKit dengan laju sekitar 21 detik per putaran exhaustion. Anggaran lama 420 detik menghentikan run saat kasus exhaustion masih `CASE_ACTIVE_PROGRESSING` pada kurang dari 44 vote, sedangkan anggaran turunan membiarkan timeline yang sama selesai. Model ini memvalidasi interaksi supervisor dan anggaran, bukan laju staging.
+
+Residual terbuka: penyebab WebKit melampaui 420 detik pada run itu (kasus lambat versus teardown) belum terbukti; progres per kasus pada dispatch berikutnya akan menunjukkannya. Sebab-akibat hint ke GET dan cold-path recovery tetap terbuka. Perubahan ini tidak mengubah kandidat, pin, deadline 1500 ms, retry, DB pool, atau gate nol kegagalan transport.
