@@ -1,5 +1,7 @@
 # CineMatch — Agent Execution Contract
 
+> **Independent reviewer (owner decision, 26 November 2026):** Claude Sonnet 5.5 (effort High), replacing Antigravity · Gemini 4 Hydrogen (xhigh). Review stays remote and read-only; merge only after owner approval for the reviewed PR and SHA. Source: Notion "Projects" page.
+
 > **MUST READ before touching this repository.** Applies to Gemini 3.8 Flash, Codex, Claude, ChatGPT, and other agents working on `KaisAbiyyi/cinemania`.
 >
 > **Source of truth:** [CineMatch governance in Notion](https://app.notion.com/p/40fc4a6aaf7381169c17ee5584d48fef) · [Project Hub / Kanban](https://app.notion.com/p/40cc4a6aaf73813bab68ef3e38d75cab) · [29 GitHub issue contracts](https://github.com/KaisAbiyyi/cinemania/issues).
