@@ -221,12 +221,12 @@ test("reproduction (run 45775582526, Chromium): eight events dispatched in the d
     counts: zero("capacity escapedReset checkedOutReset idleReset lockTimeout providerTransport providerStatus"),
     peaks: zero("pending poison retries oldest_pending_ms advisory_waiters idle_transactions other_role_sessions"),
     final: zero("rooms participants votes events pending poison retries oldest_pending_ms advisory_locks advisory_waiters idle_transactions other_role_sessions other_role_nonidle_sessions") };
-  const transport = (n, marked = n) => ({ http: { count: n, okCount: n, nonOkCount: 0, maxMs: 409, over1000Ms: 0, over1400Ms: 0 },
-    outcomes: { marked, retry_scheduled: 0, deferred: 0, permanent_rejection: 0 }, failures: [], omittedFailures: 0 });
+  const transport = (n, marked = n, retry = 0) => ({ http: { count: n, okCount: n, nonOkCount: 0, maxMs: 409, over1000Ms: 0, over1400Ms: 0 },
+    outcomes: { marked, retry_scheduled: retry, deferred: 0, permanent_rejection: 0 }, failures: [], omittedFailures: 0 });
   const sampled = (series, base) => {
     const state = { ...base };
-    for (const [events, pending] of series) {
-      observeProgressLine(state, "CINE026_DB_SAMPLE " + JSON.stringify({ votes: 3, events, pending, poison: 0, rooms: 1, participants: 2,
+    for (const [events, pending, retries = 0] of series) {
+      observeProgressLine(state, "CINE026_DB_SAMPLE " + JSON.stringify({ votes: 3, events, pending, poison: 0, retries, rooms: 1, participants: 2,
         advisoryWaiters: 0, idleTransactions: 0, oldestPendingMs: 0, rttMs: 147 }), { startedMs: 0, nowMs: () => 1 });
     }
     return state;
@@ -247,6 +247,10 @@ test("reproduction (run 45775582526, Chromium): eight events dispatched in the d
   assert.deepEqual(transportProblems(sampled(series, { ...base, transport: transport(8, 7) })), ["marked_below_dispatched"]);
   assert.deepEqual(transportProblems({ ...base, transport: transport(8) }), ["db_samples_missing"], "no independent count is no pass");
   assert.deepEqual(transportProblems(sampled(series, base)), ["transport_missing"]);
+  // Failure side: the database recorded a failed attempt (retry_count 1) that the diagnostics never showed.
+  const retriedSeries = [[0, 0], [2, 2], [2, 1, 1], [2, 0, 1]];
+  assert.deepEqual(transportProblems(sampled(retriedSeries, { ...base, transport: transport(2) })), ["failures_below_db_retries"]);
+  assert.deepEqual(transportProblems(sampled(retriedSeries, { ...base, transport: transport(2, 2, 1) })), []);
 });
 
 // The refusal of full mode must happen in the job that has no staging access, before the staging job can start.

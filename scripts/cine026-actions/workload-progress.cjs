@@ -34,8 +34,10 @@ function createProgress() {
   return {
     events: 0, rejected: 0, cases: [], samples: [], sampleCount: 0,
     peaks: { rttMs: 0, oldestPendingMs: 0, continuousPendingMs: 0 },
-    // Lower bound on the events the database shows as dispatched during the workload (see observeSample).
+    // Lower bounds on the events the database shows as dispatched, and on the publish failures it recorded durably,
+    // during the workload (see observeSample).
     dispatched: { lowerBound: 0, last: null },
+    retried: { lowerBound: 0, last: null },
     runEnd: null, lastSignalAfterMs: null, reporter: { total: null, rejected: 0 },
     nested: { tapReady: false, generations: { app: 0, worker: 0, fault: 0 }, streams: [], received: 0,
       invalid: { duplicate: 0, orphan: 0, outOfOrder: 0, overflow: 0, rejected: 0 } },
@@ -125,19 +127,24 @@ function observeReporter(progress, payload, afterMs) {
   return false;
 }
 
+function rise(counter, value) {
+  if (value > (counter.last ?? 0)) counter.lowerBound += value - (counter.last ?? 0);
+  counter.last = value;
+}
+
 function observeSample(progress, payload, afterMs) {
-  const keys = ["votes", "events", "pending", "poison", "rooms", "participants", "advisoryWaiters", "idleTransactions"];
+  const keys = ["votes", "events", "pending", "poison", "retries", "rooms", "participants", "advisoryWaiters", "idleTransactions"];
   if (!payload || keys.some(key => !bounded(payload[key], 10_000_000)) ||
     !bounded(payload.oldestPendingMs, MAX_MS) || !bounded(payload.rttMs, 600_000)) return false;
-  // Events that are neither pending nor poisoned have been dispatched. The workload starts on an empty database, so
-  // every rise of that count is a newly dispatched event; a fall means rows were deleted (fixture cleanup) and is
-  // never subtracted. Summing only the rises can miss events (a dispatch and a delete between two samples), never
-  // invent one, so the result is a lower bound that is independent of the publishers' own diagnostic lines.
-  // The three counts come from one statement (one snapshot); an inconsistent sample can only lower the count.
-  const dispatched = Math.max(0, payload.events - payload.pending - payload.poison);
-  const before = progress.dispatched.last ?? 0;
-  if (dispatched > before) progress.dispatched.lowerBound += dispatched - before;
-  progress.dispatched.last = dispatched;
+  // Events that are neither pending nor poisoned have been dispatched, and `retries` (the sum of retry_count) grows by
+  // one for every publish failure the outbox records. The candidate's supervisor refuses to start unless the database
+  // is empty (assertClean before the workload), so counting from zero is exact at the start. Afterwards every rise of
+  // either count is new; a fall means rows were deleted (fixture cleanup) and is never subtracted. Summing only the
+  // rises can miss some (an increase and a delete between two samples), never invent one, so each result is a lower
+  // bound that is independent of the publishers' own diagnostic lines. The counts of one sample come from one
+  // statement (one snapshot); an inconsistent sample can only lower a count.
+  rise(progress.dispatched, Math.max(0, payload.events - payload.pending - payload.poison));
+  rise(progress.retried, payload.retries);
   const previous = progress.samples.at(-1);
   const changed = !previous || ["votes", "events", "rooms", "participants"].some(key => previous[key] !== payload[key]);
   if (changed) signal(progress, afterMs);
@@ -151,7 +158,7 @@ function observeSample(progress, payload, afterMs) {
   const open = activeCase(progress);
   if (open) open.votesLast = payload.votes;
   progress.sampleCount++;
-  progress.samples.push({ afterMs, votes: payload.votes, events: payload.events, pending: payload.pending, poison: payload.poison,
+  progress.samples.push({ afterMs, votes: payload.votes, events: payload.events, pending: payload.pending, poison: payload.poison, retries: payload.retries,
     oldestPendingMs: payload.oldestPendingMs, advisoryWaiters: payload.advisoryWaiters,
     idleTransactions: payload.idleTransactions, rttMs: payload.rttMs });
   // Halve the series when it is full, keeping the first and the newest point. Peaks are kept separately.

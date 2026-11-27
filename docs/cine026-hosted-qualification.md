@@ -175,7 +175,18 @@ Baris anak workload hanya terlihat oleh adapter (`runSupervisor`). Sebelum epoch
 
 **Gate A** kini juga memerlukan `progressProblems` kosong: reporter terlihat, tanpa event reporter yang ditolak, jumlah seleksi cocok, setiap indeks mulai dan selesai tepat satu kali dengan `passed`, dan `run_end` `passed`. Ini syarat tambahan yang fail-closed. Laporan Playwright, metrik terminal, transport, dan cleanup tetap wajib seperti sebelumnya.
 
-**Kelengkapan transport (semua gate)** memerlukan `transportProblems` kosong. Sampel DB monitor kini memuat `poison`, dan ledger menjumlahkan setiap kenaikan `events − pending − poison` sebagai batas bawah event yang terkirim (penurunan karena cleanup fixture tidak dikurangkan, jadi angka ini tidak pernah dilebihkan). Outcome `marked` dan jumlah HTTP 2xx dari diagnostik minimal sama dengan batas bawah itu. Jika lebih kecil (`marked_below_dispatched`, `http_ok_below_dispatched`), ada penerbit yang outputnya tidak teramati, sehingga syarat nol kegagalan transport tidak bermakna. Tanpa sampel DB (`db_samples_missing`) atau tanpa laporan transport (`transport_missing`) workload juga tidak lulus. Ringkasan job mencetak `dispatched in db >= N, marked M, http 2xx K`.
+**Kelengkapan transport (semua gate)** memerlukan `transportProblems` kosong. Sampel DB monitor kini memuat `poison` dan `retries` (jumlah `retry_count`), dan ledger menjumlahkan setiap kenaikan dua hitungan berikut:
+- `events − pending − poison`: batas bawah event yang terkirim.
+- `retries`: batas bawah kegagalan publish yang dicatat outbox.
+
+Hitungan dimulai dari nol. Itu hanya benar karena supervisor kandidat menolak mulai jika database tidak kosong (`assertEmptyHostedApplication` dan `assertClean` sebelum workload). Setelah itu penurunan karena cleanup fixture tidak dikurangkan, jadi dengan syarat awal kosong itu kedua angka tidak pernah dilebihkan. Angka ini juga bisa kurang, misalnya jika event terkirim lalu terhapus di antara dua sampel.
+
+Kode masalah:
+- `marked_below_dispatched`, `http_ok_below_dispatched`: outcome `marked` atau jumlah HTTP 2xx dari diagnostik lebih kecil dari batas bawah event terkirim. Artinya ada penerbit yang outputnya tidak teramati, sehingga syarat nol kegagalan transport tidak bermakna.
+- `failures_below_db_retries`: jumlah `retry_scheduled` + `permanent_rejection` lebih kecil dari batas bawah `retries`. Artinya ada kegagalan yang tercatat di DB tetapi tidak terlihat. Percobaan `deferred` tidak mengirim request dan tidak menulis ke DB, jadi tidak dihitung di kedua sisi.
+- `db_samples_missing`, `transport_missing`: tidak ada sampel DB atau laporan transport, dan workload juga tidak lulus.
+
+Monitor kandidat membaca keadaan DB setiap 3 detik untuk Gate A, B dan C, jadi sampel tersedia di semua gate. Ringkasan job mencetak `dispatched in db >= N, marked M, http 2xx K; failures recorded in db >= R, observed F`.
 
 Batas: relay tidak dapat membedakan reporter dari kode lain di proses Playwright yang sama yang sengaja mencetak event valid. `exit` juga bukan EOF, sehingga penguatan Gate B (EOF per stream, bukti pembunuhan yang disengaja) tetap pekerjaan terpisah dan mode `full` tetap ditolak.
 

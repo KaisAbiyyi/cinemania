@@ -445,14 +445,21 @@ function progressEvidence(result, expectedCases) {
 // shows as dispatched went through one successful publish followed by a `marked` outbox record, so the diagnostics
 // must account for at least the database's own lower bound. If they do not, some publisher's output was not observed
 // (for example the application server behind Playwright's webServer), and "no failures were seen" proves nothing
-// about it. Without database samples there is no independent count, so that is a problem too, never a pass.
+// about it. The failure side is checked the same way: every failure the outbox records durably raises retry_count by
+// one and is followed, in the same transaction, by a `retry_scheduled` or `permanent_rejection` record, so a database
+// that shows more recorded failures than the diagnostics did means a failure went unseen. (A `deferred` attempt makes
+// no request and writes nothing, so it is not counted on either side.) Without database samples there is no
+// independent count, so that is a problem too, never a pass.
 function transportProblems(result) {
-  const dispatched = result.progress?.dispatched;
-  if (!result.progress || result.progress.sampleCount === 0 || !Number.isSafeInteger(dispatched?.lowerBound)) return ["db_samples_missing"];
+  const { dispatched, retried } = result.progress ?? {};
+  if (!result.progress || result.progress.sampleCount === 0 || !Number.isSafeInteger(dispatched?.lowerBound) ||
+    !Number.isSafeInteger(retried?.lowerBound)) return ["db_samples_missing"];
   if (!result.transport) return ["transport_missing"];
+  const { outcomes, http } = result.transport;
   const problems = [];
-  if (result.transport.outcomes.marked < dispatched.lowerBound) problems.push("marked_below_dispatched");
-  if (result.transport.http.okCount < dispatched.lowerBound) problems.push("http_ok_below_dispatched");
+  if (outcomes.marked < dispatched.lowerBound) problems.push("marked_below_dispatched");
+  if (http.okCount < dispatched.lowerBound) problems.push("http_ok_below_dispatched");
+  if (outcomes.retry_scheduled + outcomes.permanent_rejection < retried.lowerBound) problems.push("failures_below_db_retries");
   return problems;
 }
 
@@ -494,7 +501,8 @@ function summarize(evidence) {
       (w.progress ? "; cases ended " + w.progress.cases.filter(item => item.endedAfterMs !== null).length + "/" + w.progress.cases.length +
         "; peak pending " + w.progress.peaks.continuousPendingMs + " ms continuous, db round trip " + w.progress.peaks.rttMs + " ms" +
         "; dispatched in db >= " + w.progress.dispatched.lowerBound + ", marked " + (w.transport?.outcomes?.marked ?? "n/a") +
-        ", http 2xx " + (w.transport?.http?.okCount ?? "n/a") : "") +
+        ", http 2xx " + (w.transport?.http?.okCount ?? "n/a") + "; failures recorded in db >= " + w.progress.retried.lowerBound +
+        ", observed " + (w.transport ? w.transport.outcomes.retry_scheduled + w.transport.outcomes.permanent_rejection : "n/a") : "") +
       (w.transportProblems?.length ? "; transport evidence incomplete: " + w.transportProblems.join(", ") : "") + "."),
     ...(evidence.warmup ? ["Realtime warm-up (qualification-only): " + evidence.warmup.status + "; " +
       evidence.warmup.requests.map(r => r.id + " " + (r.http ?? r.failure) + " " + r.ms + " ms").join(", ") + "."] : []),

@@ -12,7 +12,7 @@ const { STALL_MS, RUN_END_GRACE_MS } = require("./execution-budget.cjs");
 
 const steps = (extra = {}) => ({ api: 0, expect: 0, step: 0, hook: 2, fixture: 0, other: 0, ...extra });
 const progressLine = payload => "CINE026_PROGRESS " + JSON.stringify(payload);
-const sampleLine = (extra = {}) => "CINE026_DB_SAMPLE " + JSON.stringify({ votes: 0, events: 0, pending: 0, poison: 0, rooms: 0, participants: 0,
+const sampleLine = (extra = {}) => "CINE026_DB_SAMPLE " + JSON.stringify({ votes: 0, events: 0, pending: 0, poison: 0, retries: 0, rooms: 0, participants: 0,
   advisoryWaiters: 0, idleTransactions: 0, oldestPendingMs: 0, rttMs: 180, ...extra });
 const nestedLine = payload => "CINE026_NESTED " + JSON.stringify(payload);
 
@@ -99,23 +99,29 @@ test("a long series is bounded while peaks survive", () => {
   assert.equal(peaks.rttMs, 4_321);
 });
 
-test("the database's dispatched count is a lower bound that sums rises, ignores deletions and excludes poison", () => {
+test("the database's dispatched and failure counts are lower bounds that sum rises, ignore deletions and exclude poison", () => {
   const ledger = feed([]);
-  const at = (events, pending, poison = 0) => { ledger.advance(3_000); ledger.send(sampleLine({ events, pending, poison })); };
+  const at = (events, pending, poison = 0, retries = 0) => { ledger.advance(3_000); ledger.send(sampleLine({ events, pending, poison, retries })); };
   at(0, 0);
   at(2, 2); // two new events, none dispatched
-  at(2, 0); // both dispatched
-  at(5, 1, 1); // three more: one pending, one poisoned, one dispatched
+  at(2, 0, 0, 1); // both dispatched, one after a recorded failure
+  at(5, 1, 1, 4); // three more: one pending, one poisoned (three permanent failures), one dispatched
   at(0, 0); // fixture cleanup deletes every row
-  at(3, 0); // a new room's three events dispatched
+  at(3, 0, 0, 2); // a new room's three events dispatched, two failures on the way
   at(1, 4); // inconsistent sample: clamped, never negative
   assert.equal(ledger.state.progress.dispatched.lowerBound, 2 + 1 + 3);
+  assert.equal(ledger.state.progress.retried.lowerBound, 1 + 3 + 2);
   assert.equal(ledger.state.progress.samples.at(-1).poison, 0);
-  // a sample without the poison count is rejected, not read as zero
-  assert.equal(ledger.send("CINE026_DB_SAMPLE " + JSON.stringify({ votes: 0, events: 9, pending: 0, rooms: 0, participants: 0,
-    advisoryWaiters: 0, idleTransactions: 0, oldestPendingMs: 0, rttMs: 1 })), true);
+  // a sample without the poison or retry count is rejected, not read as zero
+  for (const missing of ["poison", "retries"]) {
+    const payload = { votes: 0, events: 9, pending: 0, poison: 0, retries: 9, rooms: 0, participants: 0,
+      advisoryWaiters: 0, idleTransactions: 0, oldestPendingMs: 0, rttMs: 1 };
+    delete payload[missing];
+    assert.equal(ledger.send("CINE026_DB_SAMPLE " + JSON.stringify(payload)), true);
+  }
   assert.equal(ledger.state.progress.dispatched.lowerBound, 6);
-  assert.equal(ledger.state.progress.rejected, 1);
+  assert.equal(ledger.state.progress.retried.lowerBound, 6);
+  assert.equal(ledger.state.progress.rejected, 2);
 });
 
 test("a child's own timestamps cannot keep a stalled run looking alive", () => {
@@ -281,7 +287,7 @@ test("sampling the monitor is passive: results, rejections and callbacks pass th
   assert.deepEqual((await client.query("other")).rows[0], { n: 1 });
   await assert.rejects(() => client.query("boom"), /pooler gone/);
   assert.equal(emitted.length, 1);
-  assert.deepEqual(JSON.parse(emitted[0].slice("CINE026_DB_SAMPLE ".length)), { votes: 28, events: 40, pending: 1, poison: 0, rooms: 1, participants: 2,
+  assert.deepEqual(JSON.parse(emitted[0].slice("CINE026_DB_SAMPLE ".length)), { votes: 28, events: 40, pending: 1, poison: 0, retries: 0, rooms: 1, participants: 2,
     advisoryWaiters: 2, idleTransactions: 4, oldestPendingMs: 10_285, rttMs: 180 });
   const callback = observeSamples({ query(text, done) { done(null, text); return "native"; } }, { emit: () => assert.fail("no sample") });
   assert.equal(callback.query("x", () => {}), "native");
