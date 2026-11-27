@@ -5,10 +5,19 @@
 // candidate is not modified. It never prints a case title, step title, URL, locator, error message, attachment or
 // payload: a case is identified only by its index in the selection, which the workflow passes through
 // CINE026_PROGRESS_TITLES (a JSON array of the selected titles). Only counters and durations leave this process.
+//
+// Output forwarding. Because this reporter claims stdio, Playwright does not add its default terminal reporter, and
+// that reporter was the only thing that printed the output of the `webServer` (the application under test) and of the
+// cases. The application writes its `[CINEMATCH_REALTIME_*]` diagnostics there, so this reporter forwards that output
+// to its own stderr, line by line, for the supervisor in the same job to count. The forwarded text is never parsed or
+// stored here; the supervisor reads it through its own allowlist and nothing raw leaves the job.
 
 const STEP_CATEGORIES = { "pw:api": "api", expect: "expect", "test.step": "step", hook: "hook", fixture: "fixture" };
 const TICK_MS = 5_000;
 const MAX_MS = 6 * 3_600_000;
+const MAX_PARTIAL = 65_536;
+// Playwright prefixes every line of a webServer chunk, including the continuation of a line that a pipe split in two.
+const SERVER_PREFIX = /^(?:\u001b\[\d+m)?\[WebServer\] (?:\u001b\[\d+m)?/;
 
 function readTitles() {
   try {
@@ -33,6 +42,8 @@ const zero = () => ({ api: 0, expect: 0, step: 0, hook: 0, fixture: 0, other: 0 
 class Cine026ProgressReporter {
   constructor(options = {}) {
     this.write = options.write ?? (line => process.stdout.write(line + "\n"));
+    this.writeOutput = options.writeOutput ?? (text => process.stderr.write(text));
+    this.partial = new Map(); // source -> unterminated tail of its last chunk
     this.setTimer = options.setInterval ?? setInterval;
     this.clearTimer = options.clearInterval ?? clearInterval;
     this.titles = options.titles ?? readTitles();
@@ -46,6 +57,41 @@ class Cine026ProgressReporter {
   // unterminated progress characters would otherwise be glued to the front of the progress lines.
   printsToStdio() {
     return true;
+  }
+
+  // Complete lines go out at once; an unterminated tail waits for the rest of its line. Output of the webServer
+  // arrives without a test and output of a case with one; each stream of each source is reassembled separately.
+  forward(type, chunk, test) {
+    try {
+      const source = (test ? "case:" : "server:") + type;
+      let text = typeof chunk === "string" ? chunk : Buffer.from(chunk ?? "").toString("utf8");
+      let tail = this.partial.get(source) ?? "";
+      if (tail && !test) text = text.replace(SERVER_PREFIX, "");
+      text = tail + text;
+      const end = text.lastIndexOf("\n");
+      tail = end < 0 ? text : text.slice(end + 1);
+      if (end >= 0) this.writeOutput(text.slice(0, end + 1));
+      if (tail.length > MAX_PARTIAL) {
+        this.writeOutput(tail + "\n");
+        tail = "";
+      }
+      if (tail) this.partial.set(source, tail); else this.partial.delete(source);
+    } catch { /* forwarding must never fail a run */ }
+  }
+
+  flushOutput() {
+    for (const tail of this.partial.values()) {
+      try { this.writeOutput(tail + "\n"); } catch { /* see forward() */ }
+    }
+    this.partial.clear();
+  }
+
+  onStdOut(chunk, test) {
+    this.forward("stdout", chunk, test);
+  }
+
+  onStdErr(chunk, test) {
+    this.forward("stderr", chunk, test);
   }
 
   emit(payload) {
@@ -110,6 +156,11 @@ class Cine026ProgressReporter {
     this.timer = null;
     const status = ["passed", "failed", "timedout", "interrupted"].includes(result?.status) ? result.status : "failed";
     this.emit({ ev: "run_end", status, ms: clamp(Date.now() - this.began) });
+  }
+
+  // The webServer is stopped after onEnd, so its last lines can still arrive; onExit is the final reporter call.
+  onExit() {
+    this.flushOutput();
   }
 }
 

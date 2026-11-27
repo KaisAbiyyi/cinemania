@@ -141,7 +141,7 @@ Anggaran tetap terbatas dan dipotong oleh ceiling job 120 menit lewat `planWorkl
 
 ### Progres terstruktur per kasus
 
-Reporter `progress-reporter.cjs` (milik repositori workflow, dimuat dengan `--reporter=json,<path>`, kandidat tidak diubah) mencetak baris `CINE026_PROGRESS` yang hanya memuat indeks kasus pada seleksi, status enum, durasi, batas kasus, penghitung langkah per kategori, jumlah POST API, serta durasi `Before Hooks` dan `After Hooks`. Judul kasus, judul langkah, URL, locator, pesan error, attachment, dan payload tidak pernah dicetak (test memakai judul dan URL kanari, termasuk dengan Playwright asli). `printsToStdio()` bernilai true agar Playwright tidak menambah reporter dot yang menempelkan karakter di depan baris.
+Reporter `progress-reporter.cjs` (milik repositori workflow, dimuat dengan `--reporter=json,<path>`, kandidat tidak diubah) mencetak baris `CINE026_PROGRESS` yang hanya memuat indeks kasus pada seleksi, status enum, durasi, batas kasus, penghitung langkah per kategori, jumlah POST API, serta durasi `Before Hooks` dan `After Hooks`. Judul kasus, judul langkah, URL, locator, pesan error, attachment, dan payload tidak pernah dicetak (test memakai judul dan URL kanari, termasuk dengan Playwright asli). `printsToStdio()` bernilai true agar Playwright tidak menambah reporter dot yang menempelkan karakter di depan baris. Akibatnya reporter dot juga tidak lagi mencetak output `webServer` (server aplikasi) dan output kasus, padahal di situlah server aplikasi menulis baris `[CINEMATCH_REALTIME_*]` (celah bukti T1, run 45775582526). Karena itu reporter ini meneruskan output stdout/stderr `webServer` dan kasus ke stderr prosesnya sendiri, baris demi baris (potongan pipe yang terbelah disambung kembali), agar supervisor dapat menghitungnya. Teks yang diteruskan tidak diparse atau disimpan oleh reporter, dan hanya dibaca supervisor melalui allowlist-nya.
 
 Adapter supervisor menambah `CINE026_DB_SAMPLE` dari hasil `readState` milik monitor kandidat setiap 3 detik: jumlah votes, events, pending, rooms, participants, advisory waiters, idle transactions, usia pending tertua, dan waktu round trip pembacaan itu. Tidak ada sesi atau statement baru; wrapper pasif. Progres exhaustion 20 putaran diturunkan dari kenaikan jumlah votes (dua permintaan vote per putaran, 40 vote untuk 20 putaran), bukan dari judul langkah. Ini turunan, bukan pengukuran langsung per putaran.
 
@@ -174,6 +174,19 @@ Baris anak workload hanya terlihat oleh adapter (`runSupervisor`). Sebelum epoch
 - Tap memberi asal pada setiap baris kanonik (`CINE026_STREAM <kind> <generasi>`). Adapter memeriksa bahwa teksnya kanonik, lalu hanya meneruskan asalnya (`ev: diagnostic`). Counter kandidat dan parser transport tetap membaca baris itu di dalam adapter.
 
 **Gate A** kini juga memerlukan `progressProblems` kosong: reporter terlihat, tanpa event reporter yang ditolak, jumlah seleksi cocok, setiap indeks mulai dan selesai tepat satu kali dengan `passed`, dan `run_end` `passed`. Ini syarat tambahan yang fail-closed. Laporan Playwright, metrik terminal, transport, dan cleanup tetap wajib seperti sebelumnya.
+
+**Kelengkapan transport (semua gate)** memerlukan `transportProblems` kosong. Sampel DB monitor kini memuat `poison` dan `retries` (jumlah `retry_count`), dan ledger menjumlahkan setiap kenaikan dua hitungan berikut:
+- `events − pending − poison`: batas bawah event yang terkirim.
+- `retries`: batas bawah kegagalan publish yang dicatat outbox.
+
+Hitungan dimulai dari nol. Itu hanya benar karena supervisor kandidat menolak mulai jika database tidak kosong (`assertEmptyHostedApplication` dan `assertClean` sebelum workload). Setelah itu penurunan karena cleanup fixture tidak dikurangkan, jadi dengan syarat awal kosong itu kedua angka tidak pernah dilebihkan. Angka ini juga bisa kurang, misalnya jika event terkirim lalu terhapus di antara dua sampel.
+
+Kode masalah:
+- `marked_below_dispatched`, `http_ok_below_dispatched`: outcome `marked` atau jumlah HTTP 2xx dari diagnostik lebih kecil dari batas bawah event terkirim. Artinya ada penerbit yang outputnya tidak teramati, sehingga syarat nol kegagalan transport tidak bermakna.
+- `failures_below_db_retries`: jumlah `retry_scheduled` + `permanent_rejection` lebih kecil dari batas bawah `retries`. Artinya ada kegagalan yang tercatat di DB tetapi tidak terlihat. Percobaan `deferred` tidak mengirim request dan tidak menulis ke DB, jadi tidak dihitung di kedua sisi.
+- `db_samples_missing`, `transport_missing`: tidak ada sampel DB atau laporan transport, dan workload juga tidak lulus.
+
+Monitor kandidat membaca keadaan DB setiap 3 detik untuk Gate A, B dan C, jadi sampel tersedia di semua gate. Ringkasan job mencetak `dispatched in db >= N, marked M, http 2xx K; failures recorded in db >= R, observed F`.
 
 Batas: relay tidak dapat membedakan reporter dari kode lain di proses Playwright yang sama yang sengaja mencetak event valid. `exit` juga bukan EOF, sehingga penguatan Gate B (EOF per stream, bukti pembunuhan yang disengaja) tetap pekerjaan terpisah dan mode `full` tetap ditolak.
 
