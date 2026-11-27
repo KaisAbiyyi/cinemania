@@ -60,6 +60,20 @@ test("the full matrix cannot be guaranteed inside one 120 minute job from declar
   assert.ok(fullWorstCase > JOB_MS, "declared worst case " + fullWorstCase + " ms");
 });
 
+test("each one-gate mode, including one browser's 13 Gate C cases, fits one job from its declared limits", () => {
+  const { modePlan, checkEnvelope } = require("./qualification.cjs");
+  const MINUTE = 60_000;
+  const headroom = 150_000 + 8 * MINUTE; // preflight + warm-up, as in qualify()
+  const started = 1_700_000_000_000;
+  for (const mode of ["gate-a-only", "gate-b-only", "gate-c-chromium", "gate-c-firefox", "gate-c-webkit"]) {
+    assert.doesNotThrow(() => checkEnvelope(modePlan(mode), started, headroom, started + 1_000), mode);
+  }
+  const [c] = modePlan("gate-c-webkit");
+  assert.equal(c.requiredMs, budget.STARTUP_MS + 2_820_000 + budget.REPORT_MARGIN_MS);
+  // a job that has already lost most of its time is refused before staging is touched
+  assert.throws(() => checkEnvelope(modePlan("gate-c-webkit"), started, headroom, started + 60 * MINUTE), /WORKFLOW_BUDGET_EXHAUSTED/);
+});
+
 test("the declared-limit parser reads the describe default and per-case overrides", () => {
   const parsed = budget.parseDeclaredTimeouts([
     'test.describe("x", () => {',

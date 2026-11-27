@@ -21,11 +21,16 @@ on:
         default: false
         type: boolean
       mode:
-        description: Read-only preflight, cold-start probe, or hosted Gate A only (starts with a bounded qualification-only Realtime warm-up). The full mode is refused before any staging step until a separately reviewed change admits it
+        description: Read-only preflight, cold-start probe, one hosted gate (gate-a-only, gate-b-only, gate-c-<browser>; each starts with a bounded qualification-only Realtime warm-up), or aggregate (combines five passing one-gate runs into A-D acceptance without staging access). full and gate-b-only are refused before any staging step until separately reviewed changes admit them
         required: true
         default: preflight
         type: choice
-        options: [preflight, cold-start-probe, gate-a-only, full]
+        options: [preflight, cold-start-probe, gate-a-only, gate-b-only, gate-c-chromium, gate-c-firefox, gate-c-webkit, aggregate, full]
+      runs:
+        description: aggregate only. Five comma-separated run ids (gate-a-only, gate-b-only, gate-c-chromium, gate-c-firefox, gate-c-webkit) on the same workflow SHA
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -41,6 +46,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
@@ -62,7 +68,7 @@ jobs:
       # Run after the candidate install: the declared-limit guard reads the pinned spec and the reporter test drives
       # the candidate's locked Playwright (request-only fixture, no browsers, no staging, no credentials).
       - name: Run harness tests
-        run: node --test scripts/cine026-actions/qualification.test.cjs scripts/cine026-actions/cold-start-probe.test.cjs scripts/cine026-actions/realtime-warmup.test.cjs scripts/cine026-actions/workload-supervision.test.cjs scripts/cine026-actions/execution-budget.test.cjs scripts/cine026-actions/workload-progress.test.cjs scripts/cine026-actions/progress-reporter.test.cjs scripts/cine026-actions/nested-stream-tap.test.cjs scripts/cine026-actions/event-relay.test.cjs
+        run: node --test scripts/cine026-actions/qualification.test.cjs scripts/cine026-actions/cold-start-probe.test.cjs scripts/cine026-actions/realtime-warmup.test.cjs scripts/cine026-actions/workload-supervision.test.cjs scripts/cine026-actions/execution-budget.test.cjs scripts/cine026-actions/workload-progress.test.cjs scripts/cine026-actions/progress-reporter.test.cjs scripts/cine026-actions/nested-stream-tap.test.cjs scripts/cine026-actions/event-relay.test.cjs scripts/cine026-actions/aggregate.test.cjs
       - name: Verify target selection and all 39 entries without credentials
         run: node scripts/cine026-actions/qualification.cjs list
       - name: Verify live draft candidate with GitHub's read-only token
@@ -80,6 +86,36 @@ jobs:
           DISPATCH_EXCLUSIVE: ${{ inputs.exclusive }}
           DISPATCH_MODE: ${{ inputs.mode }}
         run: node scripts/cine026-actions/qualification.cjs authorize
+      # aggregate reads earlier runs' allowlisted artifacts with the read-only job token; it has no staging access.
+      - name: Download evidence of the runs to aggregate
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'aggregate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNS: ${{ inputs.runs }}
+        run: |
+          [[ "$RUNS" =~ ^[1-9][0-9]{0,19}(,[1-9][0-9]{0,19}){4}$ ]] || { echo "AGGREGATE_RUNS_INVALID"; exit 1; }
+          for id in ${RUNS//,/ }; do
+            gh run download "$id" --repo "$GITHUB_REPOSITORY" -n "cine026-staging-evidence-$id" -D "$RUNNER_TEMP/aggregate/$id" || echo "artifact of run $id not downloaded"
+          done
+      - name: Aggregate five one-gate runs into A-D acceptance
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'aggregate'
+        env:
+          DISPATCH_SHA: ${{ inputs.candidate }}
+          DISPATCH_PROJECT: ${{ inputs.project }}
+          DISPATCH_EXCLUSIVE: ${{ inputs.exclusive }}
+          DISPATCH_MODE: ${{ inputs.mode }}
+          AGGREGATE_RUN_IDS: ${{ inputs.runs }}
+          AGGREGATE_DIR: ${{ runner.temp }}/aggregate
+          CINE026_GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/cine026-actions/qualification.cjs aggregate
+      - name: Upload aggregated evidence
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.mode == 'aggregate'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cine026-aggregate-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/cine026-aggregate-evidence.json
+          if-no-files-found: error
+          retention-days: 90
 
   qualify:
     name: Qualify on designated staging
@@ -88,7 +124,7 @@ jobs:
       github.event_name == 'workflow_dispatch' &&
       github.repository == 'KaisAbiyyi/cinemania' &&
       github.ref == 'refs/heads/main' && github.run_attempt == '1' &&
-      inputs.exclusive
+      inputs.exclusive && inputs.mode != 'aggregate'
     environment: cine026-staging
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -114,7 +150,7 @@ jobs:
         working-directory: candidate
         run: npm ci
       - name: Install locked Playwright browsers and system dependencies
-        if: inputs.mode == 'full' || inputs.mode == 'gate-a-only'
+        if: inputs.mode == 'full' || inputs.mode == 'gate-a-only' || startsWith(inputs.mode, 'gate-c-')
         working-directory: candidate
         run: npx --no-install playwright install --with-deps chromium firefox webkit
       - name: Run guarded qualification
