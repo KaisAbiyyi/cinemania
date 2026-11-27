@@ -209,7 +209,8 @@ function observeSamples(client, { emit, nowMs = Date.now }) {
         const row = value?.rows?.[0];
         if (row && STATE_KEYS.every(key => Number.isFinite(Number(row[key])))) {
           emit("CINE026_DB_SAMPLE " + JSON.stringify({
-            votes: Number(row.votes), events: Number(row.events), pending: Number(row.pending), rooms: Number(row.rooms),
+            votes: Number(row.votes), events: Number(row.events), pending: Number(row.pending), poison: Number(row.poison),
+            rooms: Number(row.rooms),
             participants: Number(row.participants), advisoryWaiters: Number(row.advisory_waiters),
             idleTransactions: Number(row.idle_transactions), oldestPendingMs: Math.round(Number(row.oldest_pending_ms)),
             rttMs: Math.max(0, Math.round(nowMs() - started)),

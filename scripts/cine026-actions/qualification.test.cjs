@@ -213,6 +213,42 @@ test("a workload with unverified cleanup fails its Gate A stage, so cleanup fail
   ]) assert.equal(stableWorkload(broken), false);
 });
 
+test("reproduction (run 45775582526, Chromium): eight events dispatched in the database but one marked outcome observed never passes", () => {
+  const { observeProgressLine } = require("./workload-progress.cjs");
+  const { transportProblems, workloadPasses } = require("./qualification.cjs");
+  const zero = keys => Object.fromEntries(keys.split(" ").map(key => [key, 0]));
+  const metrics = { leaseRelease: "released", cleanupVerified: true,
+    counts: zero("capacity escapedReset checkedOutReset idleReset lockTimeout providerTransport providerStatus"),
+    peaks: zero("pending poison retries oldest_pending_ms advisory_waiters idle_transactions other_role_sessions"),
+    final: zero("rooms participants votes events pending poison retries oldest_pending_ms advisory_locks advisory_waiters idle_transactions other_role_sessions other_role_nonidle_sessions") };
+  const transport = (n, marked = n) => ({ http: { count: n, okCount: n, nonOkCount: 0, maxMs: 409, over1000Ms: 0, over1400Ms: 0 },
+    outcomes: { marked, retry_scheduled: 0, deferred: 0, permanent_rejection: 0 }, failures: [], omittedFailures: 0 });
+  const sampled = (series, base) => {
+    const state = { ...base };
+    for (const [events, pending] of series) {
+      observeProgressLine(state, "CINE026_DB_SAMPLE " + JSON.stringify({ votes: 3, events, pending, poison: 0, rooms: 1, participants: 2,
+        advisoryWaiters: 0, idleTransactions: 0, oldestPendingMs: 0, rttMs: 147 }), { startedMs: 0, nowMs: () => 1 });
+    }
+    return state;
+  };
+  const series = [[0, 0], [2, 2], [4, 1], [6, 0], [8, 1], [8, 0]];
+  const base = { exitCode: 0, terminalMilestone: true, metrics };
+  // Only the worker's single attempt was observed; the application server's seven were lost (T1).
+  const lost = sampled(series, { ...base, transport: transport(1) });
+  assert.equal(stableWorkload(lost), true, "the old decision passes vacuously");
+  assert.deepEqual(transportProblems(lost), ["marked_below_dispatched", "http_ok_below_dispatched"]);
+  // Gate C decides on the stable workload and the report alone, so the completeness check is the only difference.
+  assert.equal(workloadPasses("C", lost, { valid: true }), false);
+  const complete = sampled(series, { ...base, transport: transport(8) });
+  assert.deepEqual(transportProblems(complete), []);
+  assert.equal(workloadPasses("C", complete, { valid: true }), true);
+  // an ambiguous acknowledgement replays the head, so more marked outcomes than events are fine
+  assert.deepEqual(transportProblems(sampled(series, { ...base, transport: transport(9) })), []);
+  assert.deepEqual(transportProblems(sampled(series, { ...base, transport: transport(8, 7) })), ["marked_below_dispatched"]);
+  assert.deepEqual(transportProblems({ ...base, transport: transport(8) }), ["db_samples_missing"], "no independent count is no pass");
+  assert.deepEqual(transportProblems(sampled(series, base)), ["transport_missing"]);
+});
+
 // The refusal of full mode must happen in the job that has no staging access, before the staging job can start.
 test("the consent step that refuses full mode runs in the verify job and the staging job depends on it", () => {
   const fs = require("node:fs");

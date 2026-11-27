@@ -34,6 +34,8 @@ function createProgress() {
   return {
     events: 0, rejected: 0, cases: [], samples: [], sampleCount: 0,
     peaks: { rttMs: 0, oldestPendingMs: 0, continuousPendingMs: 0 },
+    // Lower bound on the events the database shows as dispatched during the workload (see observeSample).
+    dispatched: { lowerBound: 0, last: null },
     runEnd: null, lastSignalAfterMs: null, reporter: { total: null, rejected: 0 },
     nested: { tapReady: false, generations: { app: 0, worker: 0, fault: 0 }, streams: [], received: 0,
       invalid: { duplicate: 0, orphan: 0, outOfOrder: 0, overflow: 0, rejected: 0 } },
@@ -124,9 +126,18 @@ function observeReporter(progress, payload, afterMs) {
 }
 
 function observeSample(progress, payload, afterMs) {
-  const keys = ["votes", "events", "pending", "rooms", "participants", "advisoryWaiters", "idleTransactions"];
+  const keys = ["votes", "events", "pending", "poison", "rooms", "participants", "advisoryWaiters", "idleTransactions"];
   if (!payload || keys.some(key => !bounded(payload[key], 10_000_000)) ||
     !bounded(payload.oldestPendingMs, MAX_MS) || !bounded(payload.rttMs, 600_000)) return false;
+  // Events that are neither pending nor poisoned have been dispatched. The workload starts on an empty database, so
+  // every rise of that count is a newly dispatched event; a fall means rows were deleted (fixture cleanup) and is
+  // never subtracted. Summing only the rises can miss events (a dispatch and a delete between two samples), never
+  // invent one, so the result is a lower bound that is independent of the publishers' own diagnostic lines.
+  // The three counts come from one statement (one snapshot); an inconsistent sample can only lower the count.
+  const dispatched = Math.max(0, payload.events - payload.pending - payload.poison);
+  const before = progress.dispatched.last ?? 0;
+  if (dispatched > before) progress.dispatched.lowerBound += dispatched - before;
+  progress.dispatched.last = dispatched;
   const previous = progress.samples.at(-1);
   const changed = !previous || ["votes", "events", "rooms", "participants"].some(key => previous[key] !== payload[key]);
   if (changed) signal(progress, afterMs);
@@ -140,7 +151,7 @@ function observeSample(progress, payload, afterMs) {
   const open = activeCase(progress);
   if (open) open.votesLast = payload.votes;
   progress.sampleCount++;
-  progress.samples.push({ afterMs, votes: payload.votes, events: payload.events, pending: payload.pending,
+  progress.samples.push({ afterMs, votes: payload.votes, events: payload.events, pending: payload.pending, poison: payload.poison,
     oldestPendingMs: payload.oldestPendingMs, advisoryWaiters: payload.advisoryWaiters,
     idleTransactions: payload.idleTransactions, rttMs: payload.rttMs });
   // Halve the series when it is full, keeping the first and the newest point. Peaks are kept separately.

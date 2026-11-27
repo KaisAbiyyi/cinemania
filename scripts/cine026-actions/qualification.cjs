@@ -441,9 +441,24 @@ function progressEvidence(result, expectedCases) {
   return progressProblems(result, expectedCases).length === 0;
 }
 
+// Why the publish diagnostics of a workload cannot be shown to be complete, as enumerations. Every event the database
+// shows as dispatched went through one successful publish followed by a `marked` outbox record, so the diagnostics
+// must account for at least the database's own lower bound. If they do not, some publisher's output was not observed
+// (for example the application server behind Playwright's webServer), and "no failures were seen" proves nothing
+// about it. Without database samples there is no independent count, so that is a problem too, never a pass.
+function transportProblems(result) {
+  const dispatched = result.progress?.dispatched;
+  if (!result.progress || result.progress.sampleCount === 0 || !Number.isSafeInteger(dispatched?.lowerBound)) return ["db_samples_missing"];
+  if (!result.transport) return ["transport_missing"];
+  const problems = [];
+  if (result.transport.outcomes.marked < dispatched.lowerBound) problems.push("marked_below_dispatched");
+  if (result.transport.http.okCount < dispatched.lowerBound) problems.push("http_ok_below_dispatched");
+  return problems;
+}
+
 // The decision for one workload. `report` is the Playwright report (Gates A and C), `expectedCases` the Gate A selection.
 function workloadPasses(gate, result, report, expectedCases) {
-  if (!stableWorkload(result)) return false;
+  if (!stableWorkload(result) || transportProblems(result).length > 0) return false;
   if (gate === "B") return Boolean(result.worker) && nestedEvidence(result);
   return report?.valid === true && (gate !== "A" || progressEvidence(result, expectedCases));
 }
@@ -477,7 +492,10 @@ function summarize(evidence) {
       (w.progress?.firstPublish ? "; first publish attempt observed " + (w.progress.firstPublish.observedAfterW3Ms ?? "n/a") +
         " ms after W3 (via " + w.progress.firstPublish.via + ", attempt " + w.progress.firstPublish.attemptMs + " ms)" : "") +
       (w.progress ? "; cases ended " + w.progress.cases.filter(item => item.endedAfterMs !== null).length + "/" + w.progress.cases.length +
-        "; peak pending " + w.progress.peaks.continuousPendingMs + " ms continuous, db round trip " + w.progress.peaks.rttMs + " ms" : "") + "."),
+        "; peak pending " + w.progress.peaks.continuousPendingMs + " ms continuous, db round trip " + w.progress.peaks.rttMs + " ms" +
+        "; dispatched in db >= " + w.progress.dispatched.lowerBound + ", marked " + (w.transport?.outcomes?.marked ?? "n/a") +
+        ", http 2xx " + (w.transport?.http?.okCount ?? "n/a") : "") +
+      (w.transportProblems?.length ? "; transport evidence incomplete: " + w.transportProblems.join(", ") : "") + "."),
     ...(evidence.warmup ? ["Realtime warm-up (qualification-only): " + evidence.warmup.status + "; " +
       evidence.warmup.requests.map(r => r.id + " " + (r.http ?? r.failure) + " " + r.ms + " ms").join(", ") + "."] : []),
     ...(evidence.coverage ? ["Warm-path acceptance: " + evidence.coverage.warmPathAcceptance +
@@ -694,8 +712,10 @@ async function qualify(directory) {
         evidence.workload.push({ ...workload, ...result,
           missingEvidence: [!result.terminalMilestone && "terminal_milestone", !result.metrics && "terminal_metrics",
             !result.transport && "terminal_transport", result.transport && !hasTransportEvidence(result) && "observed_transport",
+            transportProblems(result).length > 0 && "transport_completeness",
             gate === "B" && !nestedEvidence(result) && "nested_streams",
             gate === "A" && !progressEvidence(result, targets.length) && "case_progress"].filter(Boolean),
+          transportProblems: transportProblems(result),
           ...(gate === "B" ? { nestedProblems: nestedProblems(result) } : {}),
           ...(gate === "A" ? { progressProblems: progressProblems(result, targets.length) } : {}),
           ...(report ? { report } : {}) });
@@ -773,4 +793,4 @@ if (require.main === module) main().catch(error => {
   process.stderr.write((safe ? message : "QUALIFICATION_HARNESS_FAILED") + "\n");
   process.exitCode = 1;
 });
-module.exports = { EXPECTED_NESTED, nestedProblems, progressProblems, workloadPasses, warmupEndMs, nestedEvidence, checkGateAEnvelope, gateAPlan, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
+module.exports = { EXPECTED_NESTED, nestedProblems, progressProblems, transportProblems, workloadPasses, warmupEndMs, nestedEvidence, checkGateAEnvelope, gateAPlan, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
