@@ -137,24 +137,36 @@ async function waitForServer(origin, timeoutMs = 90000) {
 
 function spawnNextInstance({ cwd, port, env }) {
   const nextBin = path.join(cwd, "node_modules", "next", "dist", "bin", "next");
-  const child = spawn(process.execPath, [nextBin, "dev", "--turbopack", "-p", String(port), "-H", "127.0.0.1"], {
+  const parentGuard = path.join(__dirname, "next-dev-parent-guard.cjs");
+  const child = spawn(process.execPath, ["--require", parentGuard, nextBin, "dev", "--turbopack", "-p", String(port), "-H", "127.0.0.1"], {
     cwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const closed = new Promise(resolve => child.once("close", () => resolve(true)));
   let logs = "";
   child.stdout.on("data", (d) => { logs = (logs + d.toString()).slice(-4000); });
   child.stderr.on("data", (d) => { logs = (logs + d.toString()).slice(-4000); });
-  return { child, getLogs: () => logs };
+  return { child, closed, getLogs: () => logs };
 }
 
 async function stopChild(proc) {
-  if (!proc || proc.child.killed || proc.child.exitCode !== null) return;
-  proc.child.kill("SIGKILL");
-  await new Promise((resolve) => {
-    const t = setTimeout(resolve, 2000);
-    proc.child.once("exit", () => { clearTimeout(t); resolve(); });
-  });
+  if (!proc) return;
+  const { child, closed } = proc;
+  const running = !child.killed && child.exitCode === null && child.signalCode === null;
+  if (!running && !closed) return;
+
+  const finished = closed ?? new Promise(resolve => child.once("exit", () => resolve(true)));
+  let timer;
+  try {
+    if (running) child.kill("SIGKILL");
+    return await Promise.race([
+      finished,
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), closed ? 3000 : 2000); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function spawnWorker({ cwd, env }) {
@@ -714,7 +726,7 @@ async function main() {
     hostWs.pauseRenewal(); guestWs.pauseRenewal();
     await Promise.all([stopChild(worker1), stopChild(worker2)]);
     worker1 = null; worker2 = null;
-    await stopChild(proc1);
+    assert.equal(await stopChild(proc1), true, "Instance 1 must stop and close both output streams");
     const inst2Health = await fetch(`${origin2}/api/rooms/${room2.roomId}`, { headers: { cookie: guest2Cookie } });
     assert.equal(inst2Health.status, 200, "Instance 2 must stay available while Instance 1 is down");
 
