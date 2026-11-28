@@ -74,6 +74,28 @@ jobs:
       # the candidate's locked Playwright (request-only fixture, no browsers, no staging, no credentials).
       - name: Run harness tests
         run: node --test scripts/cine026-actions/qualification.test.cjs scripts/cine026-actions/cold-start-probe.test.cjs scripts/cine026-actions/realtime-warmup.test.cjs scripts/cine026-actions/workload-supervision.test.cjs scripts/cine026-actions/execution-budget.test.cjs scripts/cine026-actions/workload-progress.test.cjs scripts/cine026-actions/progress-reporter.test.cjs scripts/cine026-actions/nested-stream-tap.test.cjs scripts/cine026-actions/event-relay.test.cjs scripts/cine026-actions/aggregate.test.cjs
+      - name: Install and smoke-test locked Chromium without staging
+        if: github.event_name == 'pull_request'
+        working-directory: candidate
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/cine026-gate-b-chromium
+        run: |
+          npx --no-install playwright install --with-deps chromium
+          node <<'NODE'
+          const { chromium } = require("@playwright/test");
+
+          async function smoke() {
+            const browser = await chromium.launch({ headless: true });
+            const version = browser.version();
+            await browser.close();
+            console.log("CINE026_GATE_B_CHROMIUM_SMOKE_OK " + version);
+          }
+
+          smoke().catch(error => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
       - name: Verify target selection and all 39 entries without credentials
         run: node scripts/cine026-actions/qualification.cjs list
       - name: Verify live draft candidate with GitHub's read-only token
@@ -160,6 +182,10 @@ jobs:
         if: inputs.mode == 'gate-b-only' || inputs.mode == 'full'
         working-directory: candidate
         run: npm ci --prefix scripts/local-supabase
+      - name: Install locked Chromium and system dependencies for Gate B
+        if: inputs.mode == 'gate-b-only'
+        working-directory: candidate
+        run: npx --no-install playwright install --with-deps chromium
       - name: Install locked Playwright browsers and system dependencies
         if: inputs.mode == 'full' || inputs.mode == 'gate-a-only' || startsWith(inputs.mode, 'gate-c-')
         working-directory: candidate
