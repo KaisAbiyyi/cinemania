@@ -179,7 +179,7 @@ Baris anak workload hanya terlihat oleh adapter (`runSupervisor`). Sebelum epoch
 - `events − pending − poison`: batas bawah event yang terkirim.
 - `retries`: batas bawah kegagalan publish yang dicatat outbox.
 
-Hitungan dimulai dari nol. Itu hanya benar karena supervisor kandidat menolak mulai jika database tidak kosong (`assertEmptyHostedApplication` dan `assertClean` sebelum workload). Setelah itu penurunan karena cleanup fixture tidak dikurangkan, jadi dengan syarat awal kosong itu kedua angka tidak pernah dilebihkan. Angka ini juga bisa kurang, misalnya jika event terkirim lalu terhapus di antara dua sampel.
+Hitungan dimulai dari nol. Itu hanya benar karena supervisor kandidat menolak mulai jika database tidak kosong (`assertEmptyHostedApplication` dan `assertClean` sebelum workload). Setelah itu penurunan karena cleanup fixture tidak dikurangkan, jadi dengan syarat awal kosong itu kedua angka tidak pernah dilebihkan. Keduanya juga bisa kurang, karena sampel diambil setiap 3 detik. Contohnya: event terkirim lalu terhapus di antara dua sampel, atau baris yang dibuat, gagal dipublish, lalu dihapus cleanup fixture sebelum sampel berikutnya. Kegagalan seperti itu tidak terlihat di sisi DB. Jadi cek ini menangkap kehilangan diagnostik yang sistematis (seperti T1), bukan setiap baris yang hilang. Penerbit tak teramati yang hanya gagal pada baris berumur pendek masih bisa lolos.
 
 Kode masalah:
 - `marked_below_dispatched`, `http_ok_below_dispatched`: outcome `marked` atau jumlah HTTP 2xx dari diagnostik lebih kecil dari batas bawah event terkirim. Artinya ada penerbit yang outputnya tidak teramati, sehingga syarat nol kegagalan transport tidak bermakna.
