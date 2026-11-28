@@ -99,6 +99,9 @@ jobs:
       - name: Install isolated local Supabase harness
         run: npm ci --prefix scripts/local-supabase
 
+      - name: Verify Gate B Next.js process shutdown on Linux
+        run: node --test tests/local-supabase/next-instance-shutdown.test.cjs
+
       - name: Run local-stack safety guards
         run: npm --prefix scripts/local-supabase run test:guards
 
