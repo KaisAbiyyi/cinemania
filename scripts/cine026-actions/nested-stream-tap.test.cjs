@@ -239,7 +239,8 @@ test("real next dev stopped like Gate B stops it: observations are recorded, and
         clearInterval(poll);
         console.log("PARENT_READY");
         killedAt = Date.now();
-        console.log("PARENT_STOP " + await stopChild(proc));
+        const stopped = await stopChild(proc);
+        console.log("PARENT_STOP " + (stopped === true));
       } else if (Date.now() > deadline || child.exitCode !== null) {
         clearInterval(poll);
         console.log("PARENT_NOT_READY");
