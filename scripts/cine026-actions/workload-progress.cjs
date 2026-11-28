@@ -188,7 +188,25 @@ function observeNested(progress, payload) {
     if (payload.n !== nested.generations[payload.kind] + 1) return flag("outOfOrder");
     nested.generations[payload.kind] = payload.n;
     if (nested.streams.length >= MAX_STREAMS) return flag("overflow");
-    nested.streams.push({ kind: payload.kind, n: payload.n, piped: payload.piped, received: 0, forwarded: 0, dropped: 0, exit: null });
+    nested.streams.push({ kind: payload.kind, n: payload.n, piped: payload.piped, received: 0, forwarded: 0, dropped: 0, exit: null,
+      killRequested: false, eof: { out: null, err: null } });
+    return true;
+  }
+  // The parent asked for this process to be stopped. Only a request recorded before the exit counts.
+  if (payload.ev === "kill") {
+    if (!["SIGKILL", "SIGTERM", "SIGINT", "other"].includes(payload.signal)) return false;
+    if (!stream) return flag("orphan");
+    if (stream.exit !== null) return flag("outOfOrder");
+    stream.killRequested = true;
+    return true;
+  }
+  // End of one output stream, with that stream's final tally.
+  if (payload.ev === "eof") {
+    if (payload.stream !== "out" && payload.stream !== "err") return false;
+    if (!bounded(payload.forwarded, 100_000_000) || !bounded(payload.dropped, 100_000_000)) return false;
+    if (!stream) return flag("orphan");
+    if (stream.eof[payload.stream] !== null) return flag("duplicate");
+    stream.eof[payload.stream] = { forwarded: payload.forwarded, dropped: payload.dropped };
     return true;
   }
   // One canonical diagnostic line of this generation arrived (its text stays in the adapter).

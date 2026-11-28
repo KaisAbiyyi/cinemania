@@ -139,3 +139,125 @@ test("the expected nested generations equal the spawn call sites of the pinned G
   // no other process is started by spawn() in that file (execFileSync children are not long-lived and are not tapped)
   assert.equal(count(/(?<![\w.])spawn\(/g), 3);
 });
+
+// Feeds the tap's output of a real parent process through the relay into a fresh ledger.
+function ledgerOf(stdout) {
+  const state = {};
+  const relay = createRelay({ gateB: true });
+  for (const line of stdout.split(/\r?\n/)) {
+    const relayed = relay(line, true);
+    if (relayed) observeProgressLine(state, relayed, { startedMs: 0, nowMs: () => 1 });
+  }
+  return state.progress.nested;
+}
+
+test("a real stop through child.kill is recorded before the exit; a kill that bypasses it is not", () => {
+  const run = spawnSync(process.execPath, ["--require", TAP, "-e", `
+    const { spawn } = require("node:child_process");
+    const start = () => spawn(process.execPath, ["-e", "console.log('ready'); setInterval(() => {}, 1000)", "scripts/realtime-worker.ts"],
+      { stdio: ["ignore", "pipe", "pipe"] });
+    const ready = child => new Promise(resolve => child.stdout.once("data", resolve));
+    const closed = child => new Promise(resolve => child.once("close", resolve));
+    (async () => {
+      const planned = start();
+      await ready(planned);
+      planned.kill("SIGKILL"); // how the pinned stopChild() stops every nested process
+      await closed(planned);
+      const outside = start();
+      await ready(outside);
+      process.kill(outside.pid, "SIGKILL"); // not through the child handle: nobody recorded asking for it
+      await closed(outside);
+    })();
+  `], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  const nested = ledgerOf(run.stdout);
+  const [planned, outside] = nested.streams;
+  assert.deepEqual([planned.killRequested, planned.exit, Boolean(planned.eof.out && planned.eof.err)], [true, "killed", true]);
+  // POSIX reports the signal (an unrequested kill); Windows has no signals and reports exit code 1 (a crash). Gate B
+  // rejects both, and only a requested kill passes.
+  assert.deepEqual([outside.killRequested, outside.exit, Boolean(outside.eof.out && outside.eof.err)],
+    [false, process.platform === "win32" ? "failed" : "killed", true]);
+  assert.deepEqual(nested.invalid, { duplicate: 0, orphan: 0, outOfOrder: 0, overflow: 0, rejected: 0 });
+  const kill = run.stdout.split(/\r?\n/).findIndex(line => line.includes('"ev":"kill","kind":"worker","n":1'));
+  const exit = run.stdout.split(/\r?\n/).findIndex(line => line.includes('"ev":"exit","kind":"worker","n":1'));
+  assert.ok(kill >= 0 && kill < exit, "the request precedes the exit");
+});
+
+function nextAppDir() {
+  const dirs = [process.env.CINE026_NEXT_APP_DIR, path.resolve("candidate")].filter(Boolean);
+  return dirs.find(dir => fs.existsSync(path.join(dir, "node_modules/next/dist/bin/next")));
+}
+
+// The pinned Gate B runs the app as `next dev`, which forks the actual server with inherited stdio, and stops it with
+// child.kill("SIGKILL") on the parent only. Requiring the end of both streams is safe only if that server does not
+// outlive its parent while holding the pipe (it has no handler for its parent's death). This runs the real `next dev`
+// of the candidate's locked dependencies the way Gate B does, on the CI runner's OS: both streams must end and the port
+// must be closed within the grace, or the server outlived the kill and Gate B cannot be admitted as it stands.
+test("real next dev stopped like Gate B stops it: the forked server dies, both streams end, the port closes", { timeout: 180_000 }, async t => {
+  const dir = nextAppDir();
+  if (!dir) {
+    assert.ok(!process.env.CI, "the candidate's locked Next.js must be available in CI");
+    t.skip("no Next.js app directory outside CI");
+    return;
+  }
+  const net = require("node:net");
+  const port = await new Promise((resolve, reject) => {
+    const server = net.createServer().once("error", reject).listen(0, "127.0.0.1", () => {
+      const { port: free } = server.address();
+      server.close(() => resolve(free));
+    });
+  });
+  const { spawn } = require("node:child_process");
+  const parent = spawn(process.execPath, ["--require", TAP, "-e", `
+    const { spawn } = require("node:child_process");
+    const nextBin = ${JSON.stringify(path.join(dir, "node_modules/next/dist/bin/next"))};
+    const child = spawn(process.execPath, [nextBin, "dev", "--turbopack", "-p", "${port}", "-H", "127.0.0.1"],
+      { cwd: ${JSON.stringify(dir)}, env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    let text = "";
+    const ends = new Set();
+    for (const name of ["stdout", "stderr"]) {
+      child[name].on("data", data => { text = (text + data).slice(-4000); });
+      child[name].on("end", () => { ends.add(name); if (ends.size === 2) console.log("PARENT_STREAMS_ENDED"); });
+    }
+    const deadline = Date.now() + 120000;
+    const poll = setInterval(() => {
+      if (/ready|Ready/.test(text)) {
+        clearInterval(poll);
+        console.log("PARENT_READY");
+        child.kill("SIGKILL");
+      } else if (Date.now() > deadline || child.exitCode !== null) {
+        clearInterval(poll);
+        console.log("PARENT_NOT_READY");
+        child.kill("SIGKILL");
+      }
+    }, 200);
+  `], { env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  parent.stdout.on("data", data => { out += data; });
+  parent.stderr.on("data", () => {});
+  const until = async (predicate, ms) => {
+    for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 250))) if (predicate()) return true;
+    return predicate();
+  };
+  try {
+    assert.ok(await until(() => /PARENT_READY|PARENT_NOT_READY/.test(out), 150_000), "next dev never reported");
+    assert.match(out, /PARENT_READY/, "next dev did not become ready");
+    // Grace for the forked server to follow its parent and for both pipes to drain.
+    const drained = await until(() => out.includes("PARENT_STREAMS_ENDED"), 20_000);
+    const portClosed = await new Promise(resolve => {
+      const socket = net.connect(port, "127.0.0.1");
+      socket.once("connect", () => { socket.destroy(); resolve(false); });
+      socket.once("error", () => resolve(true));
+    });
+    const nested = ledgerOf(out);
+    const app = nested.streams.find(stream => stream.kind === "app" && stream.n === 1);
+    assert.equal(app?.killRequested, true, out);
+    assert.equal(app?.exit, "killed", out);
+    assert.ok(drained && app.eof.out && app.eof.err, "both streams must end after the kill: the forked server outlived its parent");
+    assert.equal(portClosed, true, "the server port must be closed after the kill: the forked server outlived its parent");
+  } finally {
+    parent.kill("SIGKILL");
+    // Best effort: never leave a server behind on the runner or the developer machine.
+    try { process.kill(-parent.pid, "SIGKILL"); } catch { /* not a group leader */ }
+  }
+});

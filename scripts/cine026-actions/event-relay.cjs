@@ -44,6 +44,8 @@ const SCHEMAS = {
     spawn: { kind, n: generation, piped: bool },
     exit: { kind, n: generation, code: nullable(int(0xffff_ffff, -0x8000_0000)), signal: bool, forwarded: tally, dropped: tally },
     lines: { kind, n: generation, forwarded: tally, dropped: tally },
+    eof: { kind, n: generation, stream: oneOf("out", "err"), forwarded: tally, dropped: tally },
+    kill: { kind, n: generation, signal: oneOf("SIGKILL", "SIGTERM", "SIGINT", "other") },
   },
 };
 

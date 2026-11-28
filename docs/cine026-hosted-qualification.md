@@ -206,7 +206,13 @@ Penggantinya adalah lima dispatch satu gate. Masing-masing punya warm-up, lease,
 
 Gate C per browser kini **terikat sumber**: daftar 13 judul dikirim ke reporter progres, sehingga Gate C memerlukan `progressProblems` kosong seperti Gate A (sebelumnya kasus berindeks −1). Laporan Playwright tetap harus memuat tepat 13 kasus browser itu, semuanya `passed`.
 
-**`gate-b-only` masih ditolak** (`GATE_B_NOT_ADMITTED`) sampai bukti proses turunan Gate B diperkuat (EOF tiap stream terlihat, dan exit karena sinyal hanya dianggap disengaja bila induknya meminta) lalu direview ulang secara independen. Tanpa Gate B, agregasi tidak bisa lulus.
+**`gate-b-only` diizinkan setelah bukti proses turunan Gate B diperkuat** (epoch 15). Tap kini mencatat dua hal tambahan:
+- **`kill`**: dicatat saat induk meminta penghentian lewat `child.kill()` milik proses itu. Ini satu-satunya cara kandidat menghentikan proses turunan (`stopChild`). Exit karena sinyal tanpa permintaan yang tercatat sebelumnya (misalnya OOM killer, atau supervisor perantara yang crash) ditolak sebagai `<kind>_killed_unexpectedly`.
+- **`eof`**: akhir tiap stream output (`out`, `err`) beserta tally finalnya. Generasi yang terpasang wajib mencapai akhir kedua stream, kalau tidak ditolak sebagai `<kind>_stream_not_drained`. Rekonsiliasi baris memakai tally EOF, bukan tally saat `exit`, sehingga baris yang masih ada di pipe saat proses berakhir tidak bisa hilang tanpa terlihat.
+
+Rekaman `kill` sesudah `exit`, rekaman ganda, orphan, atau malformed dihitung `invalid`.
+
+**Risiko yang diuji, bukan diasumsikan.** Gate B menjalankan app sebagai `next dev`, yang mem-fork server sebenarnya dengan stdio diwarisi, dan server itu tidak punya handler untuk kematian induknya. Jika server itu hidup lebih lama dari induk yang di-SIGKILL, pipe tidak pernah berakhir (EOF tidak datang) dan port tetap terbuka, padahal instance itu dianggap mati. Tes `real next dev stopped like Gate B stops it` menjalankan `next dev` asli dari dependensi terkunci kandidat dengan cara yang sama, di OS runner CI, lalu mewajibkan EOF di kedua stream dan port tertutup. Hasil di Windows: server mati bersama induknya. Hasil di Linux berasal dari CI job `verify`.
 
 **Mode `aggregate`** berjalan hanya di job `verify`, dengan token baca-saja (`actions: read`), tanpa environment atau kredensial staging. Mode ini menerima tepat lima ID run (`runs`), mengunduh artefak masing-masing, dan memeriksa (`aggregate.cjs`):
 - tepat satu run per mode di atas, tanpa yang hilang, ganda atau asing;

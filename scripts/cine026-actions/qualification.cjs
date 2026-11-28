@@ -24,9 +24,10 @@ const dispatchModes = ["preflight", "cold-start-probe", "gate-a-only", "gate-b-o
 // `full` (all gates in one job) is not admitted: its declared case limits do not fit one 120 minute job. The
 // per-browser modes and `aggregate` replace it.
 const FULL_MODE_ADMITTED = false;
-// Gate B is not admitted until its nested-process evidence is hardened (end of every output stream observed, and a
-// signal exit only counted as intentional when the parent asked for it) and independently re-reviewed.
-const GATE_B_ADMITTED = false;
+// Gate B is admitted now that its nested-process evidence is hardened: the end of every attached output stream must be
+// observed (final tallies), and a signal exit only counts as a planned stop when the parent asked for it through the
+// child's kill(). The flag stays so the admission can be withdrawn in one place.
+const GATE_B_ADMITTED = true;
 const browsers = ["chromium", "firefox", "webkit"];
 const fields = ["rooms", "participants", "votes", "events", "pending", "poison",
   "retries", "oldest_pending_ms", "advisory_locks", "advisory_waiters",
@@ -415,9 +416,18 @@ function nestedProblems(result) {
       if (kind !== "fault" && stream.piped !== true) problems.add(kind + "_not_attached");
       if (stream.exit === null) problems.add(kind + "_no_terminal_record");
       else if (stream.exit === "failed") problems.add(kind + "_crashed");
+      // A signal exit is a planned stop only if the parent asked for it first.
+      else if (stream.exit === "killed" && stream.killRequested !== true) problems.add(kind + "_killed_unexpectedly");
+      // An attached generation must reach the end of both output streams; only then is its tally final. The
+      // reconciliation uses that final tally, so a line still in a pipe at exit cannot go missing unnoticed.
+      let forwarded = stream.forwarded;
+      if (stream.piped === true) {
+        if (!stream.eof?.out || !stream.eof?.err) problems.add(kind + "_stream_not_drained");
+        else forwarded = stream.eof.out.forwarded + stream.eof.err.forwarded;
+      }
       // Per generation, so a surplus of one stream cannot cover for lines lost from another.
-      if (stream.received < stream.forwarded) problems.add("forwarded_lines_lost");
-      if (stream.received > stream.forwarded) problems.add("unaccounted_lines");
+      if (stream.received < forwarded) problems.add("forwarded_lines_lost");
+      if (stream.received > forwarded) problems.add("unaccounted_lines");
     }
   }
   return [...problems];
