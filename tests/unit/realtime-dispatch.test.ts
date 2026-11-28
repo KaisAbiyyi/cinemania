@@ -7,8 +7,8 @@ describe("outbox dispatch", () => {
     const events = [{ id: "a", version: 1 }, { id: "b", version: 2 }];
     await dispatchPendingEvents("room-a", {
       withRoomLock: async (_room, work) => work({
-        pending: async () => events,
-        markDispatched: async (id) => { steps.push(`marked:${id}`); },
+        readyHead: async () => events[0],
+        markDispatched: async (id) => { steps.push(`marked:${id}`); events.shift(); },
         recordFailure: async () => {},
       }),
     }, async (hint) => { steps.push(JSON.stringify(hint)); });
@@ -18,7 +18,7 @@ describe("outbox dispatch", () => {
     const steps: string[] = [];
     await dispatchPendingEvents("room-a", {
       withRoomLock: async (_room, work) => work({
-        pending: async () => [{ id: "a", version: 1 }, { id: "b", version: 2 }],
+        readyHead: async () => ({ id: "a", version: 1 }),
         markDispatched: async (id) => { steps.push(`marked:${id}`); },
         recordFailure: async (id) => { steps.push(`failed:${id}`); },
       }),
@@ -28,7 +28,7 @@ describe("outbox dispatch", () => {
   it("distinguishes permanent event rejection from recoverable provider outages", async () => {
     const failures: boolean[] = [];
     const store = { withRoomLock: async <T>(_room: string, work: (outbox: import("@/lib/server/realtime/dispatch").LockedOutbox) => Promise<T>) => work({
-      pending: async () => [{ id: "a", version: 1 }],
+      readyHead: async () => ({ id: "a", version: 1 }),
       markDispatched: async () => {},
       recordFailure: async (_id: string, permanent: boolean) => { failures.push(permanent); },
     }) };
@@ -40,7 +40,7 @@ describe("outbox dispatch", () => {
     const steps: string[] = [];
     const sent = await dispatchPendingEvents("room-a", {
       withRoomLock: async (_room, work) => work({
-        pending: async () => [{ id: "a", version: 1 }, { id: "b", version: 2 }],
+        readyHead: async () => ({ id: "a", version: 1 }),
         markDispatched: async (id) => { steps.push(`marked:${id}`); },
         recordFailure: async (id) => { steps.push(`failed:${id}`); },
       }),

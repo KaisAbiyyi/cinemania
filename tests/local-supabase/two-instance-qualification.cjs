@@ -137,24 +137,36 @@ async function waitForServer(origin, timeoutMs = 90000) {
 
 function spawnNextInstance({ cwd, port, env }) {
   const nextBin = path.join(cwd, "node_modules", "next", "dist", "bin", "next");
-  const child = spawn(process.execPath, [nextBin, "dev", "--turbopack", "-p", String(port), "-H", "127.0.0.1"], {
+  const parentGuard = path.join(__dirname, "next-dev-parent-guard.cjs");
+  const child = spawn(process.execPath, ["--require", parentGuard, nextBin, "dev", "--turbopack", "-p", String(port), "-H", "127.0.0.1"], {
     cwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  const closed = new Promise(resolve => child.once("close", () => resolve(true)));
   let logs = "";
   child.stdout.on("data", (d) => { logs = (logs + d.toString()).slice(-4000); });
   child.stderr.on("data", (d) => { logs = (logs + d.toString()).slice(-4000); });
-  return { child, getLogs: () => logs };
+  return { child, closed, getLogs: () => logs };
 }
 
 async function stopChild(proc) {
-  if (!proc || proc.child.killed || proc.child.exitCode !== null) return;
-  proc.child.kill("SIGKILL");
-  await new Promise((resolve) => {
-    const t = setTimeout(resolve, 2000);
-    proc.child.once("exit", () => { clearTimeout(t); resolve(); });
-  });
+  if (!proc) return;
+  const { child, closed } = proc;
+  const running = !child.killed && child.exitCode === null && child.signalCode === null;
+  if (!running && !closed) return;
+
+  const finished = closed ?? new Promise(resolve => child.once("exit", () => resolve(true)));
+  let timer;
+  try {
+    if (running) child.kill("SIGKILL");
+    return await Promise.race([
+      finished,
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), closed ? 3000 : 2000); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function spawnWorker({ cwd, env }) {
@@ -714,18 +726,20 @@ async function main() {
     hostWs.pauseRenewal(); guestWs.pauseRenewal();
     await Promise.all([stopChild(worker1), stopChild(worker2)]);
     worker1 = null; worker2 = null;
-    await stopChild(proc1);
+    assert.equal(await stopChild(proc1), true, "Instance 1 must stop and close both output streams");
     const inst2Health = await fetch(`${origin2}/api/rooms/${room2.roomId}`, { headers: { cookie: guest2Cookie } });
     assert.equal(inst2Health.status, 200, "Instance 2 must stay available while Instance 1 is down");
 
     const actor = (await db.query("SELECT host_participant_id FROM public.rooms WHERE id=$1", [room2.roomId])).rows[0].host_participant_id;
     assert.equal(await crashAfterAuthorityCommit({ cwd: inst1Dir, env: baseAppEnv, roomId: room2.roomId, actorParticipantId: actor, sortBy: "vote_average.desc" }), 6);
+    const firstCommitReceiptAt = performance.now();
     assert.equal((await db.query("SELECT dispatched FROM public.room_events WHERE room_id=$1 AND version=6", [room2.roomId])).rows[0].dispatched, false);
     worker1 = spawnWorker({ cwd: inst1Dir, env: baseAppEnv });
     worker2 = spawnWorker({ cwd: inst2Dir, env: baseAppEnv });
     await Promise.all([waitForWorker(worker1), waitForWorker(worker2)]);
-    await guest2WsB.waitForVersion(6);
+    const recoveredFirst = await guest2WsB.waitForVersion(6);
     await waitForAcknowledgement(db, room2.roomId, 6);
+    const firstAckAt = performance.now();
     const outboxCheck = await db.query("SELECT dispatched FROM public.room_events WHERE room_id = $1 AND version = 6", [room2.roomId]);
     assert.equal(outboxCheck.rows[0].dispatched, true, "Recovered outbox row must be marked dispatched=true");
     assert.equal(guest2WsB.hints.filter(h => h.payload.version === 6).length, 1, "Concurrent workers must serialize the ordinary send/ack path");
@@ -733,11 +747,26 @@ async function main() {
     // Stop BOTH dispatchers, commit another real mutation, restart only worker2.
     await Promise.all([stopChild(worker1), stopChild(worker2)]);
     assert.equal(await crashAfterAuthorityCommit({ cwd: inst1Dir, env: baseAppEnv, roomId: room2.roomId, actorParticipantId: actor, sortBy: "popularity.desc" }), 7);
+    const secondCommitReceiptAt = performance.now();
     assert.equal((await db.query("SELECT dispatched FROM public.room_events WHERE room_id=$1 AND version=7", [room2.roomId])).rows[0].dispatched, false);
     worker2 = spawnWorker({ cwd: inst2Dir, env: baseAppEnv });
     await waitForWorker(worker2);
-    await guest2WsB.waitForVersion(7);
+    const recoveredSecond = await guest2WsB.waitForVersion(7);
     await waitForAcknowledgement(db, room2.roomId, 7);
+    const secondAckAt = performance.now();
+    assert.deepEqual([...new Set(guest2WsB.hints.map(hint => hint.payload.version).filter(version => version === 6 || version === 7))], [6, 7]);
+    console.log("CINE026_WORKER_RECOVERY " + JSON.stringify({
+      appCommit,
+      versions: [6, 7],
+      receiptToPrivateHintMs: [
+        Math.round(recoveredFirst.receivedAtMs - firstCommitReceiptAt),
+        Math.round(recoveredSecond.receivedAtMs - secondCommitReceiptAt),
+      ],
+      receiptToDurableReadbackMs: [
+        Math.round(firstAckAt - firstCommitReceiptAt),
+        Math.round(secondAckAt - secondCommitReceiptAt),
+      ],
+    }));
     // HTTP resumes only AFTER autonomous recovery has been observed over WS.
     guest2WsB.resumeRenewal();
     proc1 = spawnNextInstance({ cwd: inst1Dir, port: PORT_1, env: { ...baseAppEnv, PORT: String(PORT_1) } });
@@ -836,15 +865,18 @@ async function main() {
     );
     await stopChild(proc1);
     await stopChild(proc2);
-    if (createdRoomIds.length > 0) {
-      await db.query("UPDATE public.rooms SET status = 'EXPIRED', expires_at = NOW() - INTERVAL '1 second' WHERE id = ANY($1::uuid[])", [createdRoomIds]);
-      await db.query("DELETE FROM public.rooms WHERE id = ANY($1::uuid[])", [createdRoomIds]);
-      const leftover = await db.query("SELECT count(*)::int AS cnt FROM public.rooms WHERE id = ANY($1::uuid[])", [createdRoomIds]);
-      assert.equal(leftover.rows[0].cnt, 0, "Teardown must remove temporary qualification rooms");
-      console.log(JSON.stringify({ fixtureCleanup: "PASS", ownedRoomIds: createdRoomIds, remainingOwnedRooms: leftover.rows[0].cnt }));
+    try {
+      if (createdRoomIds.length > 0) {
+        await db.query("UPDATE public.rooms SET status = 'EXPIRED', expires_at = NOW() - INTERVAL '1 second' WHERE id = ANY($1::uuid[])", [createdRoomIds]);
+        await db.query("DELETE FROM public.rooms WHERE id = ANY($1::uuid[])", [createdRoomIds]);
+        const leftover = await db.query("SELECT count(*)::int AS cnt FROM public.rooms WHERE id = ANY($1::uuid[])", [createdRoomIds]);
+        assert.equal(leftover.rows[0].cnt, 0, "Teardown must remove temporary qualification rooms");
+        console.log(JSON.stringify({ fixtureCleanup: "PASS", remainingOwnedRooms: leftover.rows[0].cnt }));
+      }
+    } finally {
+      await db.end().catch(() => {});
+      fs.rmSync(tempRoot, { recursive: true, force: true });
     }
-    await db.end().catch(() => {});
-    fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 }
 
