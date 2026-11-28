@@ -206,7 +206,9 @@ Penggantinya adalah lima dispatch satu gate. Masing-masing punya warm-up, lease,
 
 Gate C per browser kini **terikat sumber**: daftar 13 judul dikirim ke reporter progres, sehingga Gate C memerlukan `progressProblems` kosong seperti Gate A (sebelumnya kasus berindeks −1). Laporan Playwright tetap harus memuat tepat 13 kasus browser itu, semuanya `passed`.
 
-**`gate-b-only` tetap ditolak** (`GATE_B_NOT_ADMITTED`). Bukti proses turunan Gate B sudah diperkuat (epoch 15), tetapi admission ditarik kembali karena tes risikonya gagal di Linux (review independen #83, run 46105227944). Tap kini mencatat dua hal tambahan:
+**Admission Gate B.** Draft ini membuka `gate-b-only` melalui validator pada branch draft. Pada baseline `main`, mode tersebut masih ditolak (`GATE_B_NOT_ADMITTED`). Draft ini tidak mengotorisasi merge atau dispatch. Prasyarat Chromium sudah masuk `main` dan [smoke Linux tanpa staging lulus](https://github.com/KaisAbiyyi/cinemania/actions/runs/46127082321/job/140923952032). Pembukaan di `main` menunggu verifikasi dan review independen pada HEAD gabungan, persetujuan merge untuk SHA yang direview, dan konfirmasi jendela staging eksklusif. Mode `full` tetap ditolak.
+
+Admission sebelumnya ditarik setelah probe menemukan proses server yatim di Linux. Tap tetap mencatat dua bagian bukti:
 - **`kill`**: dicatat saat induk meminta penghentian lewat `child.kill()` milik proses itu. Ini satu-satunya cara kandidat menghentikan proses turunan (`stopChild`). Exit karena sinyal tanpa permintaan yang tercatat sebelumnya ditolak sebagai `<kind>_killed_unexpectedly`.
 - **`eof`**: akhir tiap stream output (`out`, `err`) beserta tally finalnya. Generasi yang terpasang wajib mencapai akhir kedua stream, kalau tidak ditolak sebagai `<kind>_stream_not_drained`. Rekonsiliasi baris memakai tally EOF, bukan tally saat `exit`.
 
@@ -220,7 +222,19 @@ Tes itu kini **mencatat pengamatan terpisah** (waktu sampai akhir tiap stream, s
 
 **Chromium untuk Gate B.** Harness dua instance membuka Chromium melalui Playwright milik kandidat. Job `qualify` memasang Chromium dan dependensi sistem untuk `gate-b-only` dari direktori kandidat sebelum langkah yang menerima nilai staging. CI `pull_request` menjalankan perintah instalasi yang sama dengan cache browser khusus di direktori sementara runner, lalu membuka dan menutup Chromium headless. Log `CINE026_GATE_B_CHROMIUM_SMOKE_OK` mencatat versi browser yang berhasil dibuka. Smoke ini hanya memverifikasi prasyarat browser. Instalasi pada job `qualify` dan Gate B hosted menunggu dispatch yang diotorisasi.
 
-Pengamatan pada pin `45abb39` di Linux: kedua stream berakhir sekitar 145 ms setelah SIGKILL, tap melihat EOF keduanya, port tertutup, dan tidak ada proses tersisa di process group (run 46116701667 dan 46117405566). Pembanding pada pin yang sama dengan peluncuran mentah masih menunjukkan server yatim (run 46115536295), jadi perbedaannya adalah peluncuran lewat helper dan preload-nya. Ini tetap diagnostik: `GATE_B_ADMITTED` tetap `false`, dan membukanya adalah keputusan owner setelah beberapa run ulang pada SHA yang sama serta review baru. Langkah install di job `qualify` belum teruji karena job itu dilewati pada PR dan baru berjalan pada dispatch yang diotorisasi.
+Pada dua observasi awal, kedua stream berakhir sekitar 145 ms ([log pertama](https://github.com/KaisAbiyyi/cinemania/actions/runs/46116701667/job/140892044230), [log kedua](https://github.com/KaisAbiyyi/cinemania/actions/runs/46117405566/job/140894199036)). [Observasi akhir PR repin](https://github.com/KaisAbiyyi/cinemania/actions/runs/46119092005/job/140899412764) mencatat 197/196 ms. [Pembanding dengan peluncuran mentah dan pin yang sama](https://github.com/KaisAbiyyi/cinemania/actions/runs/46115536295/job/140888405058) masih menunjukkan server yatim.
+
+**Lima observasi tambahan berturut-turut.** PR sampling sementara memakai HEAD `770a085ebfe49b27f179ab474bcb8e931581ae6f`. Checkout merge sintetis `d70d26c2c88a1961897ce8cb657a17389125abe5` memiliki tree identik `3405790514edd43cdfc321d8e92b8c4d9d7bdf07`. Kandidat tetap `45abb39b8706311dd791a8f09cd904498fb29287`. Kelimanya merupakan upaya terpisah dari satu workflow `pull_request` pada Ubuntu 24.04 image `20261122.23.1`. [Receipt sampling](https://github.com/KaisAbiyyi/cinemania/issues/84#issuecomment-7236454067)
+
+| Upaya | Akhir stdout / stderr | EOF out / err | Port | processGroupAfter | Bukti |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 165 / 164 ms | true / true | tertutup | `[]` | [Log 1](https://github.com/KaisAbiyyi/cinemania/actions/runs/46124238220/job/140915144728) |
+| 2 | 157 / 156 ms | true / true | tertutup | `[]` | [Log 2](https://github.com/KaisAbiyyi/cinemania/actions/runs/46124238220/job/140915511301) |
+| 3 | 118 / 118 ms | true / true | tertutup | `[]` | [Log 3](https://github.com/KaisAbiyyi/cinemania/actions/runs/46124238220/job/140915840752) |
+| 4 | 96 / 95 ms | true / true | tertutup | `[]` | [Log 4](https://github.com/KaisAbiyyi/cinemania/actions/runs/46124238220/job/140916227461) |
+| 5 | 141 / 141 ms | true / true | tertutup | `[]` | [Log 5](https://github.com/KaisAbiyyi/cinemania/actions/runs/46124238220/job/140916598727) |
+
+Kelima job verifikasi menjalankan pemasangan paket tanpa staging. Instalasi paket di job `qualify`, Gate B hosted, serta agregasi lima run nyata masih **NOT RUN**. Observasi shutdown ini mencakup satu image runner dan belum mencakup alur Gate B hosted. Kelima upaya ini mendahului penggabungan [asersi nilai balik helper](https://github.com/KaisAbiyyi/cinemania/pull/90) dan [instalasi Chromium](https://github.com/KaisAbiyyi/cinemania/pull/93). CI draft pada HEAD gabungan memeriksa keduanya bersama.
 
 **Mode `aggregate`** berjalan hanya di job `verify`, dengan token baca-saja (`actions: read`), tanpa environment atau kredensial staging. Mode ini menerima tepat lima ID run (`runs`), mengunduh artefak masing-masing, dan memeriksa (`aggregate.cjs`):
 - tepat satu run per mode di atas, tanpa yang hilang, ganda atau asing;

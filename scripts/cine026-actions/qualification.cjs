@@ -24,13 +24,10 @@ const dispatchModes = ["preflight", "cold-start-probe", "gate-a-only", "gate-b-o
 // `full` (all gates in one job) is not admitted: its declared case limits do not fit one 120 minute job. The
 // per-browser modes and `aggregate` replace it.
 const FULL_MODE_ADMITTED = false;
-// Gate B stays refused. Its nested-process evidence is hardened (the end of every attached output stream must be
-// observed, and a signal exit only counts as a planned stop when the parent asked for it through the child's kill()),
-// but the hosted run stops the app with child.kill("SIGKILL") on `next dev`, which forks the real server; on Linux that
-// server was observed to keep the output pipes open after its parent died (nested-stream-tap.test.cjs, run 46105227944
-// at 164222d). Until the real window of Gate B is shown to end both streams on Linux, the EOF requirement would reject
-// a legitimate run, so admission stays withdrawn. Lifting it needs that evidence and a new independent review.
-const GATE_B_ADMITTED = false;
+// The pinned candidate stops the forked Next server when its CLI IPC channel disconnects.
+// The Linux probe uses the candidate's helpers and enforces EOF and port closure when Gate B is admitted.
+// Admission allows a scoped attempt under the existing dispatch guard. Hosted acceptance still requires evidence.
+const GATE_B_ADMITTED = true;
 const browsers = ["chromium", "firefox", "webkit"];
 const fields = ["rooms", "participants", "votes", "events", "pending", "poison",
   "retries", "oldest_pending_ms", "advisory_locks", "advisory_waiters",
