@@ -24,7 +24,16 @@ test("only a fresh main dispatch can authorize the exact candidate and exclusive
 
 test("full mode is refused by the consent step itself, before any staging step, whatever else is valid", () => {
   assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "full" }), /^Error: FULL_MODE_NOT_ADMITTED$/);
-  for (const mode of ["preflight", "cold-start-probe", "gate-a-only"]) assert.doesNotThrow(() => authorize({ ...dispatch, DISPATCH_MODE: mode }));
+  assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "gate-b-only" }), /^Error: GATE_B_NOT_ADMITTED$/);
+  for (const mode of ["preflight", "cold-start-probe", "gate-a-only", "gate-c-chromium", "gate-c-firefox", "gate-c-webkit", "aggregate"]) {
+    assert.doesNotThrow(() => authorize({ ...dispatch, DISPATCH_MODE: mode }));
+  }
+  // aggregate touches no staging and needs no exclusive window; every staged mode still does
+  assert.doesNotThrow(() => authorize({ ...dispatch, DISPATCH_MODE: "aggregate", DISPATCH_EXCLUSIVE: "false" }));
+  for (const mode of ["gate-c-chromium", "gate-c-webkit"]) {
+    assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: mode, DISPATCH_EXCLUSIVE: "false" }), /^Error: DISPATCH_CONSENT_REFUSED$/);
+  }
+  assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "aggregate", DISPATCH_SHA: "a".repeat(40) }), /^Error: DISPATCH_CONSENT_REFUSED$/);
   // An invalid request still reports the consent failure first; only a fully consented full request reports the guard.
   assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "full", DISPATCH_EXCLUSIVE: "false" }), /^Error: DISPATCH_CONSENT_REFUSED$/);
 });
@@ -131,7 +140,7 @@ test("PR lookup uses the runner token without redirects and rejects failed or ch
 const readyWarmup = () => ({ status: "READY", requests: [], cleanup: { leaseRelease: "released", readback: "PASS" } });
 const freshEvidence = (mode, preflight = "PASS") => ({ mode, preflight: { status: preflight },
   gates: { A: "NOT RUN", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" }, workload: [],
-  ...(mode === "gate-a-only" || mode === "full" ? { warmup: readyWarmup() } : {}) });
+  ...(mode === "gate-a-only" || mode === "full" || mode === "gate-b-only" || mode.startsWith("gate-c-") ? { warmup: readyWarmup() } : {}) });
 const GATE_A_VERDICT = "WARM-PATH GATE A ONLY PASSED; COLD-PATH NOT QUALIFIED";
 const FULL_VERDICT = "WARM-PATH ACCEPTANCE: ALL GATES PASSED; COLD-PATH RECOVERY NOT QUALIFIED";
 const recorder = failAt => {
@@ -164,6 +173,45 @@ test("full mode still proceeds from Gate A to B and C, and only then reports com
   assert.deepEqual(calls, ["A:chromium", "A:firefox", "A:webkit", "B", "C"]);
   evidence.gates.D = "PASS";
   assert.equal(decideVerdict(evidence, false), FULL_VERDICT);
+});
+
+test("a gate-c mode runs only its own browser's 13 source-bound cases and reports only its scoped verdict", async () => {
+  const { titles } = { titles: require("./qualification.cjs").modePlan("gate-c-chromium")[0].targets };
+  assert.equal(titles.length, 13);
+  for (const [mode, browser] of [["gate-c-chromium", "chromium"], ["gate-c-firefox", "firefox"], ["gate-c-webkit", "webkit"]]) {
+    const seen = [];
+    const evidence = freshEvidence(mode);
+    await runGateSequence(mode, async (gate, b, targets) => { seen.push([gate, b, targets]); return true; }, evidence);
+    assert.deepEqual(seen, [["C", browser, titles]]);
+    assert.deepEqual(evidence.gates, { A: "NOT RUN", B: "NOT RUN", C: "PASS", D: "NOT RUN" });
+    assert.equal(decideVerdict(evidence, false), "HOLD", "Gate D is required");
+    evidence.gates.D = "PASS";
+    assert.equal(decideVerdict(evidence, false), "WARM-PATH GATE C " + browser.toUpperCase() + " ONLY PASSED; COLD-PATH NOT QUALIFIED");
+    assert.equal(decideVerdict({ ...evidence, gates: { ...evidence.gates, A: "PASS" } }, false), "HOLD", "another gate running is not scoped");
+    assert.equal(decideVerdict({ ...evidence, warmup: undefined }, false), "HOLD", "an unwarmed run is never a pass");
+    const failed = freshEvidence(mode);
+    await runGateSequence(mode, async () => false, failed);
+    failed.gates.D = "PASS";
+    assert.equal(failed.gates.C, "FAIL");
+    assert.equal(decideVerdict(failed, false), "HOLD");
+  }
+  const b = freshEvidence("gate-b-only");
+  const calls = [];
+  await runGateSequence("gate-b-only", async (gate, browser) => { calls.push([gate, browser]); return true; }, b);
+  assert.deepEqual(calls, [["B", undefined]]);
+  b.gates.D = "PASS";
+  assert.equal(decideVerdict(b, false), "WARM-PATH GATE B ONLY PASSED; COLD-PATH NOT QUALIFIED");
+});
+
+test("a per-browser Gate C workload needs complete case progress exactly like Gate A", () => {
+  const { workloadPasses } = require("./qualification.cjs");
+  const stable = { exitCode: 0, terminalMilestone: true, metrics: { leaseRelease: "released", cleanupVerified: true,
+    final: Object.fromEntries("rooms participants votes events pending poison retries oldest_pending_ms advisory_locks advisory_waiters idle_transactions other_role_sessions other_role_nonidle_sessions".split(" ").map(k => [k, 0])),
+    counts: Object.fromEntries("capacity escapedReset checkedOutReset idleReset lockTimeout providerTransport providerStatus".split(" ").map(k => [k, 0])),
+    peaks: {} }, transport: { http: { okCount: 1, nonOkCount: 0 }, outcomes: { marked: 1, retry_scheduled: 0, permanent_rejection: 0 }, failures: [], omittedFailures: 0 },
+  progress: { sampleCount: 1, dispatched: { lowerBound: 1 }, retried: { lowerBound: 0 }, reporter: { total: null, rejected: 0 }, cases: [], runEnd: null } };
+  assert.equal(workloadPasses("C", stable, { valid: true }), true, "the refused all-browser Gate C keeps its old rule");
+  assert.equal(workloadPasses("C", stable, { valid: true }, 13), false, "a per-browser selection without progress never passes");
 });
 
 test("a Gate A failure stops execution before later browsers and never passes", async () => {

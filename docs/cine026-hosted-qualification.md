@@ -31,7 +31,7 @@ gh api repos/KaisAbiyyi/cinemania/environments/cine026-staging/variables --jq '.
 
 The agent dispatches the workflow on `main`, first in `preflight` mode. This verifies the pinned candidate, guarded staging TLS/HTTPS, project scope, capacity and empty state without creating fixtures. When it passes and the exclusive window is still confirmed, the agent dispatches a fresh `full` invocation with the same candidate and project, and `exclusive=true`. If the qualified window ends, require fresh consent. Use a new dispatch after diagnosis instead of GitHub's Re-run button, which reuses the prior invocation.
 
-`gate-a-only` mode runs only the five targeted browser cases, then Gate D cleanup and independent readback. Gates B and C stay `NOT RUN` even when Gate A passes. Its distinct success verdict is `WARM-PATH GATE A ONLY PASSED; COLD-PATH NOT QUALIFIED`, which is never complete A–D acceptance and never a cold-path result. Both workload modes begin with a bounded Realtime warm-up, described below. The `full` workflow runs the five targeted cases, hosted worker proof and 39 browser cases in order. Each workload invokes the existing PostgreSQL qualification lease and the supervisor's post-release read-only audit. Repository concurrency prevents overlapping Actions jobs. The exclusive window must also cover any local or other external staging users.
+`gate-a-only` mode runs only the five targeted browser cases, then Gate D cleanup and independent readback. Gates B and C stay `NOT RUN` even when Gate A passes. Its distinct success verdict is `WARM-PATH GATE A ONLY PASSED; COLD-PATH NOT QUALIFIED`, which is never complete A–D acceptance and never a cold-path result. Both workload modes begin with a bounded Realtime warm-up, described below. The `full` workflow (refused, `FULL_MODE_NOT_ADMITTED`) would run the five targeted cases, hosted worker proof and 39 browser cases in order; it is replaced by one-gate modes (`gate-b-only`, `gate-c-<browser>`) and the `aggregate` mode, described in the section on per-gate modes. Each workload invokes the existing PostgreSQL qualification lease and the supervisor's post-release read-only audit. Repository concurrency prevents overlapping Actions jobs. The exclusive window must also cover any local or other external staging users.
 
 The job checks cleanup even when a workload exits unsuccessfully. A timeout, cancelled job or lost runner can prevent cleanup from being confirmed. In that case keep the HOLD and verify the designated project with a fresh guarded read-only session before any retry. Only run-owned fixtures may be removed through authorized cleanup.
 
@@ -108,7 +108,7 @@ Supervisor Actions memakai adapter terhadap hook kandidat yang sudah dipin. Guar
 
 | Anggaran | Batas |
 | --- | --- |
-| Eksekusi | Gate A diturunkan dari batas kasus yang dideklarasikan spec kandidat (lihat bagian terakhir): Chromium dan Firefox 465 detik, WebKit 1245 detik. Gate B 19 menit dan Gate C 55 menit tetap nominal. Build dan child workload memakai anggaran ini. |
+| Eksekusi | Gate A diturunkan dari batas kasus yang dideklarasikan spec kandidat (lihat bagian terakhir): Chromium dan Firefox 465 detik, WebKit 1245 detik. Gate B 19 menit tetap nominal. Gate C kini dijalankan per browser, dengan anggaran dari batas deklarasi 13 kasus (3105 detik); lihat bagian mode per gate. Build dan child workload memakai anggaran ini. |
 | Teardown per workload | 240 detik sejak child selesai atau supervisor diminta berhenti. Cadangan ini mencakup quiet window 135 detik, penyelesaian child/monitor, pemeriksaan port, pelepasan lease, dan audit SQL dengan koneksi baru. |
 | Eskalasi dan ceiling absolut | SIGTERM hanya dikirim ke supervisor untuk meminta teardown. Jika teardown melewati batas, grup proses mendapat SIGKILL paling lambat setelah 6 detik. Ceiling per workload adalah anggaran eksekusi yang tersedia + 240 detik + 6 detik. |
 | Job kualifikasi | Tetap 120 menit. Jam dimulai dari langkah pertama job kualifikasi. Sebelum tiap workload, waktu untuk cleanup, eskalasi dan tiga menit untuk penutupan/upload disisihkan. Workload berikutnya tidak dimulai jika sisa waktu tidak cukup. Sebelum membuka preflight untuk mode workload, runner juga mencadangkan 150 detik untuk preflight dan delapan menit untuk warm-up beserta readback. Sisa waktu dicek lagi sebelum warm-up. |
@@ -190,9 +190,33 @@ Monitor kandidat membaca keadaan DB setiap 3 detik untuk Gate A, B dan C, jadi s
 
 Batas: relay tidak dapat membedakan reporter dari kode lain di proses Playwright yang sama yang sengaja mencetak event valid. `exit` juga bukan EOF, sehingga penguatan Gate B (EOF per stream, bukti pembunuhan yang disengaja) tetap pekerjaan terpisah dan mode `full` tetap ditolak.
 
-### Mode `full` tidak diadmisi
+### Mode `full` tidak diadmisi; acceptance A–D lewat mode per gate dan agregasi
 
-`authorize` menolak `DISPATCH_MODE=full` dengan `FULL_MODE_NOT_ADMITTED` setelah konsen lain valid. Langkah ini berjalan di job `verify` (tanpa kredensial dan environment staging) dan job staging bergantung padanya, sehingga penolakan terjadi sebelum langkah staging mana pun (test statis menjaga urutan itu). Konstanta `FULL_MODE_ADMITTED` bernilai false. Alasan: batas deklarasi `full` melampaui ceiling job 120 menit; Gate C tidak punya cakupan terikat sumber per browser (reporter tidak menerima daftar judul untuk `full` sehingga kasus berindeks -1 dan ledger memuat 24 kasus untuk 39); dan bukti Gate B belum direview ulang. Mengangkat penolakan memerlukan perubahan terpisah yang direview independen: misalnya sesi terpisah per browser dengan identitas browser dan kasus terikat sumber serta cleanup dan lease per sesi.
+Keputusan owner (2026-11-28): `full` dipecah per browser, dan cold-path dipisahkan dari CINE-026 ke #81.
+
+`authorize` tetap menolak `DISPATCH_MODE=full` dengan `FULL_MODE_NOT_ADMITTED`, karena semua gate dalam satu job melampaui ceiling 120 menit. Penolakan terjadi di job `verify` (tanpa kredensial dan environment staging) sebelum langkah staging mana pun.
+
+Penggantinya adalah lima dispatch satu gate. Masing-masing punya warm-up, lease, cleanup dan Gate D sendiri:
+
+| Mode | Isi | Anggaran dari batas deklarasi | Verdict sukses |
+| --- | --- | --- | --- |
+| `gate-a-only` | 5 kasus Gate A | Chromium/Firefox 465 s, WebKit 1245 s | `WARM-PATH GATE A ONLY PASSED; COLD-PATH NOT QUALIFIED` |
+| `gate-b-only` | bukti worker Gate B | 19 menit nominal | `WARM-PATH GATE B ONLY PASSED; …` |
+| `gate-c-chromium`, `gate-c-firefox`, `gate-c-webkit` | 13 kasus satu browser | 3105 s (11 × 180 s + 240 s + 600 s + startup + margin), sekitar 52 menit | `WARM-PATH GATE C <BROWSER> ONLY PASSED; …` |
+
+Gate C per browser kini **terikat sumber**: daftar 13 judul dikirim ke reporter progres, sehingga Gate C memerlukan `progressProblems` kosong seperti Gate A (sebelumnya kasus berindeks −1). Laporan Playwright tetap harus memuat tepat 13 kasus browser itu, semuanya `passed`.
+
+**`gate-b-only` masih ditolak** (`GATE_B_NOT_ADMITTED`) sampai bukti proses turunan Gate B diperkuat (EOF tiap stream terlihat, dan exit karena sinyal hanya dianggap disengaja bila induknya meminta) lalu direview ulang secara independen. Tanpa Gate B, agregasi tidak bisa lulus.
+
+**Mode `aggregate`** berjalan hanya di job `verify`, dengan token baca-saja (`actions: read`), tanpa environment atau kredensial staging. Mode ini menerima tepat lima ID run (`runs`), mengunduh artefak masing-masing, dan memeriksa (`aggregate.cjs`):
+- tepat satu run per mode di atas, tanpa yang hilang, ganda atau asing;
+- setiap run adalah `workflow_dispatch` workflow ini dari `main`, attempt 1, `completed`/`success`, dan artefaknya memuat `runId` run itu sendiri (artefak tidak bisa ditukar antar-run);
+- SHA workflow sama di kelima run dan sama dengan `head_sha` run (run A tidak pernah menjadi bukti untuk SHA B), dan kandidat sama;
+- setiap artefak `terminal`, verdict sukses mode-nya sendiri, preflight PASS, gate lain `NOT RUN`, Gate D PASS, warm-up READY dengan cleanup terkonfirmasi, tanpa `failure`, dan tanpa `missingEvidence` atau `transportProblems` di workload mana pun.
+
+Agregasi tidak menilai ulang gate, karena setiap verdict sudah diputuskan harness pada SHA itu. Masalah dilaporkan sebagai enumerasi, dan hasilnya HOLD kecuali daftar masalahnya kosong. Verdict sukses: `WARM-PATH ACCEPTANCE: ALL GATES PASSED ACROSS FIVE RUNS; COLD-PATH RECOVERY NOT QUALIFIED`. Artefak `cine026-aggregate-evidence-<run>` disimpan 90 hari.
+
+Karena artefak harus memuat `runId` dan SHA workflow harus sama, run lama (misalnya Gate A run 46040359400 pada `e264b97`) tidak bisa diagregasi. Kelima run harus dijalankan ulang pada SHA workflow yang sama setelah perubahan ini dan penguatan Gate B masuk `main`.
 
 ### Timing publikasi aplikasi pertama setelah W3
 

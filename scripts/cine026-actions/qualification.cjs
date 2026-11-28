@@ -10,16 +10,23 @@ const { readWarmup, warmRealtimeTenant } = require("./realtime-warmup.cjs");
 const { planWorkload, superviseWorkload, CLEANUP_MS, FORCE_GRACE_MS, JOB_MS, JOB_RESERVE_MS } = require("./workload-supervision.cjs");
 const { requiredExecutionMs } = require("./execution-budget.cjs");
 const { observeProgressLine } = require("./workload-progress.cjs");
+const { aggregate, summarizeAggregate, parseRunIds } = require("./aggregate.cjs");
 
 const candidate = path.resolve("candidate");
 const temp = process.env.RUNNER_TEMP;
 const project = "dmrbticnsczhyaiftrar";
 const sha = "00555c03d4173ac54750677207b78252e2063257";
-const dispatchModes = ["preflight", "cold-start-probe", "gate-a-only", "full"];
-// `full` is not admitted. Its declared case limits do not fit one 120 minute job, Gate C has no source-bound
-// per-browser coverage (the progress reporter gets no title list for it and the ledger holds 24 cases for 39),
-// and Gate B evidence has not been re-reviewed. Lifting this needs a separate, independently reviewed change.
+// Gate C runs one browser per dispatch: 13 cases at their declared limits (about 52 minutes) fit one job, while the
+// 39 cases of all three browsers (about 146 minutes) do not. Complete A-D acceptance is the `aggregate` of five runs
+// (see aggregate.cjs): gate-a-only, gate-b-only and the three gate-c modes, all on the same workflow SHA.
+const GATE_C_MODES = Object.freeze({ "gate-c-chromium": "chromium", "gate-c-firefox": "firefox", "gate-c-webkit": "webkit" });
+const dispatchModes = ["preflight", "cold-start-probe", "gate-a-only", "gate-b-only", ...Object.keys(GATE_C_MODES), "full", "aggregate"];
+// `full` (all gates in one job) is not admitted: its declared case limits do not fit one 120 minute job. The
+// per-browser modes and `aggregate` replace it.
 const FULL_MODE_ADMITTED = false;
+// Gate B is not admitted until its nested-process evidence is hardened (end of every output stream observed, and a
+// signal exit only counted as intentional when the parent asked for it) and independently re-reviewed.
+const GATE_B_ADMITTED = false;
 const browsers = ["chromium", "firefox", "webkit"];
 const fields = ["rooms", "participants", "votes", "events", "pending", "poison",
   "retries", "oldest_pending_ms", "advisory_locks", "advisory_waiters",
@@ -55,11 +62,13 @@ function authorize(env) {
   requireCondition(env.GITHUB_EVENT_NAME === "workflow_dispatch" &&
     env.GITHUB_REPOSITORY === "KaisAbiyyi/cinemania" && env.GITHUB_REF === "refs/heads/main" &&
     env.GITHUB_RUN_ATTEMPT === "1", "DISPATCH_CONTEXT_REFUSED");
+  // `aggregate` reads the artifacts of earlier runs and never touches staging, so it needs no exclusive window.
   requireCondition(env.DISPATCH_SHA === sha && env.DISPATCH_PROJECT === project &&
-    env.DISPATCH_EXCLUSIVE === "true" && dispatchModes.includes(env.DISPATCH_MODE),
+    (env.DISPATCH_EXCLUSIVE === "true" || env.DISPATCH_MODE === "aggregate") && dispatchModes.includes(env.DISPATCH_MODE),
   "DISPATCH_CONSENT_REFUSED");
   // Fail-closed admission: refused before any staging step runs (this check is part of the consent step).
   requireCondition(FULL_MODE_ADMITTED || env.DISPATCH_MODE !== "full", "FULL_MODE_NOT_ADMITTED");
+  requireCondition(GATE_B_ADMITTED || env.DISPATCH_MODE !== "gate-b-only", "GATE_B_NOT_ADMITTED");
 }
 
 function verifyCheckout() {
@@ -463,11 +472,13 @@ function transportProblems(result) {
   return problems;
 }
 
-// The decision for one workload. `report` is the Playwright report (Gates A and C), `expectedCases` the Gate A selection.
+// The decision for one workload. `report` is the Playwright report (Gates A and C), `expectedCases` the size of the
+// source-bound selection given to the progress reporter (every Gate A workload, and a per-browser Gate C workload).
 function workloadPasses(gate, result, report, expectedCases) {
   if (!stableWorkload(result) || transportProblems(result).length > 0) return false;
   if (gate === "B") return Boolean(result.worker) && nestedEvidence(result);
-  return report?.valid === true && (gate !== "A" || progressEvidence(result, expectedCases));
+  const sourceBound = gate === "A" || Number.isSafeInteger(expectedCases);
+  return report?.valid === true && (!sourceBound || progressEvidence(result, expectedCases));
 }
 
 function stableWorkload(result) {
@@ -485,6 +496,7 @@ const preflightCodes = new Set([
   "STAGING_ISOLATION_FAILED", "SERVER_SESSION_BUDGET_INSUFFICIENT", "STAGING_HTTPS_HEALTH_FAILED",
   "STAGING_PG_CONNECTION_FAILED", "CANDIDATE_SUPERVISOR_UNSUPPORTED", "LEASE_BUSY", "WARMUP_CONFIGURATION_INVALID", "WARMUP_NOT_READY",
   "WARMUP_CLEANUP_UNCONFIRMED", "WORKFLOW_BUDGET_EXHAUSTED", "WORKLOAD_INTERRUPTED", "FULL_MODE_NOT_ADMITTED",
+  "GATE_B_NOT_ADMITTED", "AGGREGATE_RUNS_INVALID", "AGGREGATE_HOLD",
 ]);
 function summarize(evidence) {
   return ["## CINE-026/063 staging qualification", "",
@@ -511,11 +523,22 @@ function summarize(evidence) {
     ...(evidence.mode === "cold-start-probe" && evidence.probe ? ["Probe: " + evidence.probe.verdict + "; cold first " + evidence.probe.coldFirstMs +
       " ms, warm median " + evidence.probe.warmMedianMs + " ms, warm max " + evidence.probe.warmMaxMs + " ms, concurrent max " +
       evidence.probe.concurrentMaxMs + " ms. Diagnostic only: not Gate A-D acceptance."] : []),
-    ...(evidence.mode === "gate-a-only" ? ["Scope: Gate A only. Gates B and C were intentionally not run; this is not A-D acceptance."] : []),
+    ...(SCOPES[evidence.mode] ? ["Scope: " + SCOPES[evidence.mode] + " only. The other gates were intentionally not run; this is " +
+      "not A-D acceptance on its own (see the aggregate mode)."] : []),
     "", "Evidence contains allowlisted counts and timings only.", ""].join("\n");
 }
 
-const workloadModes = ["gate-a-only", "full"];
+// One-gate dispatch modes: the gate each one runs, its scope label and its own success verdict. A scoped pass is
+// never complete A-D acceptance; only `aggregate` can combine five of them into that.
+const SCOPES = Object.freeze({
+  "gate-a-only": "Gate A", "gate-b-only": "Gate B",
+  ...Object.fromEntries(Object.entries(GATE_C_MODES).map(([mode, browser]) => [mode, "Gate C " + browser.toUpperCase()])),
+});
+const SCOPED_GATE = Object.freeze({ "gate-a-only": "A", "gate-b-only": "B", ...Object.fromEntries(Object.keys(GATE_C_MODES).map(mode => [mode, "C"])) });
+function scopedVerdict(mode) {
+  return "WARM-PATH " + SCOPES[mode].toUpperCase() + " ONLY PASSED; COLD-PATH NOT QUALIFIED";
+}
+const workloadModes = [...Object.keys(SCOPES), "full"];
 const LEASE_KEY = "cinematch:hosted-qualification";
 const POOLER_QUIET_WINDOW_MS = 135_000;
 
@@ -607,13 +630,22 @@ async function runWarmupSession(env, evidence, deps = probeDependencies()) {
 function coverageOf(evidence) {
   if (!workloadModes.includes(evidence.mode)) return undefined;
   const passed = evidence.verdict !== "HOLD";
-  return { warmPathAcceptance: !passed ? "HOLD" : evidence.mode === "full" ? "PASS (GATES A-D)" : "PASS (GATE A ONLY)",
+  return { warmPathAcceptance: !passed ? "HOLD" : evidence.mode === "full" ? "PASS (GATES A-D)" : "PASS (" + SCOPES[evidence.mode].toUpperCase() + " ONLY)",
     coldPathRecovery: "NOT QUALIFIED" };
 }
 
 // Gate order. `gate-a-only` runs the five targeted browser scenarios and never dispatches Gate B or C,
-// even when Gate A passes completely. Execution stops at the first failing Gate A workload.
+// even when Gate A passes completely. Execution stops at the first failing Gate A workload. `gate-b-only` runs only
+// the worker proof; a gate-c mode runs only the 13 cases of its browser, with that list as the source-bound selection.
 async function runGateSequence(mode, run, evidence) {
+  if (mode === "gate-b-only") {
+    evidence.gates.B = await run("B") ? "PASS" : "FAIL";
+    return;
+  }
+  if (GATE_C_MODES[mode]) {
+    evidence.gates.C = await run("C", GATE_C_MODES[mode], titles) ? "PASS" : "FAIL";
+    return;
+  }
   for (const [browser, targets] of browserTargets) {
     evidence.gates.A = await run("A", browser, targets) ? "PASS" : "FAIL";
     if (evidence.gates.A === "FAIL") break;
@@ -644,9 +676,12 @@ function decideVerdict(evidence, wasInterrupted) {
   const warmed = evidence.warmup?.status === "READY" && evidence.warmup.cleanup?.leaseRelease === "released" &&
     evidence.warmup.cleanup?.readback === "PASS";
   if (!warmed) return "HOLD";
-  if (evidence.mode === "gate-a-only") {
-    return evidence.gates.A === "PASS" && evidence.gates.D === "PASS" &&
-      evidence.gates.B === "NOT RUN" && evidence.gates.C === "NOT RUN" ? "WARM-PATH GATE A ONLY PASSED; COLD-PATH NOT QUALIFIED" : "HOLD";
+  const scoped = SCOPED_GATE[evidence.mode];
+  if (scoped) {
+    // Exactly the scoped gate passed, Gate D passed, and every other gate stayed NOT RUN.
+    const others = ["A", "B", "C"].filter(gate => gate !== scoped);
+    return evidence.gates[scoped] === "PASS" && evidence.gates.D === "PASS" &&
+      others.every(gate => evidence.gates[gate] === "NOT RUN") ? scopedVerdict(evidence.mode) : "HOLD";
   }
   return Object.values(evidence.gates).every(gate => gate === "PASS") ?
     "WARM-PATH ACCEPTANCE: ALL GATES PASSED; COLD-PATH RECOVERY NOT QUALIFIED" : "HOLD";
@@ -665,12 +700,23 @@ function checkWorkloadBudget(gate, startedAt, reservedMs = 0, requiredMs = null)
 // of them, with cleanup and forced-stop grace, must fit in what is left of the job before staging is touched;
 // otherwise the run stops with HOLD instead of being cut off halfway.
 function gateAPlan() {
-  return browserTargets.map(([browser, targets]) => ({ browser, requiredMs: requiredExecutionMs(targets) }));
+  return browserTargets.map(([browser, targets]) => ({ gate: "A", browser, targets, requiredMs: requiredExecutionMs(targets) }));
+}
+// The workloads one dispatch mode runs, in order, each with the budget derived from its declared limits (Gate B keeps
+// its nominal minutes; `requiredMs: null` lets planWorkload use them). A gate-c mode is one browser's 13 cases.
+function modePlan(mode) {
+  if (mode === "gate-b-only") return [{ gate: "B", browser: null, targets: null, requiredMs: null }];
+  if (GATE_C_MODES[mode]) return [{ gate: "C", browser: GATE_C_MODES[mode], targets: titles, requiredMs: requiredExecutionMs(titles) }];
+  return gateAPlan();
+}
+function checkEnvelope(plan, startedAt, reservedMs = 0, now = Date.now()) {
+  const remaining = startedAt + JOB_MS - now - JOB_RESERVE_MS - reservedMs;
+  const needed = plan.reduce((sum, item) => sum + (item.requiredMs ?? planWorkload(item.gate, now, now).executionMs) +
+    CLEANUP_MS + FORCE_GRACE_MS, 0);
+  requireCondition(Number.isSafeInteger(startedAt) && startedAt > 0 && needed <= remaining, "WORKFLOW_BUDGET_EXHAUSTED");
 }
 function checkGateAEnvelope(startedAt, reservedMs = 0, now = Date.now()) {
-  const remaining = startedAt + JOB_MS - now - JOB_RESERVE_MS - reservedMs;
-  const needed = gateAPlan().reduce((sum, item) => sum + item.requiredMs + CLEANUP_MS + FORCE_GRACE_MS, 0);
-  requireCondition(Number.isSafeInteger(startedAt) && startedAt > 0 && needed <= remaining, "WORKFLOW_BUDGET_EXHAUSTED");
+  checkEnvelope(gateAPlan(), startedAt, reservedMs, now);
 }
 
 function writeEvidence(evidence, status) {
@@ -681,29 +727,36 @@ function writeEvidence(evidence, status) {
 }
 
 async function qualify(directory) {
+  // The run identity binds this artifact to its Actions run, which `aggregate` checks against the GitHub API.
   const evidence = { candidate: sha, workflowSha: process.env.GITHUB_SHA,
+    runId: /^\d+$/.test(process.env.GITHUB_RUN_ID ?? "") ? process.env.GITHUB_RUN_ID : null,
     mode: [...workloadModes, "cold-start-probe"].includes(process.env.DISPATCH_MODE) ? process.env.DISPATCH_MODE : "preflight", preflight: { status: "FAIL" },
     gates: { A: "NOT RUN", B: "NOT RUN", C: "NOT RUN", D: "NOT RUN" }, workload: [], verdict: "HOLD" };
   writeEvidence(evidence, "partial");
   try {
     authorize(process.env);
+    // `aggregate` belongs to the job without staging access and never reaches this one.
+    requireCondition(process.env.DISPATCH_MODE !== "aggregate", "DISPATCH_CONSENT_REFUSED");
     verifyCheckout();
     requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
     const stagedWorkload = workloadModes.includes(evidence.mode);
     const jobStartedAt = Number(process.env.CINE026_JOB_STARTED_MS);
+    const plan = modePlan(evidence.mode);
     if (stagedWorkload) {
-      checkWorkloadBudget("A", jobStartedAt, PREFLIGHT_HEADROOM_MS + WARMUP_HEADROOM_MS);
-      checkGateAEnvelope(jobStartedAt, PREFLIGHT_HEADROOM_MS + WARMUP_HEADROOM_MS);
+      checkWorkloadBudget(plan[0].gate, jobStartedAt, PREFLIGHT_HEADROOM_MS + WARMUP_HEADROOM_MS, plan[0].requiredMs);
+      checkEnvelope(plan, jobStartedAt, PREFLIGHT_HEADROOM_MS + WARMUP_HEADROOM_MS);
     }
     const env = configureStaging(directory, process.env);
     evidence.preflight = { status: "PASS", ...await preflight(env) };
     requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
     if (evidence.mode === "cold-start-probe") await runProbeSession(env, evidence);
     if (stagedWorkload) {
-      checkWorkloadBudget("A", jobStartedAt, WARMUP_HEADROOM_MS);
+      checkWorkloadBudget(plan[0].gate, jobStartedAt, WARMUP_HEADROOM_MS, plan[0].requiredMs);
       const run = async (gate, browser = null, targets = null) => {
         requireCondition(!cancellation.signal.aborted, "WORKLOAD_INTERRUPTED");
-        const budget = checkWorkloadBudget(gate, jobStartedAt, 0, gate === "A" ? requiredExecutionMs(targets) : null);
+        // A per-browser selection (every Gate A workload, a gate-c workload) gets the budget of its declared limits.
+        const sourceBound = Boolean(browser && targets);
+        const budget = checkWorkloadBudget(gate, jobStartedAt, 0, sourceBound ? requiredExecutionMs(targets) : null);
         const workload = { gate, browser, budget, startedAt: new Date().toISOString() };
         const file = path.join(directory, "playwright.json");
         fs.rmSync(file, { force: true });
@@ -722,15 +775,15 @@ async function qualify(directory) {
             !result.transport && "terminal_transport", result.transport && !hasTransportEvidence(result) && "observed_transport",
             transportProblems(result).length > 0 && "transport_completeness",
             gate === "B" && !nestedEvidence(result) && "nested_streams",
-            gate === "A" && !progressEvidence(result, targets.length) && "case_progress"].filter(Boolean),
+            sourceBound && !progressEvidence(result, targets.length) && "case_progress"].filter(Boolean),
           transportProblems: transportProblems(result),
           ...(gate === "B" ? { nestedProblems: nestedProblems(result) } : {}),
-          ...(gate === "A" ? { progressProblems: progressProblems(result, targets.length) } : {}),
+          ...(sourceBound ? { progressProblems: progressProblems(result, targets.length) } : {}),
           ...(report ? { report } : {}) });
         delete evidence.activeWorkload;
         fs.rmSync(file, { force: true });
         writeEvidence(evidence, "partial");
-        return workloadPasses(gate, result, report, targets?.length);
+        return workloadPasses(gate, result, report, sourceBound ? targets.length : undefined);
       };
       await runWarmedGates(env, evidence, run);
     }
@@ -758,7 +811,8 @@ function validateListings(directory) {
   "CANDIDATE_SUPERVISOR_UNSUPPORTED");
   const env = configureStaging(directory, process.env, true);
   const playwright = path.join(candidate, "node_modules/playwright/cli.js");
-  for (const [browser, targets] of [[null, null], ...browserTargets]) {
+  // The full matrix, the Gate A targets, and each gate-c mode's 13-case selection must list exactly what they name.
+  for (const [browser, targets] of [[null, null], ...browserTargets, ...Object.values(GATE_C_MODES).map(browser => [browser, titles])]) {
     const file = path.join(directory, "list.json");
     fs.rmSync(file, { force: true });
     execFileSync(process.execPath, [playwright, "test", "--config=playwright.cine026.staging.config.ts", "--list",
@@ -771,8 +825,41 @@ function validateListings(directory) {
   }
 }
 
+// The `aggregate` mode: runs in the job without staging access, after the workflow has downloaded the artifact of each
+// requested run into AGGREGATE_DIR/<run id>/. Run metadata comes from the GitHub API with the job's read-only token.
+async function runAggregate(env, request = fetch) {
+  const ids = parseRunIds(env.AGGREGATE_RUN_IDS);
+  requireCondition(ids && env.AGGREGATE_DIR, "AGGREGATE_RUNS_INVALID");
+  requireCondition(env.CINE026_GITHUB_TOKEN, "PR_LOOKUP_TOKEN_MISSING");
+  const entries = [];
+  for (const id of ids) {
+    let run = null;
+    try {
+      const response = await request("https://api.github.com/repos/KaisAbiyyi/cinemania/actions/runs/" + id, {
+        headers: { authorization: "Bearer " + env.CINE026_GITHUB_TOKEN, accept: "application/vnd.github+json" },
+        redirect: "error", signal: AbortSignal.timeout(15_000),
+      });
+      if (response.ok) run = await response.json();
+    } catch { /* recorded as run_metadata_missing */ }
+    entries.push({ id, run, evidence: parseReport(path.join(env.AGGREGATE_DIR, id, "cine026-qualification-evidence.json")) });
+  }
+  const result = aggregate(entries, sha);
+  return result;
+}
+
 async function main() {
   const mode = process.argv[2];
+  if (mode === "aggregate") {
+    authorize(process.env);
+    requireCondition(process.env.DISPATCH_MODE === "aggregate" && temp, "INVALID_INVOCATION");
+    const result = await runAggregate(process.env);
+    fs.writeFileSync(path.join(temp, "cine026-aggregate-evidence.json"), JSON.stringify(result, null, 2) + "\n", { mode: 0o600 });
+    const summary = summarizeAggregate(result);
+    if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+    process.stdout.write(summary);
+    requireCondition(result.verdict !== "HOLD", "AGGREGATE_HOLD");
+    return;
+  }
   if (mode === "check-pr") {
     verifyCheckout();
     await verifyLivePR(process.env.CINE026_GITHUB_TOKEN);
@@ -801,4 +888,4 @@ if (require.main === module) main().catch(error => {
   process.stderr.write((safe ? message : "QUALIFICATION_HARNESS_FAILED") + "\n");
   process.exitCode = 1;
 });
-module.exports = { EXPECTED_NESTED, nestedProblems, progressProblems, transportProblems, workloadPasses, warmupEndMs, nestedEvidence, checkGateAEnvelope, gateAPlan, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
+module.exports = { EXPECTED_NESTED, GATE_C_MODES, nestedProblems, progressProblems, transportProblems, workloadPasses, warmupEndMs, nestedEvidence, checkGateAEnvelope, checkEnvelope, gateAPlan, modePlan, runAggregate, scopedVerdict, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
