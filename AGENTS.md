@@ -4,7 +4,9 @@
 
 > **MUST READ before touching this repository.** Applies to Gemini 3.8 Flash, Codex, Claude, ChatGPT, and other agents working on `KaisAbiyyi/cinemania`.
 >
-> **Source of truth:** [CineMatch governance in Notion](https://app.notion.com/p/40fc4a6aaf7381169c17ee5584d48fef) · [Project Hub / Kanban](https://app.notion.com/p/40cc4a6aaf73813bab68ef3e38d75cab) · [29 GitHub issue contracts](https://github.com/KaisAbiyyi/cinemania/issues).
+> **Source of truth:** [CineMatch governance in Notion](https://app.notion.com/p/40fc4a6aaf7381169c17ee5584d48fef) · [Project Hub / Kanban](https://app.notion.com/p/40cc4a6aaf73813bab68ef3e38d75cab) · [29 GitHub issue contracts](https://github.com/KaisAbiyyi/cinemania/issues) · [GitHub Fallback Hub (#76)](https://github.com/KaisAbiyyi/cinemania/issues/76) · [In-repo status & lessons fallback](docs/cinematch-fallback-board.md).
+>
+> **Notion + GitHub Fallback Policy (2026-11-26):** Notion stays active alongside GitHub. If any Notion capability is unavailable or quota-limited (such as `Query Data Source` SQL/row quota), **GitHub (`Issues`, `PRs`, [Issue #76](https://github.com/KaisAbiyyi/cinemania/issues/76), and `docs/cinematch-fallback-board.md`) MUST contain a complete, safe, self-sufficient fallback record** so execution, review, and handoff can continue safely without losing context.
 >
 > This document is a mandatory **human/agent workflow contract**, not a claim that technical enforcement (branch protection, CI, webhooks, status sync) is installed. Never invent such enforcement.
 
@@ -93,6 +95,7 @@ PR / DOCUMENT PERMALINK / NEXT ACTION:
 - **Last Done:** at most five newest accepted Done tasks. Don't move a card here just because a chat report said "finished".
 - **Review / CHANGES REQUIRED:** remain in Now, preserve existing claim/evidence and comments. Don't promote downstream issues.
 - On claim, failure, new evidence, PR, merge, release, handoff or re-review, recalculate the board and sync **both Notion and GitHub**. If no permission or connector to update one side, explicitly mark sync **BLOCKED** and supply the link/action; never claim synced.
+- **GitHub fallback priority:** Always keep complete claims, `Evidence Receipt`, `Implementation Summary`, board updates, and verified lessons recorded on GitHub (the task's issue/PR and [Issue #76](https://github.com/KaisAbiyyi/cinemania/issues/76) / [docs/cinematch-fallback-board.md](docs/cinematch-fallback-board.md)), so GitHub stays safe and self-sufficient even when Notion hits quota or access limits.
 
 ## 5. Technical safety and UI autonomy
 
@@ -162,3 +165,14 @@ Full record: [Notion Agent Learning Log & Implementation Summaries](https://app.
 For every important claim, the reviewer should: fetch exact SHA; independently count claimed source items; reproduce at least one critical positive/negative assertion in an isolated environment; verify permalink content; compare commit diffs; verify tests against the *same HEAD*; and compare issue/PR/Notion status. Log disagreements as specific blocking review findings, not model-quality opinions.
 
 **Failure to provide evidence is not automatically proof of incorrect code.** It is, however, a **FAIL of evidence discipline** and blocks acceptance.
+
+## 9. Reviewer response format — Owner readability contract
+
+Per owner instruction (Kais Abiyyi, 2026-11-25 / 2026-11-26), official CineMatch reviewer reports (in chat, GitHub comments, and Notion updates) must remain **layman-friendly and effortless to scan**, while still keeping full verifiable technical evidence:
+
+1. **Identity & verdict first:** State who reviewed, the clear outcome (safe & merged / changes required / hold), and whether production was touched.
+2. **Everyday-language narrative:** Explain what changed, verification results, actions taken, and next owner decisions in plain words without scattering commit SHAs or technical IDs through the main prose.
+3. **GitHub review comment discipline:** Post GitHub review comments on a PR/issue only when revisions are needed; if clean and safe within bounded authority, merge cleanly (honoring scoped Vercel production build-skip guards on docs/infra PRs).
+4. **Citations grouped at the end:** Place all commit SHAs, tree SHAs, GitHub Actions run IDs, Vercel deployment IDs, and technical links inside a single **Referensi Teknis & SHA** section at the very bottom.
+
+See also [Issue #76](https://github.com/KaisAbiyyi/cinemania/issues/76) and [docs/cinematch-fallback-board.md](docs/cinematch-fallback-board.md).
