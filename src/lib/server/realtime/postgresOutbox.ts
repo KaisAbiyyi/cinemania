@@ -23,6 +23,7 @@ export function postgresOutboxStore(pool: Pool, requestedSchema = "public"): Out
     },
     async withRoomLock<T>(roomId: string, work: (outbox: LockedOutbox) => Promise<T>): Promise<T> {
       const client = await pool.connect();
+      let discardClient = false;
       try {
         await client.query("BEGIN");
         await client.query("SET LOCAL lock_timeout = '250ms'");
@@ -60,10 +61,15 @@ export function postgresOutboxStore(pool: Pool, requestedSchema = "public"): Out
         await client.query("COMMIT");
         return result;
       } catch (error) {
-        await client.query("ROLLBACK").catch(() => {});
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // The transaction may still hold its advisory lock. Destroy the session.
+          discardClient = true;
+        }
         throw error;
       } finally {
-        client.release();
+        client.release(discardClient || undefined);
       }
     },
   };

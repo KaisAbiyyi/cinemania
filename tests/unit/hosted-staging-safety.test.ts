@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 const { validateHostedStaging, PROJECT } = createRequire(import.meta.url)("../hosted-supabase/environment.cjs");
+const { createCapabilitySecret } = createRequire(import.meta.url)("../../scripts/cine026/run-hosted-staging.cjs");
 const consent = { CINE018_STAGING_PROJECT: PROJECT };
 const valid = `SUPABASE_URL=https://${PROJECT}.supabase.co
 SUPABASE_PUBLISHABLE_KEY=synthetic-publishable
@@ -12,6 +13,14 @@ SUPABASE_PG_DATABASE=postgres
 SUPABASE_PG_USER=postgres
 SUPABASE_PG_PASSWORD=synthetic-password`;
 describe("hosted staging safety boundary", () => {
+  it("creates an independent cryptographically random 32-byte capability secret per run", () => {
+    const first = createCapabilitySecret();
+    const second = createCapabilitySecret();
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    expect(Buffer.from(first, "hex")).toHaveLength(32);
+    expect(second).toMatch(/^[a-f0-9]{64}$/);
+    expect(first).not.toBe(second);
+  });
   it("rejects consent supplied by a credential file", () => {
     expect(() => validateHostedStaging(`${valid}\nCINE018_STAGING_PROJECT=${PROJECT}\nALLOW_DESTRUCTIVE_PG_TESTS=true`, {})).toThrow(/consent/);
   });

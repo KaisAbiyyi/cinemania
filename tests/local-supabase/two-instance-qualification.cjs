@@ -171,7 +171,7 @@ async function waitForWorker(proc) {
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     if (proc.getLogs().includes("Realtime outbox worker ready")) return;
-    assert.equal(proc.child.exitCode, null, "Worker exited before readiness");
+    assert.equal(proc.child.exitCode, null, `Worker exited before readiness. Redacted startup logs: ${proc.getLogs()}`);
     await new Promise(r => setTimeout(r, 50));
   }
   throw new Error("Worker readiness timed out");
@@ -432,11 +432,13 @@ async function main() {
     }
 
     // 2. Negative control: verify PR #51 supabasePublisher rejects http://127.0.0.1:54321 in NODE_ENV=production
-    const tsxBin = path.join(buildDir, "node_modules", "tsx", "dist", "cli.mjs");
     const negRes = execFileSync(
       process.execPath,
       [
-        tsxBin,
+        "--conditions=react-server",
+        "--import",
+        "tsx",
+        "--input-type=module",
         "-e",
         `import { createSupabasePublisher } from "./src/lib/server/realtime/supabasePublisher";
          let threw = false;

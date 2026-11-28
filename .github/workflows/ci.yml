@@ -74,6 +74,46 @@ jobs:
       - name: Run API Integration Tests
         run: npm run test:integration
 
+  local-supabase-realtime:
+    name: Local Supabase Realtime Qualification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            scripts/local-supabase/package-lock.json
+
+      - name: Install application dependencies
+        run: npm ci
+
+      - name: Install Chromium for the two-instance qualification probe
+        run: npx playwright install --with-deps chromium
+
+      - name: Install isolated local Supabase harness
+        run: npm ci --prefix scripts/local-supabase
+
+      - name: Run local-stack safety guards
+        run: npm --prefix scripts/local-supabase run test:guards
+
+      - name: Start loopback-only Supabase and apply exact-HEAD migrations
+        run: npm --prefix scripts/local-supabase run start -- --commit "$GITHUB_SHA"
+
+      - name: Qualify real local Realtime authorization and two-instance recovery
+        run: |
+          npm --prefix scripts/local-supabase run test:rls-ws
+          npm --prefix scripts/local-supabase run test:two-instances
+
+      - name: Stop isolated Supabase stack
+        if: always()
+        run: npm --prefix scripts/local-supabase run stop
+
   build:
     name: Next.js Production Build
     runs-on: ubuntu-latest
@@ -150,6 +190,12 @@ jobs:
       - name: Run CINE-023 2-to-5 browser E2E tests (fresh service quota)
         run: npm run test:e2e -- --grep "CINE-023 real create / invite / lobby workflow"
 
+      - name: Install CINE-026 Chromium, Firefox, and WebKit browsers
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Run CINE-026 mocked local room matrix in three browser engines
+        run: npm run test:e2e -- --config=playwright.cine026.mocked.config.ts
+
       - name: Upload Playwright Test Report Artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -158,10 +204,26 @@ jobs:
           path: playwright-report/
           retention-days: 14
 
+      - name: Upload Playwright failure media
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure-media
+          path: test-results/
+          retention-days: 14
+
       - name: Upload Mock Request Logs Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: request-logs
           path: tests/fixtures/request-logs.json
+          retention-days: 14
+
+      - name: Upload CINE-026 mocked browser report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cine026-mocked-playwright-report
+          path: playwright-report-cine026-mocked/
           retention-days: 14
