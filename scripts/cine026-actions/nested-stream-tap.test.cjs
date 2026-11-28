@@ -188,12 +188,16 @@ function nextAppDir() {
   return dirs.find(dir => fs.existsSync(path.join(dir, "node_modules/next/dist/bin/next")));
 }
 
-// The pinned Gate B runs the app as `next dev`, which forks the actual server with inherited stdio, and stops it with
-// child.kill("SIGKILL") on the parent only. Requiring the end of both streams is safe only if that server does not
-// outlive its parent while holding the pipe (it has no handler for its parent's death). This runs the real `next dev`
-// of the candidate's locked dependencies the way Gate B does, on the CI runner's OS: both streams must end and the port
-// must be closed within the grace, or the server outlived the kill and Gate B cannot be admitted as it stands.
-test("real next dev stopped like Gate B stops it: the forked server dies, both streams end, the port closes", { timeout: 180_000 }, async t => {
+// The pinned Gate B runs the app as `next dev`, which forks the real server with inherited stdio, and stops it with
+// child.kill("SIGKILL") on the parent only. Requiring the end of both output streams is sound only if that server
+// does not outlive its parent while holding the pipes. This runs the real `next dev` of the candidate's locked
+// dependencies that way on the runner's OS and records what happens, in separate observations:
+//   * whether each stream ended and how long it took (the real Gate B leaves only a few seconds before it exits),
+//   * whether the server port closed,
+//   * on POSIX, which processes of that process group are still alive.
+// The observations are printed as a diagnostic. They only become assertions once Gate B is admitted: admission is
+// coupled to this evidence, so it cannot be granted while the observed window does not end the streams.
+test("real next dev stopped like Gate B stops it: observations are recorded, and admission requires them to be clean", { timeout: 180_000 }, async t => {
   const dir = nextAppDir();
   if (!dir) {
     assert.ok(!process.env.CI, "the candidate's locked Next.js must be available in CI");
@@ -201,29 +205,32 @@ test("real next dev stopped like Gate B stops it: the forked server dies, both s
     return;
   }
   const net = require("node:net");
+  const { spawn, spawnSync } = require("node:child_process");
   const port = await new Promise((resolve, reject) => {
     const server = net.createServer().once("error", reject).listen(0, "127.0.0.1", () => {
       const { port: free } = server.address();
       server.close(() => resolve(free));
     });
   });
-  const { spawn } = require("node:child_process");
+  const posix = process.platform !== "win32";
+  // Its own process group on POSIX, so that anything the test leaves behind can be removed by group.
   const parent = spawn(process.execPath, ["--require", TAP, "-e", `
     const { spawn } = require("node:child_process");
     const nextBin = ${JSON.stringify(path.join(dir, "node_modules/next/dist/bin/next"))};
     const child = spawn(process.execPath, [nextBin, "dev", "--turbopack", "-p", "${port}", "-H", "127.0.0.1"],
       { cwd: ${JSON.stringify(dir)}, env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
     let text = "";
-    const ends = new Set();
+    let killedAt = null;
     for (const name of ["stdout", "stderr"]) {
       child[name].on("data", data => { text = (text + data).slice(-4000); });
-      child[name].on("end", () => { ends.add(name); if (ends.size === 2) console.log("PARENT_STREAMS_ENDED"); });
+      child[name].on("end", () => console.log("PARENT_END " + name + " " + (killedAt === null ? -1 : Date.now() - killedAt)));
     }
     const deadline = Date.now() + 120000;
     const poll = setInterval(() => {
       if (/ready|Ready/.test(text)) {
         clearInterval(poll);
         console.log("PARENT_READY");
+        killedAt = Date.now();
         child.kill("SIGKILL");
       } else if (Date.now() > deadline || child.exitCode !== null) {
         clearInterval(poll);
@@ -231,33 +238,52 @@ test("real next dev stopped like Gate B stops it: the forked server dies, both s
         child.kill("SIGKILL");
       }
     }, 200);
-  `], { env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+  `], { env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: posix });
   let out = "";
   parent.stdout.on("data", data => { out += data; });
   parent.stderr.on("data", () => {});
   const until = async (predicate, ms) => {
-    for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 250))) if (predicate()) return true;
+    for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 100))) if (predicate()) return true;
     return predicate();
   };
+  const portClosed = () => new Promise(resolve => {
+    const socket = net.connect(port, "127.0.0.1");
+    socket.once("connect", () => { socket.destroy(); resolve(false); });
+    socket.once("error", () => resolve(true));
+  });
   try {
     assert.ok(await until(() => /PARENT_READY|PARENT_NOT_READY/.test(out), 150_000), "next dev never reported");
     assert.match(out, /PARENT_READY/, "next dev did not become ready");
-    // Grace for the forked server to follow its parent and for both pipes to drain.
-    const drained = await until(() => out.includes("PARENT_STREAMS_ENDED"), 20_000);
-    const portClosed = await new Promise(resolve => {
-      const socket = net.connect(port, "127.0.0.1");
-      socket.once("connect", () => { socket.destroy(); resolve(false); });
-      socket.once("error", () => resolve(true));
-    });
+    const ended = name => {
+      const match = new RegExp("PARENT_END " + name + " (-?\\d+)").exec(out);
+      return match ? Number(match[1]) : null;
+    };
+    await until(() => ended("stdout") !== null && ended("stderr") !== null, 20_000);
     const nested = ledgerOf(out);
     const app = nested.streams.find(stream => stream.kind === "app" && stream.n === 1);
-    assert.equal(app?.killRequested, true, out);
-    assert.equal(app?.exit, "killed", out);
-    assert.ok(drained && app.eof.out && app.eof.err, "both streams must end after the kill: the forked server outlived its parent");
-    assert.equal(portClosed, true, "the server port must be closed after the kill: the forked server outlived its parent");
+    // The tap itself behaves on every OS: the request is recorded and the exit is a kill.
+    assert.equal(app?.killRequested, true, "the kill request is recorded");
+    assert.equal(app?.exit, "killed", "the exit is a signal exit");
+    const observation = {
+      platform: process.platform, nextStdoutEndedAfterMs: ended("stdout"), nextStderrEndedAfterMs: ended("stderr"),
+      tapEofOut: Boolean(app.eof.out), tapEofErr: Boolean(app.eof.err), portClosedAfterWait: await portClosed(),
+    };
+    if (posix) {
+      // Names and ids of what is still alive in the process group; nothing from their environment or arguments.
+      const ps = spawnSync("ps", ["-o", "pid=,ppid=,pgid=,stat=,comm=", "-g", String(parent.pid)], { encoding: "utf8" });
+      observation.processGroupAfter = (ps.stdout ?? "").split("\n").map(line => line.trim()).filter(Boolean).slice(0, 10);
+    }
+    t.diagnostic("OBSERVATION " + JSON.stringify(observation));
+    process.stdout.write("# CINE026_NEXT_DEV_OBSERVATION " + JSON.stringify(observation) + "\n");
+    if (require("./qualification.cjs").GATE_B_ADMITTED) {
+      assert.ok(observation.nextStdoutEndedAfterMs !== null && observation.nextStderrEndedAfterMs !== null, "the forked server held the output pipes");
+      assert.ok(observation.tapEofOut && observation.tapEofErr, "the tap saw the end of both streams");
+      assert.equal(observation.portClosedAfterWait, true, "the server port is closed");
+      assert.ok(Math.max(observation.nextStdoutEndedAfterMs, observation.nextStderrEndedAfterMs) <= 3_000, "the streams end inside the few seconds Gate B leaves");
+    }
   } finally {
     parent.kill("SIGKILL");
     // Best effort: never leave a server behind on the runner or the developer machine.
-    try { process.kill(-parent.pid, "SIGKILL"); } catch { /* not a group leader */ }
+    if (posix) { try { process.kill(-parent.pid, "SIGKILL"); } catch { /* group already gone */ } }
   }
 });

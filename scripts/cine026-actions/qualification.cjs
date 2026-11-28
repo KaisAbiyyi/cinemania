@@ -24,10 +24,13 @@ const dispatchModes = ["preflight", "cold-start-probe", "gate-a-only", "gate-b-o
 // `full` (all gates in one job) is not admitted: its declared case limits do not fit one 120 minute job. The
 // per-browser modes and `aggregate` replace it.
 const FULL_MODE_ADMITTED = false;
-// Gate B is admitted now that its nested-process evidence is hardened: the end of every attached output stream must be
-// observed (final tallies), and a signal exit only counts as a planned stop when the parent asked for it through the
-// child's kill(). The flag stays so the admission can be withdrawn in one place.
-const GATE_B_ADMITTED = true;
+// Gate B stays refused. Its nested-process evidence is hardened (the end of every attached output stream must be
+// observed, and a signal exit only counts as a planned stop when the parent asked for it through the child's kill()),
+// but the hosted run stops the app with child.kill("SIGKILL") on `next dev`, which forks the real server; on Linux that
+// server was observed to keep the output pipes open after its parent died (nested-stream-tap.test.cjs, run 46105227944
+// at 164222d). Until the real window of Gate B is shown to end both streams on Linux, the EOF requirement would reject
+// a legitimate run, so admission stays withdrawn. Lifting it needs that evidence and a new independent review.
+const GATE_B_ADMITTED = false;
 const browsers = ["chromium", "firefox", "webkit"];
 const fields = ["rooms", "participants", "votes", "events", "pending", "poison",
   "retries", "oldest_pending_ms", "advisory_locks", "advisory_waiters",
@@ -898,4 +901,4 @@ if (require.main === module) main().catch(error => {
   process.stderr.write((safe ? message : "QUALIFICATION_HARNESS_FAILED") + "\n");
   process.exitCode = 1;
 });
-module.exports = { EXPECTED_NESTED, GATE_C_MODES, nestedProblems, progressProblems, transportProblems, workloadPasses, warmupEndMs, nestedEvidence, checkGateAEnvelope, checkEnvelope, gateAPlan, modePlan, runAggregate, scopedVerdict, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
+module.exports = { EXPECTED_NESTED, GATE_C_MODES, GATE_B_ADMITTED, nestedProblems, progressProblems, transportProblems, workloadPasses, warmupEndMs, nestedEvidence, checkGateAEnvelope, checkEnvelope, gateAPlan, modePlan, runAggregate, scopedVerdict, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };

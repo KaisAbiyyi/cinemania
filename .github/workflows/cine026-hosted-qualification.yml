@@ -21,7 +21,7 @@ on:
         default: false
         type: boolean
       mode:
-        description: Read-only preflight, cold-start probe, one hosted gate (gate-a-only, gate-b-only, gate-c-<browser>; each starts with a bounded qualification-only Realtime warm-up), or aggregate (combines five passing one-gate runs into A-D acceptance without staging access). full (all gates in one job) is refused before any staging step
+        description: Read-only preflight, cold-start probe, one hosted gate (gate-a-only, gate-b-only, gate-c-<browser>; each starts with a bounded qualification-only Realtime warm-up), or aggregate (combines five passing one-gate runs into A-D acceptance without staging access). full (all gates in one job) and gate-b-only are refused before any staging step
         required: true
         default: preflight
         type: choice

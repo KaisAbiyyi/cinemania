@@ -24,12 +24,13 @@ test("only a fresh main dispatch can authorize the exact candidate and exclusive
 
 test("full mode is refused by the consent step itself, before any staging step, whatever else is valid", () => {
   assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "full" }), /^Error: FULL_MODE_NOT_ADMITTED$/);
-  for (const mode of ["preflight", "cold-start-probe", "gate-a-only", "gate-b-only", "gate-c-chromium", "gate-c-firefox", "gate-c-webkit", "aggregate"]) {
+  assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "gate-b-only" }), /^Error: GATE_B_NOT_ADMITTED$/);
+  for (const mode of ["preflight", "cold-start-probe", "gate-a-only", "gate-c-chromium", "gate-c-firefox", "gate-c-webkit", "aggregate"]) {
     assert.doesNotThrow(() => authorize({ ...dispatch, DISPATCH_MODE: mode }));
   }
   // aggregate touches no staging and needs no exclusive window; every staged mode still does
   assert.doesNotThrow(() => authorize({ ...dispatch, DISPATCH_MODE: "aggregate", DISPATCH_EXCLUSIVE: "false" }));
-  for (const mode of ["gate-b-only", "gate-c-chromium", "gate-c-webkit"]) {
+  for (const mode of ["gate-c-chromium", "gate-c-webkit"]) {
     assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: mode, DISPATCH_EXCLUSIVE: "false" }), /^Error: DISPATCH_CONSENT_REFUSED$/);
   }
   assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "aggregate", DISPATCH_SHA: "a".repeat(40) }), /^Error: DISPATCH_CONSENT_REFUSED$/);
