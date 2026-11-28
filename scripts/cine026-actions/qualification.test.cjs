@@ -6,7 +6,7 @@ const { test } = require("node:test");
 const { runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, stableWorkload, verifiedCleanup } =
   require("./qualification.cjs");
 
-const sha = "00555c03d4173ac54750677207b78252e2063257";
+const sha = "45abb39b8706311dd791a8f09cd904498fb29287";
 const dispatch = {
   GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REPOSITORY: "KaisAbiyyi/cinemania",
   GITHUB_REF: "refs/heads/main", GITHUB_RUN_ATTEMPT: "1", DISPATCH_SHA: sha,

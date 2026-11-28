@@ -280,7 +280,7 @@ test("the bridge cooperatively stops the active child and preserves the supervis
 test("a worker recovery proof cannot certify zero failures from an empty terminal transport report", async () => {
   const f = fakeSupervisor();
   f.line("CINE026_WORKER_RECOVERY " + JSON.stringify({
-    appCommit: "00555c03d4173ac54750677207b78252e2063257", versions: [6, 7],
+    appCommit: "45abb39b8706311dd791a8f09cd904498fb29287", versions: [6, 7],
     receiptToPrivateHintMs: [12, 13], receiptToDurableReadbackMs: [19, 21],
   }));
   f.terminal(0, { ...transport, http: { ...transport.http, count: 0, okCount: 0, maxMs: 0 } });

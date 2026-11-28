@@ -37,7 +37,7 @@ permissions:
 
 env:
   NODE_VERSION: '24.21.0'
-  CANDIDATE: 00555c03d4173ac54750677207b78252e2063257
+  CANDIDATE: 45abb39b8706311dd791a8f09cd904498fb29287
   PROJECT: dmrbticnsczhyaiftrar
 
 jobs:
@@ -65,6 +65,11 @@ jobs:
       - name: Install reviewed candidate's locked dependencies
         working-directory: candidate
         run: npm ci
+      # The Gate B probe requires the candidate's process helpers, whose module loads the isolated local harness's locked
+      # packages (pg, supabase-js). Install them exactly as the candidate's own CI does; no network service is contacted.
+      - name: Install candidate's isolated local Supabase harness packages
+        working-directory: candidate
+        run: npm ci --prefix scripts/local-supabase
       # Run after the candidate install: the declared-limit guard reads the pinned spec and the reporter test drives
       # the candidate's locked Playwright (request-only fixture, no browsers, no staging, no credentials).
       - name: Run harness tests
@@ -149,6 +154,12 @@ jobs:
       - name: Install reviewed candidate's locked dependencies
         working-directory: candidate
         run: npm ci
+      # Gate B runs the candidate's two-instance script, which loads pg and supabase-js from the isolated local harness.
+      # Locked install, before any staging value is exposed: the secrets below are set only on the qualification step.
+      - name: Install candidate's isolated local Supabase harness packages (Gate B)
+        if: inputs.mode == 'gate-b-only' || inputs.mode == 'full'
+        working-directory: candidate
+        run: npm ci --prefix scripts/local-supabase
       - name: Install locked Playwright browsers and system dependencies
         if: inputs.mode == 'full' || inputs.mode == 'gate-a-only' || startsWith(inputs.mode, 'gate-c-')
         working-directory: candidate

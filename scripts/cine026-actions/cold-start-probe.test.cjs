@@ -225,7 +225,7 @@ test("the scoped probe verdict is diagnostic only: gates A-C stay NOT RUN and no
 test("the probe mode needs the same exact-candidate exclusive dispatch as the other hosted modes", () => {
   const dispatch = {
     GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REPOSITORY: "KaisAbiyyi/cinemania", GITHUB_REF: "refs/heads/main",
-    GITHUB_RUN_ATTEMPT: "1", DISPATCH_SHA: "00555c03d4173ac54750677207b78252e2063257",
+    GITHUB_RUN_ATTEMPT: "1", DISPATCH_SHA: "45abb39b8706311dd791a8f09cd904498fb29287",
     DISPATCH_PROJECT: "dmrbticnsczhyaiftrar", DISPATCH_EXCLUSIVE: "true", DISPATCH_MODE: "cold-start-probe",
   };
   assert.doesNotThrow(() => authorize(dispatch));

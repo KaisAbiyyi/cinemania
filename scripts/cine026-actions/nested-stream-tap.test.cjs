@@ -191,7 +191,8 @@ function nextAppDir() {
 // The pinned Gate B runs the app as `next dev`, which forks the real server with inherited stdio, and stops it with
 // child.kill("SIGKILL") on the parent only. Requiring the end of both output streams is sound only if that server
 // does not outlive its parent while holding the pipes. This runs the real `next dev` of the candidate's locked
-// dependencies that way on the runner's OS and records what happens, in separate observations:
+// dependencies through the candidate's own start and stop helpers on the runner's OS and records what happens, in
+// separate observations:
 //   * whether each stream ended and how long it took (the real Gate B leaves only a few seconds before it exits),
 //   * whether the server port closed,
 //   * on POSIX, which processes of that process group are still alive.
@@ -214,34 +215,42 @@ test("real next dev stopped like Gate B stops it: observations are recorded, and
   });
   const posix = process.platform !== "win32";
   // Its own process group on POSIX, so that anything the test leaves behind can be removed by group.
+  // The candidate's own helpers start and stop the app, exactly as the pinned Gate B does (`spawnNextInstance` adds the
+  // candidate's parent guard, `stopChild` is the stop Gate B uses). Measuring a hand-written `next dev` spawn would not
+  // observe the candidate's repair, so a candidate without these helpers cannot be observed at all.
+  const helper = path.join(dir, "tests/local-supabase/two-instance-qualification.cjs");
+  if (!fs.existsSync(helper)) {
+    assert.ok(!process.env.CI, "the candidate must provide its Gate B process helpers (spawnNextInstance, stopChild)");
+    t.skip("the Next.js app directory has no Gate B process helpers outside CI");
+    return;
+  }
   const parent = spawn(process.execPath, ["--require", TAP, "-e", `
-    const { spawn } = require("node:child_process");
-    const nextBin = ${JSON.stringify(path.join(dir, "node_modules/next/dist/bin/next"))};
-    const child = spawn(process.execPath, [nextBin, "dev", "--turbopack", "-p", "${port}", "-H", "127.0.0.1"],
-      { cwd: ${JSON.stringify(dir)}, env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
-    let text = "";
+    const { spawnNextInstance, stopChild } = require(${JSON.stringify(helper)});
+    const proc = spawnNextInstance({ cwd: ${JSON.stringify(dir)}, port: ${port},
+      env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1" } });
+    const child = proc.child;
     let killedAt = null;
     for (const name of ["stdout", "stderr"]) {
-      child[name].on("data", data => { text = (text + data).slice(-4000); });
       child[name].on("end", () => console.log("PARENT_END " + name + " " + (killedAt === null ? -1 : Date.now() - killedAt)));
     }
     const deadline = Date.now() + 120000;
-    const poll = setInterval(() => {
-      if (/ready|Ready/.test(text)) {
+    const poll = setInterval(async () => {
+      if (/ready|Ready/.test(proc.getLogs())) {
         clearInterval(poll);
         console.log("PARENT_READY");
         killedAt = Date.now();
-        child.kill("SIGKILL");
+        console.log("PARENT_STOP " + await stopChild(proc));
       } else if (Date.now() > deadline || child.exitCode !== null) {
         clearInterval(poll);
         console.log("PARENT_NOT_READY");
-        child.kill("SIGKILL");
+        await stopChild(proc);
       }
     }, 200);
   `], { env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: posix });
   let out = "";
   parent.stdout.on("data", data => { out += data; });
-  parent.stderr.on("data", () => {});
+  let err = "";
+  parent.stderr.on("data", data => { err = (err + data).slice(-600); });
   const until = async (predicate, ms) => {
     for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 100))) if (predicate()) return true;
     return predicate();
@@ -252,7 +261,7 @@ test("real next dev stopped like Gate B stops it: observations are recorded, and
     socket.once("error", () => resolve(true));
   });
   try {
-    assert.ok(await until(() => /PARENT_READY|PARENT_NOT_READY/.test(out), 150_000), "next dev never reported");
+    assert.ok(await until(() => /PARENT_READY|PARENT_NOT_READY/.test(out), 150_000), "next dev never reported; probe stderr tail: " + err.replace(/\s+/g, " ").trim());
     assert.match(out, /PARENT_READY/, "next dev did not become ready");
     const ended = name => {
       const match = new RegExp("PARENT_END " + name + " (-?\\d+)").exec(out);
