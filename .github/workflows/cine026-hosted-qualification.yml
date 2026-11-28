@@ -65,6 +65,11 @@ jobs:
       - name: Install reviewed candidate's locked dependencies
         working-directory: candidate
         run: npm ci
+      # The Gate B probe requires the candidate's process helpers, whose module loads the isolated local harness's locked
+      # packages (pg, supabase-js). Install them exactly as the candidate's own CI does; no network service is contacted.
+      - name: Install candidate's isolated local Supabase harness packages
+        working-directory: candidate
+        run: npm ci --prefix scripts/local-supabase
       # Run after the candidate install: the declared-limit guard reads the pinned spec and the reporter test drives
       # the candidate's locked Playwright (request-only fixture, no browsers, no staging, no credentials).
       - name: Run harness tests

@@ -249,7 +249,8 @@ test("real next dev stopped like Gate B stops it: observations are recorded, and
   `], { env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: posix });
   let out = "";
   parent.stdout.on("data", data => { out += data; });
-  parent.stderr.on("data", () => {});
+  let err = "";
+  parent.stderr.on("data", data => { err = (err + data).slice(-600); });
   const until = async (predicate, ms) => {
     for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 100))) if (predicate()) return true;
     return predicate();
@@ -260,7 +261,7 @@ test("real next dev stopped like Gate B stops it: observations are recorded, and
     socket.once("error", () => resolve(true));
   });
   try {
-    assert.ok(await until(() => /PARENT_READY|PARENT_NOT_READY/.test(out), 150_000), "next dev never reported");
+    assert.ok(await until(() => /PARENT_READY|PARENT_NOT_READY/.test(out), 150_000), "next dev never reported; probe stderr tail: " + err.replace(/\s+/g, " ").trim());
     assert.match(out, /PARENT_READY/, "next dev did not become ready");
     const ended = name => {
       const match = new RegExp("PARENT_END " + name + " (-?\\d+)").exec(out);
