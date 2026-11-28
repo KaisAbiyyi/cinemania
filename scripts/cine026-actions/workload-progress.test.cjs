@@ -330,16 +330,24 @@ const lifecycle = {
   spawn: (kind, n, piped = kind !== "fault") => nestedLine({ ev: "spawn", kind, n, piped }),
   exit: (kind, n, { code = null, signal = true, forwarded = 0, dropped = 0 } = {}) => nestedLine({ ev: "exit", kind, n, code, signal, forwarded, dropped }),
   lines: (kind, n, forwarded, dropped) => nestedLine({ ev: "lines", kind, n, forwarded, dropped }),
+  kill: (kind, n, signal = "SIGKILL") => nestedLine({ ev: "kill", kind, n, signal }),
+  eof: (kind, n, stream, forwarded = 0, dropped = 0) => nestedLine({ ev: "eof", kind, n, stream, forwarded, dropped }),
 };
 
-// Every generation the pinned Gate B starts on its success path, ended by an intentional kill.
+// Every generation the pinned Gate B starts on its success path, stopped by the parent (a recorded kill request, then
+// a signal exit). Attached generations end both output streams; their final tallies are on the eof records.
 function completeGateB({ without = () => false, forwardedBy = () => 0 } = {}) {
   const lines = [nestedLine({ ev: "tap_ready" })];
   for (const [kind, expected] of Object.entries(EXPECTED_NESTED)) {
     for (let n = 1; n <= expected; n++) {
       if (without(kind, n, "spawn")) continue;
       lines.push(lifecycle.spawn(kind, n));
+      if (!without(kind, n, "kill")) lines.push(lifecycle.kill(kind, n));
       if (!without(kind, n, "exit")) lines.push(lifecycle.exit(kind, n, { forwarded: forwardedBy(kind, n), dropped: 4 }));
+      if (kind !== "fault") {
+        if (!without(kind, n, "eof-out")) lines.push(lifecycle.eof(kind, n, "out", forwardedBy(kind, n), 1));
+        if (!without(kind, n, "eof-err")) lines.push(lifecycle.eof(kind, n, "err", 0, 3));
+      }
     }
   }
   return lines;
@@ -405,6 +413,49 @@ test("Gate B rejects an unexpected crash but accepts an intentional kill", () =>
   const crash = completeGateB().map(line => line.includes('"kind":"worker","n":2,"code"') ? lifecycle.exit("worker", 2, { code: 1, signal: false }) : line);
   assert.deepEqual(nestedProblems(gateB(crash)), ["worker_crashed"]);
   assert.deepEqual(nestedProblems(gateB(completeGateB())), []);
+});
+
+test("Gate B accepts a signal exit only after a recorded kill request, and needs the end of every attached stream", () => {
+  // the OOM killer or a crashed supervisor in between: a signal exit nobody asked for
+  assert.deepEqual(nestedProblems(gateB(completeGateB({ without: (kind, n, part) => part === "kill" && kind === "worker" && n === 3 }))),
+    ["worker_killed_unexpectedly"]);
+  // a fault committer is stopped the same way, so the same rule holds for it
+  assert.deepEqual(nestedProblems(gateB(completeGateB({ without: (kind, n, part) => part === "kill" && kind === "fault" }))),
+    ["fault_killed_unexpectedly"]);
+  // a child that ended by itself with code 0 needs no request
+  const own = completeGateB({ without: (kind, n, part) => part === "kill" && kind === "app" && n === 3 })
+    .map(line => line.includes('"ev":"exit","kind":"app","n":3') ? lifecycle.exit("app", 3, { code: 0, signal: false }) : line);
+  assert.deepEqual(nestedProblems(gateB(own)), []);
+  // a stream that never ended (a descendant still holds the pipe, or the run ended first) is not drained
+  for (const part of ["eof-out", "eof-err"]) {
+    assert.deepEqual(nestedProblems(gateB(completeGateB({ without: (kind, n, p) => p === part && kind === "app" && n === 2 }))),
+      ["app_stream_not_drained"], part);
+  }
+  // fault committers have no attached streams by design and need no eof
+  assert.deepEqual(nestedProblems(gateB(completeGateB())), []);
+});
+
+test("the end-of-stream tallies, not the tally at exit, are reconciled against what arrived", () => {
+  // the worker wrote two more lines after the exit snapshot was taken (still in the pipe at exit)
+  const late = completeGateB({ forwardedBy: (kind, n) => (kind === "worker" && n === 1 ? 5 : 0) })
+    .map(line => line.includes('"ev":"exit","kind":"worker","n":1') ? lifecycle.exit("worker", 1, { forwarded: 3, dropped: 4 }) : line);
+  assert.deepEqual(nestedProblems(gateB(late.concat(diagnostics("worker", 1, 5)))), [], "all five arrived");
+  assert.deepEqual(nestedProblems(gateB(late.concat(diagnostics("worker", 1, 3)))), ["forwarded_lines_lost"], "the two late lines never arrived");
+});
+
+test("kill and end-of-stream records are validated like every other lifecycle record", () => {
+  const base = completeGateB();
+  const cases = {
+    killAfterExit: base.concat(lifecycle.kill("worker", 1)),
+    orphanKill: base.concat(lifecycle.kill("worker", 30)),
+    duplicateEof: base.concat(lifecycle.eof("app", 1, "out")),
+    orphanEof: base.concat(lifecycle.eof("app", 30, "err")),
+    badStream: base.concat(nestedLine({ ev: "eof", kind: "app", n: 1, stream: "both", forwarded: 0, dropped: 0 })),
+    badSignal: base.concat(nestedLine({ ev: "kill", kind: "app", n: 1, signal: "SIGSEGV" })),
+  };
+  for (const [name, lines] of Object.entries(cases)) {
+    assert.ok(nestedProblems(gateB(lines)).includes("invalid_events"), name + " " + JSON.stringify(nestedProblems(gateB(lines))));
+  }
 });
 
 test("Gate B rejects invalid, duplicate, out-of-order, orphaned and overflowing records", () => {

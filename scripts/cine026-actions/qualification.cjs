@@ -24,8 +24,12 @@ const dispatchModes = ["preflight", "cold-start-probe", "gate-a-only", "gate-b-o
 // `full` (all gates in one job) is not admitted: its declared case limits do not fit one 120 minute job. The
 // per-browser modes and `aggregate` replace it.
 const FULL_MODE_ADMITTED = false;
-// Gate B is not admitted until its nested-process evidence is hardened (end of every output stream observed, and a
-// signal exit only counted as intentional when the parent asked for it) and independently re-reviewed.
+// Gate B stays refused. Its nested-process evidence is hardened (the end of every attached output stream must be
+// observed, and a signal exit only counts as a planned stop when the parent asked for it through the child's kill()),
+// but the hosted run stops the app with child.kill("SIGKILL") on `next dev`, which forks the real server; on Linux that
+// server was observed to keep the output pipes open after its parent died (nested-stream-tap.test.cjs, run 46105227944
+// at 164222d). Until the real window of Gate B is shown to end both streams on Linux, the EOF requirement would reject
+// a legitimate run, so admission stays withdrawn. Lifting it needs that evidence and a new independent review.
 const GATE_B_ADMITTED = false;
 const browsers = ["chromium", "firefox", "webkit"];
 const fields = ["rooms", "participants", "votes", "events", "pending", "poison",
@@ -415,9 +419,18 @@ function nestedProblems(result) {
       if (kind !== "fault" && stream.piped !== true) problems.add(kind + "_not_attached");
       if (stream.exit === null) problems.add(kind + "_no_terminal_record");
       else if (stream.exit === "failed") problems.add(kind + "_crashed");
+      // A signal exit is a planned stop only if the parent asked for it first.
+      else if (stream.exit === "killed" && stream.killRequested !== true) problems.add(kind + "_killed_unexpectedly");
+      // An attached generation must reach the end of both output streams; only then is its tally final. The
+      // reconciliation uses that final tally, so a line still in a pipe at exit cannot go missing unnoticed.
+      let forwarded = stream.forwarded;
+      if (stream.piped === true) {
+        if (!stream.eof?.out || !stream.eof?.err) problems.add(kind + "_stream_not_drained");
+        else forwarded = stream.eof.out.forwarded + stream.eof.err.forwarded;
+      }
       // Per generation, so a surplus of one stream cannot cover for lines lost from another.
-      if (stream.received < stream.forwarded) problems.add("forwarded_lines_lost");
-      if (stream.received > stream.forwarded) problems.add("unaccounted_lines");
+      if (stream.received < forwarded) problems.add("forwarded_lines_lost");
+      if (stream.received > forwarded) problems.add("unaccounted_lines");
     }
   }
   return [...problems];
@@ -888,4 +901,4 @@ if (require.main === module) main().catch(error => {
   process.stderr.write((safe ? message : "QUALIFICATION_HARNESS_FAILED") + "\n");
   process.exitCode = 1;
 });
-module.exports = { EXPECTED_NESTED, GATE_C_MODES, nestedProblems, progressProblems, transportProblems, workloadPasses, warmupEndMs, nestedEvidence, checkGateAEnvelope, checkEnvelope, gateAPlan, modePlan, runAggregate, scopedVerdict, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };
+module.exports = { EXPECTED_NESTED, GATE_C_MODES, GATE_B_ADMITTED, nestedProblems, progressProblems, transportProblems, workloadPasses, warmupEndMs, nestedEvidence, checkGateAEnvelope, checkEnvelope, gateAPlan, modePlan, runAggregate, scopedVerdict, browserArgs, runProbeSession, runWarmupSession, runWarmedGates, coverageOf, runGateSequence, decideVerdict, authorize, verifyLivePR, configureStaging, observeLine, readBrowserReport, verifiedCleanup, stableWorkload };

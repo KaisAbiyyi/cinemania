@@ -139,3 +139,151 @@ test("the expected nested generations equal the spawn call sites of the pinned G
   // no other process is started by spawn() in that file (execFileSync children are not long-lived and are not tapped)
   assert.equal(count(/(?<![\w.])spawn\(/g), 3);
 });
+
+// Feeds the tap's output of a real parent process through the relay into a fresh ledger.
+function ledgerOf(stdout) {
+  const state = {};
+  const relay = createRelay({ gateB: true });
+  for (const line of stdout.split(/\r?\n/)) {
+    const relayed = relay(line, true);
+    if (relayed) observeProgressLine(state, relayed, { startedMs: 0, nowMs: () => 1 });
+  }
+  return state.progress.nested;
+}
+
+test("a real stop through child.kill is recorded before the exit; a kill that bypasses it is not", () => {
+  const run = spawnSync(process.execPath, ["--require", TAP, "-e", `
+    const { spawn } = require("node:child_process");
+    const start = () => spawn(process.execPath, ["-e", "console.log('ready'); setInterval(() => {}, 1000)", "scripts/realtime-worker.ts"],
+      { stdio: ["ignore", "pipe", "pipe"] });
+    const ready = child => new Promise(resolve => child.stdout.once("data", resolve));
+    const closed = child => new Promise(resolve => child.once("close", resolve));
+    (async () => {
+      const planned = start();
+      await ready(planned);
+      planned.kill("SIGKILL"); // how the pinned stopChild() stops every nested process
+      await closed(planned);
+      const outside = start();
+      await ready(outside);
+      process.kill(outside.pid, "SIGKILL"); // not through the child handle: nobody recorded asking for it
+      await closed(outside);
+    })();
+  `], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  const nested = ledgerOf(run.stdout);
+  const [planned, outside] = nested.streams;
+  assert.deepEqual([planned.killRequested, planned.exit, Boolean(planned.eof.out && planned.eof.err)], [true, "killed", true]);
+  // POSIX reports the signal (an unrequested kill); Windows has no signals and reports exit code 1 (a crash). Gate B
+  // rejects both, and only a requested kill passes.
+  assert.deepEqual([outside.killRequested, outside.exit, Boolean(outside.eof.out && outside.eof.err)],
+    [false, process.platform === "win32" ? "failed" : "killed", true]);
+  assert.deepEqual(nested.invalid, { duplicate: 0, orphan: 0, outOfOrder: 0, overflow: 0, rejected: 0 });
+  const kill = run.stdout.split(/\r?\n/).findIndex(line => line.includes('"ev":"kill","kind":"worker","n":1'));
+  const exit = run.stdout.split(/\r?\n/).findIndex(line => line.includes('"ev":"exit","kind":"worker","n":1'));
+  assert.ok(kill >= 0 && kill < exit, "the request precedes the exit");
+});
+
+function nextAppDir() {
+  const dirs = [process.env.CINE026_NEXT_APP_DIR, path.resolve("candidate")].filter(Boolean);
+  return dirs.find(dir => fs.existsSync(path.join(dir, "node_modules/next/dist/bin/next")));
+}
+
+// The pinned Gate B runs the app as `next dev`, which forks the real server with inherited stdio, and stops it with
+// child.kill("SIGKILL") on the parent only. Requiring the end of both output streams is sound only if that server
+// does not outlive its parent while holding the pipes. This runs the real `next dev` of the candidate's locked
+// dependencies that way on the runner's OS and records what happens, in separate observations:
+//   * whether each stream ended and how long it took (the real Gate B leaves only a few seconds before it exits),
+//   * whether the server port closed,
+//   * on POSIX, which processes of that process group are still alive.
+// The observations are printed as a diagnostic. They only become assertions once Gate B is admitted: admission is
+// coupled to this evidence, so it cannot be granted while the observed window does not end the streams.
+test("real next dev stopped like Gate B stops it: observations are recorded, and admission requires them to be clean", { timeout: 180_000 }, async t => {
+  const dir = nextAppDir();
+  if (!dir) {
+    assert.ok(!process.env.CI, "the candidate's locked Next.js must be available in CI");
+    t.skip("no Next.js app directory outside CI");
+    return;
+  }
+  const net = require("node:net");
+  const { spawn, spawnSync } = require("node:child_process");
+  const port = await new Promise((resolve, reject) => {
+    const server = net.createServer().once("error", reject).listen(0, "127.0.0.1", () => {
+      const { port: free } = server.address();
+      server.close(() => resolve(free));
+    });
+  });
+  const posix = process.platform !== "win32";
+  // Its own process group on POSIX, so that anything the test leaves behind can be removed by group.
+  const parent = spawn(process.execPath, ["--require", TAP, "-e", `
+    const { spawn } = require("node:child_process");
+    const nextBin = ${JSON.stringify(path.join(dir, "node_modules/next/dist/bin/next"))};
+    const child = spawn(process.execPath, [nextBin, "dev", "--turbopack", "-p", "${port}", "-H", "127.0.0.1"],
+      { cwd: ${JSON.stringify(dir)}, env: { ...process.env, NEXT_TELEMETRY_DISABLED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    let text = "";
+    let killedAt = null;
+    for (const name of ["stdout", "stderr"]) {
+      child[name].on("data", data => { text = (text + data).slice(-4000); });
+      child[name].on("end", () => console.log("PARENT_END " + name + " " + (killedAt === null ? -1 : Date.now() - killedAt)));
+    }
+    const deadline = Date.now() + 120000;
+    const poll = setInterval(() => {
+      if (/ready|Ready/.test(text)) {
+        clearInterval(poll);
+        console.log("PARENT_READY");
+        killedAt = Date.now();
+        child.kill("SIGKILL");
+      } else if (Date.now() > deadline || child.exitCode !== null) {
+        clearInterval(poll);
+        console.log("PARENT_NOT_READY");
+        child.kill("SIGKILL");
+      }
+    }, 200);
+  `], { env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: posix });
+  let out = "";
+  parent.stdout.on("data", data => { out += data; });
+  parent.stderr.on("data", () => {});
+  const until = async (predicate, ms) => {
+    for (const end = Date.now() + ms; Date.now() < end; await new Promise(r => setTimeout(r, 100))) if (predicate()) return true;
+    return predicate();
+  };
+  const portClosed = () => new Promise(resolve => {
+    const socket = net.connect(port, "127.0.0.1");
+    socket.once("connect", () => { socket.destroy(); resolve(false); });
+    socket.once("error", () => resolve(true));
+  });
+  try {
+    assert.ok(await until(() => /PARENT_READY|PARENT_NOT_READY/.test(out), 150_000), "next dev never reported");
+    assert.match(out, /PARENT_READY/, "next dev did not become ready");
+    const ended = name => {
+      const match = new RegExp("PARENT_END " + name + " (-?\\d+)").exec(out);
+      return match ? Number(match[1]) : null;
+    };
+    await until(() => ended("stdout") !== null && ended("stderr") !== null, 20_000);
+    const nested = ledgerOf(out);
+    const app = nested.streams.find(stream => stream.kind === "app" && stream.n === 1);
+    // The tap itself behaves on every OS: the request is recorded and the exit is a kill.
+    assert.equal(app?.killRequested, true, "the kill request is recorded");
+    assert.equal(app?.exit, "killed", "the exit is a signal exit");
+    const observation = {
+      platform: process.platform, nextStdoutEndedAfterMs: ended("stdout"), nextStderrEndedAfterMs: ended("stderr"),
+      tapEofOut: Boolean(app.eof.out), tapEofErr: Boolean(app.eof.err), portClosedAfterWait: await portClosed(),
+    };
+    if (posix) {
+      // Names and ids of what is still alive in the process group; nothing from their environment or arguments.
+      const ps = spawnSync("ps", ["-o", "pid=,ppid=,pgid=,stat=,comm=", "-g", String(parent.pid)], { encoding: "utf8" });
+      observation.processGroupAfter = (ps.stdout ?? "").split("\n").map(line => line.trim()).filter(Boolean).slice(0, 10);
+    }
+    t.diagnostic("OBSERVATION " + JSON.stringify(observation));
+    process.stdout.write("# CINE026_NEXT_DEV_OBSERVATION " + JSON.stringify(observation) + "\n");
+    if (require("./qualification.cjs").GATE_B_ADMITTED) {
+      assert.ok(observation.nextStdoutEndedAfterMs !== null && observation.nextStderrEndedAfterMs !== null, "the forked server held the output pipes");
+      assert.ok(observation.tapEofOut && observation.tapEofErr, "the tap saw the end of both streams");
+      assert.equal(observation.portClosedAfterWait, true, "the server port is closed");
+      assert.ok(Math.max(observation.nextStdoutEndedAfterMs, observation.nextStderrEndedAfterMs) <= 3_000, "the streams end inside the few seconds Gate B leaves");
+    }
+  } finally {
+    parent.kill("SIGKILL");
+    // Best effort: never leave a server behind on the runner or the developer machine.
+    if (posix) { try { process.kill(-parent.pid, "SIGKILL"); } catch { /* group already gone */ } }
+  }
+});

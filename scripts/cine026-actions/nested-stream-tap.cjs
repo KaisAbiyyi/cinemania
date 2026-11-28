@@ -26,6 +26,8 @@ function emit(payload) {
   try { process.stdout.write("CINE026_NESTED " + JSON.stringify(payload) + "\n"); } catch { /* observation only */ }
 }
 
+const SIGNALS = new Set(["SIGKILL", "SIGTERM", "SIGINT"]);
+
 function attach(child, command, args) {
   const kind = kindOf(command, args);
   if (kind === "other") return;
@@ -33,17 +35,36 @@ function attach(child, command, args) {
   const piped = Boolean(child?.stdout && child?.stderr);
   const tally = { forwarded: 0, dropped: 0 };
   emit({ ev: "spawn", kind, n, piped });
+  // A signal exit counts as intentional only when the parent asked for it through this child's kill(). The candidate
+  // stops every nested process that way (stopChild), so a signal exit without a recorded request (the OOM killer, a
+  // crash of a supervisor in between) is reported as such instead of passing for a planned restart.
+  if (typeof child?.kill === "function") {
+    const kill = child.kill;
+    child.kill = function tappedKill(signal, ...rest) {
+      const name = typeof signal === "string" ? signal.toUpperCase() : signal == null ? "SIGTERM" : "other";
+      emit({ ev: "kill", kind, n, signal: SIGNALS.has(name) ? name : "other" });
+      return kill.call(this, signal, ...rest);
+    };
+  }
   if (piped) {
-    for (const stream of [child.stdout, child.stderr]) {
-      createInterface({ input: stream }).on("line", line => {
+    for (const [name, stream] of [["out", child.stdout], ["err", child.stderr]]) {
+      const own = { forwarded: 0, dropped: 0 };
+      const lines = createInterface({ input: stream });
+      lines.on("line", line => {
         const clean = sanitizeLine(line);
         if (clean === null) {
           tally.dropped++;
+          own.dropped++;
           return;
         }
         tally.forwarded++;
+        own.forwarded++;
         try { process.stdout.write("CINE026_STREAM " + kind + " " + n + " " + clean + "\n"); } catch { /* observation only */ }
       });
+      // End of this stream: every byte the process (and any descendant sharing the pipe) wrote has been read, so
+      // this tally is final. Without it a line still in the pipe when the run ended would be neither forwarded nor
+      // received and could not be told apart from a clean stream.
+      lines.once("close", () => emit({ ev: "eof", kind, n, stream: name, forwarded: own.forwarded, dropped: own.dropped }));
     }
   }
   // `exit` is terminal evidence: it carries the tally at that instant. `close` can lag when a descendant keeps a pipe
