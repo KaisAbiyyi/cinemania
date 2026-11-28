@@ -154,6 +154,12 @@ jobs:
       - name: Install reviewed candidate's locked dependencies
         working-directory: candidate
         run: npm ci
+      # Gate B runs the candidate's two-instance script, which loads pg and supabase-js from the isolated local harness.
+      # Locked install, before any staging value is exposed: the secrets below are set only on the qualification step.
+      - name: Install candidate's isolated local Supabase harness packages (Gate B)
+        if: inputs.mode == 'gate-b-only' || inputs.mode == 'full'
+        working-directory: candidate
+        run: npm ci --prefix scripts/local-supabase
       - name: Install locked Playwright browsers and system dependencies
         if: inputs.mode == 'full' || inputs.mode == 'gate-a-only' || startsWith(inputs.mode, 'gate-c-')
         working-directory: candidate
