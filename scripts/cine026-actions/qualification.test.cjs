@@ -24,7 +24,6 @@ test("only a fresh main dispatch can authorize the exact candidate and exclusive
 
 test("full mode is refused by the consent step itself, before any staging step, whatever else is valid", () => {
   assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "full" }), /^Error: FULL_MODE_NOT_ADMITTED$/);
-  assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "gate-b-only" }), /^Error: GATE_B_NOT_ADMITTED$/);
   for (const mode of ["preflight", "cold-start-probe", "gate-a-only", "gate-c-chromium", "gate-c-firefox", "gate-c-webkit", "aggregate"]) {
     assert.doesNotThrow(() => authorize({ ...dispatch, DISPATCH_MODE: mode }));
   }
@@ -36,6 +35,18 @@ test("full mode is refused by the consent step itself, before any staging step, 
   assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "aggregate", DISPATCH_SHA: "a".repeat(40) }), /^Error: DISPATCH_CONSENT_REFUSED$/);
   // An invalid request still reports the consent failure first; only a fully consented full request reports the guard.
   assert.throws(() => authorize({ ...dispatch, DISPATCH_MODE: "full", DISPATCH_EXCLUSIVE: "false" }), /^Error: DISPATCH_CONSENT_REFUSED$/);
+});
+
+test("Gate B requires a first-attempt main dispatch with the exact candidate and exclusive consent", () => {
+  const gateB = { ...dispatch, DISPATCH_MODE: "gate-b-only" };
+  assert.doesNotThrow(() => authorize(gateB));
+  for (const [key, value] of Object.entries({
+    GITHUB_EVENT_NAME: "pull_request", GITHUB_REPOSITORY: "test/fork",
+    GITHUB_REF: "refs/heads/feature/gh84-gate-b-admission-draft", GITHUB_RUN_ATTEMPT: "2",
+  })) assert.throws(() => authorize({ ...gateB, [key]: value }), /^Error: DISPATCH_CONTEXT_REFUSED$/);
+  for (const [key, value] of Object.entries({
+    DISPATCH_SHA: "a".repeat(40), DISPATCH_PROJECT: "other", DISPATCH_EXCLUSIVE: "false",
+  })) assert.throws(() => authorize({ ...gateB, [key]: value }), /^Error: DISPATCH_CONSENT_REFUSED$/);
 });
 
 test("missing or multiline credentials fail before touching disk", () => {
