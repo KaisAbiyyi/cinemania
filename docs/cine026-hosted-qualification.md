@@ -1,6 +1,6 @@
 # CineMatch Ubuntu staging qualification
 
-The qualification workflow runs the reviewed integration candidate on GitHub-hosted Ubuntu 24.04. The initial candidate is PR #66 at `00555c03d4173ac54750677207b78252e2063257`. The bootstrap PR targets `main` and leaves PR #66 unchanged. GitHub requires the workflow file on the default branch before it accepts `workflow_dispatch`. Merge the infrastructure PR through the normal owner review process. [GitHub dispatch rules](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch).
+The qualification workflow runs the reviewed integration candidate on GitHub-hosted Ubuntu 24.04. The current candidate is PR #66 at `45abb39b8706311dd791a8f09cd904498fb29287`, which adds the GH-84 Next.js shutdown repair (PR #86, test and CI files only) to the initial candidate `00555c03d4173ac54750677207b78252e2063257`. The bootstrap PR targets `main` and leaves PR #66 unchanged. GitHub requires the workflow file on the default branch before it accepts `workflow_dispatch`. Merge the infrastructure PR through the normal owner review process. [GitHub dispatch rules](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch).
 
 ## Configure the staging environment
 

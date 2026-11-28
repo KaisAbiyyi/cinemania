@@ -26,7 +26,7 @@ const transport = {
   http: { count: 8, okCount: 8, nonOkCount: 0, maxMs: 415, over1000Ms: 0, over1400Ms: 0 },
   outcomes: { marked: 8, retry_scheduled: 0, deferred: 0, permanent_rejection: 0 }, failures: [], omittedFailures: 0,
 };
-const worker = { appCommit: "00555c03d4173ac54750677207b78252e2063257", versions: [6, 7],
+const worker = { appCommit: "45abb39b8706311dd791a8f09cd904498fb29287", versions: [6, 7],
   receiptToPrivateHintMs: [12, 13], receiptToDurableReadbackMs: [19, 21] };
 const report = { valid: true };
 

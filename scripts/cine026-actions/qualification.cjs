@@ -15,7 +15,7 @@ const { aggregate, summarizeAggregate, parseRunIds } = require("./aggregate.cjs"
 const candidate = path.resolve("candidate");
 const temp = process.env.RUNNER_TEMP;
 const project = "dmrbticnsczhyaiftrar";
-const sha = "00555c03d4173ac54750677207b78252e2063257";
+const sha = "45abb39b8706311dd791a8f09cd904498fb29287";
 // Gate C runs one browser per dispatch: 13 cases at their declared limits (about 52 minutes) fit one job, while the
 // 39 cases of all three browsers (about 146 minutes) do not. Complete A-D acceptance is the `aggregate` of five runs
 // (see aggregate.cjs): gate-a-only, gate-b-only and the three gate-c modes, all on the same workflow SHA.

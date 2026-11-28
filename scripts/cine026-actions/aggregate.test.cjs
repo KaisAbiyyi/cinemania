@@ -9,7 +9,7 @@ const { test } = require("node:test");
 const { aggregate, summarizeAggregate, parseRunIds, REQUIRED, PASS_VERDICT, WORKFLOW_PATH } = require("./aggregate.cjs");
 const { scopedVerdict, decideVerdict, runAggregate, GATE_C_MODES } = require("./qualification.cjs");
 
-const candidate = "00555c03d4173ac54750677207b78252e2063257";
+const candidate = "45abb39b8706311dd791a8f09cd904498fb29287";
 const workflowSha = "e264b97e04f73b0b84d67cfcf01c07dc0c56d6dd";
 const modes = Object.keys(REQUIRED);
 

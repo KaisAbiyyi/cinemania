@@ -37,7 +37,7 @@ permissions:
 
 env:
   NODE_VERSION: '24.21.0'
-  CANDIDATE: 00555c03d4173ac54750677207b78252e2063257
+  CANDIDATE: 45abb39b8706311dd791a8f09cd904498fb29287
   PROJECT: dmrbticnsczhyaiftrar
 
 jobs:
